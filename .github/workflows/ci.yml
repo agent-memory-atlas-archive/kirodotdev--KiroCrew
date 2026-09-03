@@ -872,7 +872,9 @@ jobs:
             test/test_mcp_apps_e2e.py \
             test/test_pod*.py \
             test/test_service.py \
-            test/test_dev_fleet_app.py
+            test/test_dev_fleet_app.py \
+            "test/test_denied_commands_security.py::TestSandboxEscapeSshSelf::test_own_interface_addresses_returns_parseable_addresses" \
+            "test/test_denied_commands_security.py::TestSandboxEscapeSshSelf::test_first_command_knows_darwin_interface_addresses"
 
   # The one job where the sandbox-dependent tests EXECUTE rather than skip. They need
   # unprivileged user namespaces (unshare NEWNS), which ubuntu-24.04 restricts via

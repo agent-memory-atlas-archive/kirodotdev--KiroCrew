@@ -524,7 +524,7 @@
     "src/kiro_crew/slack/client.py": 1,
     "src/kiro_crew/slack/events.py": 4,
     "src/kiro_crew/slack/format.py": 2,
-    "src/kiro_crew/slack/gateway.py": 67,
+    "src/kiro_crew/slack/gateway.py": 65,
     "src/kiro_crew/slack/handler.py": 11,
     "src/kiro_crew/slack/interactions.py": 1,
     "src/kiro_crew/slack/outbound.py": 2,

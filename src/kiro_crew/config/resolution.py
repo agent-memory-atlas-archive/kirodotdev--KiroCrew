@@ -79,6 +79,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "auto_update",
         "registries",
         "connections_ui",
+        "agent_template_pane",
     }
 )
 

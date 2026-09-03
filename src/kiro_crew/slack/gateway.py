@@ -364,8 +364,7 @@ async def _persist_turn_row(
 
     Extracted so the heartbeat and monitor surfaces — each with a success and a
     timeout twin that were byte-identical copies — share one implementation
-    instead of cloning the block a fourth (and fifth, sixth…) time (issue
-    #1086, following the usage-row wiring from issue #647). Best-effort: a
+    instead of cloning the block a fourth (and fifth, sixth…) time. Best-effort: a
     persistence failure is logged at debug and never propagates into the
     background loop, since a dropped analytics row must not abort a live turn.
 
@@ -2850,7 +2849,11 @@ class GatewayOrchestrator:
         try:
             from kiro_crew.agent import rebuild_agent_config  # circular import
 
-            path = rebuild_agent_config()
+            # Off-loop, with the fork refresh deferred: the rebuild gates
+            # readiness, and per-fork work scales with fork count.
+            # rebuild_agent_config owns the deferral (skip + background
+            # schedule together), so this caller cannot get half the pair.
+            path = await asyncio.to_thread(rebuild_agent_config, refresh_forks="defer")
             logger.info("Agent config installed: %s", path)
 
             # Deliver shim + one-time stale-MCP purge automatically — the

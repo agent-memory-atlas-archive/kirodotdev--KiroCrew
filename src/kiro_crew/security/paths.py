@@ -835,6 +835,30 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The per-agent bookkeeping sidecar (agent_state.py, ``agent_model_state.json``
+    # directly under the crew home). It is the same input-to-an-authorization-decision
+    # class as rotation.yaml and the OMC index: besides model bookkeeping it records
+    # FORK LINEAGE — ``forked_from`` / ``private_to`` mark a template as ONE crew's
+    # private copy of a shared one (blueprint / copy-on-first-edit semantics). The
+    # fork endpoint reads this lineage to decide whether a template is already the
+    # crew's own copy; a prompt-injected agent that could write it would forge a
+    # ``private_to`` entry naming a SHARED template, so the fork returns
+    # ``already_private`` and the owner's next PATCH lands on the shared file instead
+    # of forking a copy — silently mutating a template other crews depend on. Nothing
+    # downstream neutralizes the forgery: the fork/PATCH path trusts the sidecar as
+    # its own record..
+    #
+    # WRITE-protected, NOT read+write sensitive: it holds no secret and is READ
+    # constantly (``list_agents`` enriches every row with fork info, model resolution
+    # reads ``model_managed`` / ``cc_model``), so classifying it sensitive would break
+    # those reads. Only the agent's own file-edit tool is refused; every internal
+    # writer (agent_state._write via ``atomic_write``) opens the path directly and does
+    # not route through this gate, so the dashboard fork/PATCH and the CLI model-state
+    # updates keep working.
+    f"{prefix}/agent_model_state.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The Connections tool-alias OWNERSHIP RECORD, third instance of the same class as the
     # two above and with the same read/write asymmetry. It holds no secret and the rebuild
     # reads it on every run, so classifying it sensitive would break the feature — but it is

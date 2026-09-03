@@ -715,3 +715,179 @@ class TestAgentMutationNonObjectBody:
                     assert (await resp.json())["code"] == "body_not_object"
         finally:
             tmp.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_binding_only_update_is_stale_checked_and_merge_safe() -> None:
+    """a binding-only PUT must go through the locked delta
+    writer — a mismatched expectation is a 409, a matching one commits, and
+    the write never rewrites fields it did not carry."""
+    seed = _seed_config()
+    seed["agents"]["test-agent"] = {
+        "kiro_agent": "kirocrew",
+        "workspace": "custom-ws",
+        "memory_store": "default",
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(seed, f)
+        tmp = Path(f.name)
+    try:
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            async with TestClient(TestServer(_make_crud_app())) as client:
+                # Stale expectation -> 409, binding untouched.
+                resp = await client.put(
+                    "/api/agents/test-agent",
+                    json={"kiro_agent": "oncall", "expected_kiro_agent": "not-current"},
+                )
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "stale_binding"
+                on_disk = json.loads(tmp.read_text(encoding="utf-8"))
+                assert on_disk["agents"]["test-agent"]["kiro_agent"] == "kirocrew"
+
+                # Matching expectation commits the delta...
+                resp = await client.put(
+                    "/api/agents/test-agent",
+                    json={"kiro_agent": "oncall", "expected_kiro_agent": "kirocrew"},
+                )
+                assert resp.status == 200
+                on_disk = json.loads(tmp.read_text(encoding="utf-8"))
+                assert on_disk["agents"]["test-agent"]["kiro_agent"] == "oncall"
+                # ...and ONLY the delta: fields the payload did not carry stay.
+                assert on_disk["agents"]["test-agent"]["workspace"] == "custom-ws"
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_binding_update_rejects_unverifiable_lineage() -> None:
+    """a corrupt sidecar must not degrade to an allowed bind —
+    the spawn gate validates governance, not ownership, so a bind that slipped
+    through would have another crew executing the private definition once the
+    sidecar recovered. Unverifiable lineage 409s."""
+    from kiro_crew import agent_state
+
+    seed = _seed_config()
+    seed["agents"]["test-agent"] = {"kiro_agent": "kirocrew"}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(seed, f)
+        tmp = Path(f.name)
+    try:
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch.object(
+                agent_state, "get_fork_info", side_effect=OSError("sidecar unreadable")
+            ),
+        ):
+            async with TestClient(TestServer(_make_crud_app())) as client:
+                resp = await client.put(
+                    "/api/agents/test-agent",
+                    json={"kiro_agent": "some-template"},
+                )
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "lineage_unverifiable"
+                on_disk = json.loads(tmp.read_text(encoding="utf-8"))
+                assert on_disk["agents"]["test-agent"]["kiro_agent"] == "kirocrew"
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_binding_update_rejects_foreign_private_copy() -> None:
+    """binding a crew to ANOTHER crew's private copy is refused —
+    the owner's publish/reset cleanup would delete the template out from under
+    the second crew. Binding the owner itself stays allowed."""
+    from kiro_crew import agent_state
+
+    seed = _seed_config()
+    seed["agents"]["test-agent"] = {"kiro_agent": "kirocrew"}
+    seed["agents"]["owner-crew"] = {"kiro_agent": "owner-copy"}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(seed, f)
+        tmp = Path(f.name)
+    agent_state.set_fork_info("owner-copy", forked_from="kirocrew", private_to="owner-crew")
+    try:
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            async with TestClient(TestServer(_make_crud_app())) as client:
+                resp = await client.put(
+                    "/api/agents/test-agent",
+                    json={"kiro_agent": "owner-copy"},
+                )
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "foreign_private_copy"
+                on_disk = json.loads(tmp.read_text(encoding="utf-8"))
+                assert on_disk["agents"]["test-agent"]["kiro_agent"] == "kirocrew"
+
+                # The owning crew itself may (re)bind to its own copy.
+                resp = await client.put(
+                    "/api/agents/owner-crew",
+                    json={"kiro_agent": "owner-copy"},
+                )
+                assert resp.status == 200
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_foreign_private_copy() -> None:
+    """crew creation re-checks private-copy ownership INSIDE the
+    config lock, immediately before the binding is added — a fork recording
+    lineage after a pre-lock validation cannot slip through."""
+    from kiro_crew import agent_state
+
+    seed = _seed_config()
+    seed["agents"]["owner-crew"] = {"kiro_agent": "owner-copy"}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(seed, f)
+        tmp = Path(f.name)
+    agent_state.set_fork_info("owner-copy", forked_from="kirocrew", private_to="owner-crew")
+    try:
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            async with TestClient(TestServer(_make_crud_app())) as client:
+                resp = await client.post(
+                    "/api/agents",
+                    json={"name": "new-crew", "kiro_agent": "owner-copy"},
+                )
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "foreign_private_copy"
+                on_disk = json.loads(tmp.read_text(encoding="utf-8"))
+                assert "new-crew" not in on_disk["agents"]
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_binding_update_rejects_foreign_copy_via_stem() -> None:
+    """lineage is keyed by declared name, but a binding can name
+    the file STEM — the guard must resolve the stem to the declared name
+    before concluding the target is not a private copy."""
+    from kiro_crew import agent_state
+    from kiro_crew.config.paths import kiro_agents_dir
+
+    agents_dir = kiro_agents_dir()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    # Copy file whose stem differs from its declared name; lineage is recorded
+    # under the DECLARED name, as the fork endpoint writes it.
+    (agents_dir / "owner-copy-file.json").write_text(
+        json.dumps({"name": "owner-copy"}), encoding="utf-8"
+    )
+    agent_state.set_fork_info("owner-copy", forked_from="kirocrew", private_to="owner-crew")
+
+    seed = _seed_config()
+    seed["agents"]["test-agent"] = {"kiro_agent": "kirocrew"}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(seed, f)
+        tmp = Path(f.name)
+    try:
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            async with TestClient(TestServer(_make_crud_app())) as client:
+                resp = await client.put(
+                    "/api/agents/test-agent",
+                    json={"kiro_agent": "owner-copy-file"},
+                )
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "foreign_private_copy"
+                on_disk = json.loads(tmp.read_text(encoding="utf-8"))
+                assert on_disk["agents"]["test-agent"]["kiro_agent"] == "kirocrew"
+    finally:
+        tmp.unlink(missing_ok=True)
+        (agents_dir / "owner-copy-file.json").unlink(missing_ok=True)

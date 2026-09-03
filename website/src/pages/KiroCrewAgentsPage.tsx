@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Suspense, lazy, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/apiError'
 import { Boxes, FolderOpen, Database, Sparkles, Plus, MessageSquare, Users, Star, LayoutGrid, Rows3, UserPen } from 'lucide-react'
@@ -28,6 +28,10 @@ import CrewWakeSection from '../components/CrewWakeSection'
 import CrewWebhookSection from '../components/CrewWebhookSection'
 import CrewEditorRail from '../components/crew/CrewEditorRail'
 import CrewOverviewPane from '../components/crew/CrewOverviewPane'
+// Lazy: the panel is behind the `agent_template_pane` flag, so its code
+// stays out of the main chunk until a crew editor actually renders it.
+const AgentTemplateDetail = lazy(() => import('../components/crew/AgentTemplateDetail'))
+import { useAgentTemplatePaneEnabled } from '../hooks/useAgentTemplatePane'
 import { useCrewEditorSections, type CrewPaneKey } from '../components/crew/crewEditorSections'
 import { wakesCrew, crewWakeQueryKey, crewWebhooksQueryKey, webhookBoundToCrew, webhookCanCallIn } from '../components/crew/wakesCrew'
 import type { CronJob } from '../types'
@@ -35,6 +39,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 import { errMessage } from '../utils/thunkError'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
+import { templateSourceBadge, type TemplateProvenance } from '../lib/templateSource'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
@@ -320,19 +325,29 @@ function withCurrent(opts: string[], cur: string): string[] {
  * SAME control rather than two copies that drift. Create composes them through
  * `BindingFields`; the editor mounts them individually, one per rail pane.
  */
-export function TemplateField({ label, options, value, onChange, subject, editLaterNote }: {
+export function TemplateField({ label, options, value, onChange, subject, editLaterNote, provenance }: {
   label: string; options: string[]; value: string; onChange: (v: string) => void; subject: FormSubject
   /** Create-only reassurance that the pick is not a commitment. The editor never
    *  sets it: there the fields being edited are themselves the answer. */
   editLaterNote?: boolean
+  /** Provenance per template name, for the source label on each row. Absent while
+   *  the installed list is still loading, which just means no labels yet. */
+  provenance?: Record<string, TemplateProvenance>
 }) {
   const hint = subject === 'member'
     ? i18nT('pages.kiroCrewAgentsPage.template_hint_member')
     : i18nT('pages.kiroCrewAgentsPage.the_agent_definition_it_boots_from_tools_mcp_ser')
+  const opts = withCurrent(options, value)
   return (
     <Field label={label} hint={hint}>
       <SimpleSelect
-        options={withCurrent(options, value)}
+        options={opts}
+        optionBadges={opts.map(o => {
+          const p = provenance?.[o]
+          const label = templateSourceBadge(p)
+          return label ? { label, source: p?.source ?? '' } : undefined
+        })}
+        labelsInListOnly
         value={value}
         onChange={onChange}
         triggerFallback={i18nT('pages.kiroCrewAgentsPage.select_an_agent_template')}
@@ -564,20 +579,21 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
 
 /** The create form's binding block. */
 function BindingFields({
-  templateLabel, kiroAgentOptions, kiroAgent, setKiroAgent,
+  templateLabel, kiroAgentOptions, kiroAgent, setKiroAgent, templateProvenance,
   workspaceOptions, workspace, setWorkspace, onNewWorkspace,
   memoryStoreOptions, memoryStore, setMemoryStore,
   modelOptions, model, setModel, subject,
 }: {
   templateLabel: string; subject: FormSubject
   kiroAgentOptions: string[]; kiroAgent: string; setKiroAgent: (v: string) => void
+  templateProvenance?: Record<string, TemplateProvenance>
   workspaceOptions: string[]; workspace: string; setWorkspace: (v: string) => void; onNewWorkspace: () => void
   memoryStoreOptions: string[]; memoryStore: string; setMemoryStore: (v: string) => void
   modelOptions?: string[]; model?: string; setModel?: (v: string) => void
 }) {
   return (
     <>
-      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} subject={subject} editLaterNote />
+      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} subject={subject} editLaterNote provenance={templateProvenance} />
       <WorkspaceField options={workspaceOptions} value={workspace} onChange={setWorkspace} onNewWorkspace={onNewWorkspace} subject={subject} />
       <MemoryStoreField options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} subject={subject} />
       {modelOptions && setModel && model !== undefined && (
@@ -777,7 +793,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     queryKey: ['agents-installed'],
     queryFn: () => api.agentsInstalled(),
   })
-  const kiroAgentOptions = Array.isArray(installedAgents) ? installedAgents.map((x: { name: string }) => x.name).filter(Boolean) : ['kirocrew']
+  // Private fork copies (blueprint semantics: one crew's own definition) are
+  // not offered as bindable templates — a copy named after crew A means
+  // nothing in crew B's dropdown. The edit sheet re-adds the CURRENT binding
+  // below when it is the editing crew's own copy, same pattern as a pinned
+  // model missing from the advertised list.
+  const kiroAgentOptions = Array.isArray(installedAgents)
+    ? installedAgents
+      .filter((x: { name: string; private_to?: string }) => Boolean(x.name) && !x.private_to)
+      .map((x: { name: string }) => x.name)
+    : ['kirocrew']
+  const templateProvenance: Record<string, TemplateProvenance> = Array.isArray(installedAgents)
+    ? Object.fromEntries(
+      installedAgents
+        .filter((x: { name: string }) => Boolean(x.name))
+        .map((x: TemplateProvenance & { name: string }) => [x.name, x]),
+    )
+    : {}
 
   const { data: workspacesData, refetch: refetchWorkspaces, error: workspacesError } = useQuery({
     queryKey: ['workspaces'],
@@ -799,6 +831,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // picker so the list is fetched once. INHERIT_MODEL leads so "no pin" is the
   // obvious choice rather than an absent option.
   const availableModels = useAvailableModels()
+  const templatePaneEnabled = useAgentTemplatePaneEnabled()
   const modelOptions = [
     INHERIT_MODEL,
     ...(availableModels || []).map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
@@ -995,7 +1028,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   /** Reset the panel's state. Where the user LANDS afterwards is the caller's
    *  decision: `closeSheet` (dismissal, or a finished write on this page's own
    *  form) stays here; the Members-origin create answers with the roster. */
-  const dismissSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setSheetHint(''); setConfirmDelete(false) }, [])
+  const dismissSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setSheetHint(''); setConfirmDelete(false); setTemplateSwitchError('') }, [])
   const closeSheet = useCallback(() => {
     dismissSheet()
     // Asked for from the Crew Members roster and closed without a create:
@@ -1113,6 +1146,78 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (!kiroAgent) { setSheetHint(i18nT('pages.kiroCrewAgentsPage.agent_template_is_required')); return }
     createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore, triggers, session_color: sessionColor, epoch: sheetEpoch.current })
   }
+
+  /** Template switches from the definition pane persist IMMEDIATELY. The
+   *  pane hides the sheet footer (its contract is saved-as-you-go, and fork /
+   *  reset / publish already write server-side), so a dropdown switch left in
+   *  local state would silently die when the sheet closes. A failed PUT keeps
+   *  the switch as local state — `dirtyPanes` marks the pane and the close
+   *  path falls back to the discard confirm — and renders the failure in the
+   *  pane through ErrorNotice. The in-flight write is TRACKED so the close
+   *  path can hold until it settles: a "discard" confirmed while the request
+   *  is still in the air cannot un-send it, so answering the dialog before
+   *  the write lands would let a discarded binding commit anyway. */
+  const [templateSwitchError, setTemplateSwitchError] = useState('')
+  const templateSwitchInflight = useRef<Promise<void> | null>(null)
+  // The pane's shared instant-save chain (model pick, skill toggle), reported
+  // via onSaveChain. Tracked HERE so requestClose can hold a close until it
+  // settles: closing mid-PATCH unmounts the pane, its failure notice renders
+  // nowhere, and the edit is silently lost (GPT round-53).
+  const instantSaveInflight = useRef<Promise<unknown> | null>(null)
+  const onPaneSaveChain = useCallback((p: Promise<unknown>) => {
+    instantSaveInflight.current = p
+    void p.catch(() => undefined).then(() => {
+      if (instantSaveInflight.current === p) instantSaveInflight.current = null
+    })
+  }, [])
+  const latestTemplateSwitch = useRef<string | null>(null)
+  /** The binding the SERVER is known to hold — the roster's value, advanced by
+   *  each successful commit. Read inside the serialized chain (not at call
+   *  time), so a coalesced skip does not desynchronize the staleness check. */
+  const serverTemplateBinding = useRef<string | null>(null)
+  useEffect(() => {
+    if (editingAgent) serverTemplateBinding.current = editingAgent.kiro_agent || ''
+  }, [editingAgent])
+  const persistTemplateSwitch = useCallback(
+    (v: string) => {
+      setKiroAgent(v)
+      setTemplateSwitchError('')
+      if (!editing) return
+      // SERIALIZED and COALESCED: each write chains behind the previous one
+      // (two concurrent PUTs could acquire the server lock in reverse and
+      // persist the older choice), and a superseded selection is skipped so
+      // only the LATEST commits. The payload is binding-only and carries the
+      // expected prior binding, so the server's locked delta writer can 409 a
+      // switch racing another surface's rebind instead of clobbering it.
+      latestTemplateSwitch.current = v
+      const prev = templateSwitchInflight.current ?? Promise.resolve()
+      const commit = prev.then(async () => {
+        if (latestTemplateSwitch.current !== v) return
+        try {
+          const expected = serverTemplateBinding.current
+          await api.updateKirocrewAgent(editing, {
+            kiro_agent: v,
+            ...(expected ? { expected_kiro_agent: expected } : {}),
+          })
+          serverTemplateBinding.current = v
+          // Awaited so the settled promise implies fresh server state: the
+          // deferred close then re-evaluates dirtiness against reality.
+          await refetchAgents()
+          setTemplateSwitchError('')
+        } catch (e) {
+          setTemplateSwitchError(errorText(e))
+          // A conflict means another surface moved the binding: resync the
+          // roster so the pane shows reality rather than the failed pick.
+          await refetchAgents()
+        }
+      })
+      templateSwitchInflight.current = commit
+      void commit.finally(() => {
+        if (templateSwitchInflight.current === commit) templateSwitchInflight.current = null
+      })
+    },
+    [editing, refetchAgents],
+  )
 
   const saveEdit = async () => {
     if (!editing) return
@@ -1423,6 +1528,22 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    */
   const requestClose = useCallback(() => {
     if (schedDraft) { setDiscardAsk('close'); return }
+    // A template switch write still in the air cannot be discarded — the
+    // request is already sent. Hold the close until it settles (the tracked
+    // promise also awaits the roster refetch), then re-evaluate with fresh
+    // dirty state: a landed switch is no longer dirty, so the discard dialog
+    // never gets to promise an undo it cannot deliver.
+    if (templateSwitchInflight.current) {
+      void templateSwitchInflight.current.then(() => requestCloseRef.current())
+      return
+    }
+    // Same hold for the pane's instant saves (model pick, skill toggle): the
+    // PATCH is already sent, so the close waits for it to settle — a failure
+    // then renders in the still-mounted pane instead of nowhere.
+    if (instantSaveInflight.current) {
+      void instantSaveInflight.current.catch(() => undefined).then(() => requestCloseRef.current())
+      return
+    }
     if (committing || dirtyPanes.size === 0) { closeSheet(); return }
     // Published BEFORE the question goes up so a save still staging an upload
     // sees it and holds its PUT until the answer arrives. Only this leg arms
@@ -1433,6 +1554,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     discardAnswer.current = { answered, settle }
     setDiscardAsk('close')
   }, [schedDraft, committing, dirtyPanes, closeSheet])
+
+  /** Latest requestClose, for the deferred re-invocation above — the settle
+   *  callback must not capture a stale closure's dirty state. */
+  const requestCloseRef = useRef<() => void>(() => {})
+  useEffect(() => { requestCloseRef.current = requestClose }, [requestClose])
 
   /** The header's "Chat with this crew" routes through here: it creates a
    *  chat slot, closes the sheet and navigates -- three steps that would
@@ -1563,6 +1689,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     webhooksUnknown: webhooksQuery.isError,
     dirtyPanes,
   })
+
+  // While the agent-template pane is the active surface, its edits are saved as
+  // you go (a fork/patch lands immediately), so the sheet's Cancel + "Save
+  // changes" footer would advertise a second, contradictory save model over the
+  // pane's own "saved as you go" copy. Hide the footer there — the dialog's
+  // built-in ✕ still closes it, and the pane surfaces its own errors.
+  const templatePaneActive = !creating && templatePaneEnabled && pane === 'template'
 
   return (
     <>
@@ -1877,6 +2010,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                     subject={formSubject}
                     templateLabel={provider.labels.agentTemplateField}
                     kiroAgentOptions={kiroAgentOptions} kiroAgent={kiroAgent} setKiroAgent={setKiroAgent}
+                    templateProvenance={templateProvenance}
                     workspaceOptions={workspaceOptions} workspace={workspace} setWorkspace={setWorkspace}
                     onNewWorkspace={() => setWsModalOpen(true)}
                     memoryStoreOptions={memoryStoreOptions} memoryStore={memoryStore} setMemoryStore={setMemoryStore}
@@ -1934,13 +2068,55 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'template' && (
-                    <TemplateField
-                      label={provider.labels.agentTemplateField}
-                      options={kiroAgentOptions}
-                      value={kiroAgent}
-                      onChange={setKiroAgent}
-                      subject="agent"
-                    />
+                    <>
+                      {templatePaneEnabled ? (
+                        /* The panel owns the selector: the template picker is
+                           the header bar of the container holding the
+                           definition it names (v5 design, usability-reviewed).
+                           The crew's private copy is filtered from the shared
+                           catalog; the panel re-adds the current binding when
+                           needed. */
+                        <Suspense fallback={null}>
+                          <>
+                            {/* No askAgent hand-off: it navigates to /chat,
+                                unmounting this sheet and destroying its
+                                unsaved pane edits (dirtyPanes). Errors inside
+                                the editor render in place, never as a
+                                hand-off. */}
+                            <ErrorNotice
+                              message={templateSwitchError || null}
+                              variant="inline"
+                              testId="crew-template-switch-error"
+                            />
+                            <AgentTemplateDetail
+                            template={kiroAgent}
+                            models={(availableModels || []).map((m: { name: string }) => m.name).filter(Boolean)}
+                            crew={editing || undefined}
+                            onForked={setKiroAgent}
+                            options={kiroAgentOptions}
+                            onSelect={persistTemplateSwitch}
+                            onRebound={setKiroAgent}
+                            provenance={templateProvenance}
+                            fieldLabel={provider.labels.agentTemplateField}
+                            onSaveChain={onPaneSaveChain}
+                          />
+                          </>
+                        </Suspense>
+                      ) : (
+                        <TemplateField
+                          label={provider.labels.agentTemplateField}
+                          options={
+                            kiroAgent && !kiroAgentOptions.includes(kiroAgent)
+                              ? [kiroAgent, ...kiroAgentOptions]
+                              : kiroAgentOptions
+                          }
+                          value={kiroAgent}
+                          onChange={setKiroAgent}
+                          subject="agent"
+                          provenance={templateProvenance}
+                        />
+                      )}
+                    </>
                   )}
 
                   {pane === 'model' && (
@@ -2111,7 +2287,12 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           {/* Save is disabled while nothing is pending. The schedule pause/run
               controls in the wake pane apply IMMEDIATELY, so a live Save button
               beside them implies those toggles are drafts that Cancel would roll
-              back — which it cannot. */}
+              back — which it cannot.
+
+              Hidden entirely while the agent-template pane is the active surface:
+              that pane saves as you go, so a Cancel + "Save changes" footer there
+              is a second, contradictory save model (see templatePaneActive). */}
+          {!templatePaneActive && (
           <DialogFooter>
             {/* No hand-off: the crew sheet's unsaved pane edits (dirtyPanes) —
                 a failed save is exactly what did not persist them. */}
@@ -2150,6 +2331,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               >{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
             )}
           </DialogFooter>
+          )}
 
           {/* Nested INSIDE the editor's DialogContent so Radix treats it as a
               stacked layer of the same dialog tree — that is what makes Escape

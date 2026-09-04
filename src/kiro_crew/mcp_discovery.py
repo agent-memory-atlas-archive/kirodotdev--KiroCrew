@@ -975,6 +975,7 @@ _MANAGED_SERVER_SUBCOMMANDS = {
     "kirocrew-computer": "mcp-computer",
     "kirocrew-dashboard": "mcp-dashboard",
     "kirocrew-work": "mcp-work",
+    "kirocrew-panel": "mcp-panel",
 }
 _MANAGED_SERVER_NAMES = set(_MANAGED_SERVER_SUBCOMMANDS)
 
@@ -987,6 +988,7 @@ _MANAGED_SERVER_TOOL_MODULES = {
     "kirocrew-computer": "kiro_crew.mcp_computer",
     "kirocrew-dashboard": "kiro_crew.mcp_dashboard",
     "kirocrew-work": "kiro_crew.mcp_work",
+    "kirocrew-panel": "kiro_crew.mcp_panel",
 }
 
 
@@ -1013,7 +1015,7 @@ _MANAGED_SERVER_TOOL_MODULES = {
 #: argument actually handed to the shim. That check imports the modules in the
 #: TEST process, where running package code is the point rather than a hazard.
 _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
-    {"kirocrew-core", "kirocrew-cron", "kirocrew-dashboard", "kirocrew-work"}
+    {"kirocrew-core", "kirocrew-cron", "kirocrew-dashboard", "kirocrew-work", "kirocrew-panel"}
 )
 
 #: Managed servers that ADVERTISE the capability but are deliberately withheld

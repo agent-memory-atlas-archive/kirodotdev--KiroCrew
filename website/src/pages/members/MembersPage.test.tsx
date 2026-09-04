@@ -22,6 +22,11 @@ vi.mock('../../api/client', () => ({
     // the default is "feature on, nothing armed" so every other case renders
     // the page without a loop in the way.
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    // The drawer's webview section. Stubbed as "nothing published", which is the
+    // state every case here is about: without it the reader rejects and the
+    // section raises a red alert, so a silent fallback (a remembered crew that
+    // was renamed away) would read as an error on a page that is behaving.
+    memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
   },
 }))
 

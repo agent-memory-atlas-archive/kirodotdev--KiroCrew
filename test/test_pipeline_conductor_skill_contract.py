@@ -242,6 +242,54 @@ class TestClaimPreflightIsDocumented:
         assert "triage debt" in _flat(_skill_section(self.HEADING))
 
 
+class TestPodReproAdmissionGate:
+    """A pod campaign must reject unit-only fixes before implementation.
+
+    The first pilot silently weakened "pod repro required" into an after-the-fact
+    friction note: all three issues were fixed, none was reproduced in a pod, and
+    the run was still reported as evidence for the pod loop. These assertions pin
+    the distinction between campaign admission and ordinary verification quality.
+    """
+
+    def test_the_spec_exposes_a_safe_generic_default_and_the_hard_mode(self):
+        spec = _flat(_skill_section("## The pipeline spec"))
+        assert '"repro_gate": "best_effort"' in spec
+        assert "`pod_required` is a hard admission gate" in spec
+
+    def test_pod_required_forbids_edits_before_the_live_red_trace(self):
+        spec = _flat(_skill_section("## The pipeline spec"))
+        assert "no source, test, or documentation edit may precede the live red trace" in spec
+        assert "unmodified worktree" in spec
+
+    def test_unit_evidence_cannot_be_relabelled_as_pod_admission(self):
+        spec = _flat(_skill_section("## The pipeline spec"))
+        for inadequate in (
+            "unit or structural test",
+            "direct module call",
+            "simulated exception",
+            "source reading",
+        ):
+            assert inadequate in spec
+        assert "failed sample in this one" in spec
+
+    def test_an_ineligible_issue_stands_down_without_a_pr_and_advances(self):
+        spec = _flat(_skill_section("## The pipeline spec"))
+        assert "standdown: pod-repro-ineligible" in spec
+        assert "without a commit or pr" in spec
+        assert "queue advances to the next candidate" in spec
+
+    def test_the_worker_brief_runs_the_gate_before_implementation(self):
+        brief = _flat(_skill_section("### The work-order brief (seed message skeleton)"))
+        assert "repro admission (`{verifier.repro_gate}`)" in brief
+        assert "no live pod red" in brief
+        assert "no edit, commit, or pr" in brief
+        assert "run the same pod trace green" in brief
+        assert "tear the pod down to zero residue" in brief
+        assert "worktree's `./.venv/bin/kirocrew`" in brief
+        assert "repository's own playwright runner" in brief
+        assert "missing required engine" in brief
+
+
 class TestProbeSignalsAreDocumented:
     HEADING = "## The probe cycle"
 

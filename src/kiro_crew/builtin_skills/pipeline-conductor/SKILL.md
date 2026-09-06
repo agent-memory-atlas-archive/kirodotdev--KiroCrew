@@ -39,6 +39,7 @@ The operator's seed message names a spec file (JSON). Fields you consume now:
                    "skip_signals": ["claimed", "in-progress"]},
   "worker_contract": {"branch_pattern": "fix/{slug}-{n}",
                        "worktree_pattern": "../{repo_name}-fix-{n}"},
+  "verifier": {"repro_gate": "best_effort"},
   "governance": {"max_in_flight": 32, "max_per_cycle": 3,
                   "idle_alert_secs": 900, "session_ceiling": 30,
                   "credit_budget_per_item": 100, "topup_ceiling": 2},
@@ -55,6 +56,29 @@ spec file's directory is your working state home: write the probe config as
 in the config and it is what makes `cwd=fleet` reachable, so leaving it out
 classifies every banned line as `foreign` or `unknown` and the enforcing row of
 the banned-ops table never fires.
+
+`verifier.repro_gate` has two values:
+
+- `best_effort` (default) keeps the generic pipeline behavior: reproduce where
+  cheap, and let the worker justify the narrowest honest verification when a
+  live system adds no signal.
+- `pod_required` is a HARD ADMISSION GATE for a pod-verification campaign. The
+  item is not implementation-eligible until the UNMODIFIED worktree reproduces
+  the reported failure in a live pod running that worktree's code. A unit or
+  structural test, a direct module call, a simulated exception, source reading,
+  or a note that a pod *could* verify the change later does NOT satisfy the
+  gate. No source, test, or documentation edit may precede the live red trace.
+  If the necessary scenario, product route, caller identity, host capability,
+  or externally drivable trigger is absent, the worker reports
+  `STANDDOWN: pod-repro-ineligible — <evidence>; missing=<capability>` without a
+  commit or PR, the conductor releases the claim with that evidence, and the
+  queue advances to the next candidate. After admission, the same live trace
+  must turn green before the worker may report `GREEN`.
+
+A pipeline using `pod_required` is measured by the number of admitted issues,
+not by the number inspected. An issue fixed with unit evidence but no admitted
+pod repro is useful work in another campaign and a FAILED sample in this one;
+never relabel it success in the friction report.
 
 ## Startup (once per run)
 
@@ -430,7 +454,25 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > PREFLIGHT (mandatory): view the item; check open PRs and worktrees for
 > overlap — if anything already covers it, reply `STANDDOWN: <reason>` and
 > stop. Never adopt another session's WIP.
-> CONFIRM the mechanism before fixing: reproduce where cheap; wrong premise →
+> REPRO ADMISSION (`{verifier.repro_gate}`): expand this clause from the spec.
+> In `pod_required` mode, keep the worktree byte-clean and run `kirocrew pod
+> scenarios`, choose the closest shipped state, boot the UNMODIFIED worktree in
+> that scenario, and drive the externally visible failing behavior through
+> `pod api`, pod-e2e/Playwright, or another real product route. Run pod
+> status/token/API commands through the worktree's `./.venv/bin/kirocrew` after
+> provisioning: the globally installed binary may be sandbox-blind to the pod
+> process's sockets and fail closed on ownership proof. If `playwright-cli`
+> cannot launch on the host, the repository's own Playwright runner against the
+> same live pod is equivalent evidence; record the engine and launch flags, and
+> treat a missing REQUIRED engine (for example Safari/WebKit-specific behavior)
+> as `missing=<capability>` rather than silently substituting Chromium.
+> Record the scenario, exact probe, and failing observable. A unit test, direct
+> import, simulated error, or post-fix friction note is NOT admission. No live pod red →
+> `STANDDOWN: pod-repro-ineligible — <evidence>; missing=<capability>` and STOP
+> with no edit, commit, or PR. Live red admitted → implement, then run the SAME
+> pod trace green and tear the pod down to zero residue before `GREEN`.
+> CONFIRM the mechanism before fixing: in `best_effort` mode, reproduce where
+> cheap; wrong premise →
 > `STANDDOWN: premise disproven — <evidence>`. A design decision →
 > `PROPOSAL: <link>` (write the proposal on the item; do not build).
 > IMPLEMENT in your own worktree (`{worktree_pattern}`, branch

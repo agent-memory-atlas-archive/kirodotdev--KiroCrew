@@ -741,6 +741,44 @@ def effective_session_key(slot: _ChatSlot) -> str:
     return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
 
 
+def slot_replay_updates(sessions: Any, slot: Any) -> list[dict[str, Any]] | None:
+    """The session/load replay frames the live provider holds for ``slot``, if any.
+
+    ``None`` when there is no live provider or it offers no replay -- every
+    default install (``dashboard.replay_from_acp`` off), and every backend whose
+    provider leaves ``LLMProvider.replay_updates`` at its declared default. An
+    empty list means capture is on but nothing was replayed (a fresh
+    session/new). Resolution failures read as "no replay": a missing session
+    must never fail the read this feeds.
+    """
+    try:
+        provider = sessions.get_provider(effective_session_key(slot))
+    except Exception:
+        return None
+    if provider is None:
+        return None
+    return provider.replay_updates
+
+
+def discard_slot_replay(sessions: Any, slot: Any) -> None:
+    """dashboard.replay_from_acp: forget ``slot``'s resume replay before its transcript is rewritten.
+
+    The rewrite paths (rewind, regenerate, edit-and-resend, variant switch,
+    ``/clear``) call this so the replay is not rendered over the rewritten rows.
+    The replay module is feature-flagged off by default, so it is imported HERE,
+    only once a live provider actually offers a replay -- a default install never
+    loads it, at boot or on a rewrite (AUTOSDE ``no-new-work-on-gateway-boot-path``
+    rule 5: gate the import, not just the handler).
+    """
+    if slot_replay_updates(sessions, slot) is None:
+        return
+    from kiro_crew.dashboard.chat_replay import (  # gated import: flag-off installs never load it
+        discard_replay_for_slot,
+    )
+
+    discard_replay_for_slot(sessions, slot)
+
+
 def subagents_attached(
     state: DashboardState, slot: _ChatSlot, session_key: str, operation: str
 ) -> bool:

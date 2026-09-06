@@ -10,7 +10,11 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history, save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
-from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    discard_slot_replay,
+    effective_session_key,
+    slot_history_key,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
@@ -101,6 +105,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         if len(variants) > _MAX_VARIANTS:
             variants = variants[-_MAX_VARIANTS:]
 
+        # dashboard.replay_from_acp: the transcript is rewritten below, so the resume
+        # replay must not be rendered over it again (see chat_replay). Placed AFTER
+        # every authorization/validation gate so a refused request discards nothing.
+        discard_slot_replay(state.sessions, slot)
         del slot.messages[u_idx + 1 :]
         slot.invalidate_source_links()
         slot._dirty = True
@@ -203,6 +211,10 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "corrupt variant entry", "code": "variant_corrupt"}, status=400
             )
+        # dashboard.replay_from_acp: the transcript is rewritten below, so the resume
+        # replay must not be rendered over it again (see chat_replay). Placed AFTER
+        # every authorization/validation gate so a refused request discards nothing.
+        discard_slot_replay(state.sessions, slot)
         target_dict: dict = target
         target_dict["content"] = chosen.get("content", "")
         slot.invalidate_source_links()
@@ -789,6 +801,11 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     for question_id in retired_question_ids
                     if slot._question_pending.pop(question_id, None) is not None
                 ]
+                # dashboard.replay_from_acp: the live transcript is rewritten here,
+                # so the resume replay must not be rendered over it again (see
+                # chat_replay). Inside the commit -- AFTER every authorization,
+                # busy and boundary gate -- so a refused edit discards nothing.
+                discard_slot_replay(state.sessions, slot)
                 slot.messages = prospective_slot.messages + arrived_rows
                 delivered_pending_ids = pre_await_pending_ids - {id(row) for row in slot._pending}
                 slot._pending[:] = [

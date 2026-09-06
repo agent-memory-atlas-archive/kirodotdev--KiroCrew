@@ -3114,10 +3114,14 @@ export const api = {
    *  this is called. */
   chatSlotSourceLinks: (slot: string): Promise<{ links: NonNullable<ChatSlot['source_links']>; total: number }> =>
     fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links').then(j),
-  chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal) => {
+  chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal, corpus?: string) => {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))
     if (before !== undefined) p.set('before', String(before))
+    // The corpus the `before` cursor was cut from (the previous page's
+    // `cursor_space`), so a paginated chain is sliced from one corpus end to
+    // end even if the backend's transcript source flips between pages.
+    if (before !== undefined && corpus) p.set('corpus', corpus)
     return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p, { signal }).then(j)
   },
   /** Create a chat slot. `instance_id` binds the new session to a connected crew

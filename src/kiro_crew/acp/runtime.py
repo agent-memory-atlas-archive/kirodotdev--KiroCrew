@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import itertools
 import json
 import logging
 import os
@@ -296,6 +297,89 @@ def _capped_names(names: list[str]) -> str:
 
 
 _INIT_NOTIFICATION_BUFFER_LIMIT = 100
+# Upper bound on session/update frames retained per session/load when
+# transcript-replay capture is on (dashboard.replay_from_acp). Measured: a
+# 690-row dashboard session replayed as ~1.6k frames, so this holds a long
+# session with headroom. Past it the WHOLE capture is discarded (same
+# discipline as the byte ceilings below) and the consumer renders its JSONL;
+# the frames themselves take the ordinary counted-drop path.
+_REPLAY_CAPTURE_MAX_FRAMES = 20_000
+# Cumulative ceiling on the retained frames' serialized size per session/load.
+# A frame count alone does not bound memory: a tool result frame can carry
+# megabytes of rawOutput. Past this the WHOLE capture is discarded (the
+# consumer then keeps its own transcript) rather than truncated, because a
+# transcript missing its middle would render as a coherent-looking lie.
+_REPLAY_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
+# PROCESS-WIDE ceiling on the replay bytes retained across every session at
+# once -- captures still in flight and frames already handed to a session
+# handle alike. The per-session ceiling above bounds one resume; it does not
+# bound N concurrent resumes, and a gateway holding many large resumed
+# sessions would otherwise retain N x 64 MiB. Past this a NEW capture is
+# discarded whole (the consumer keeps its JSONL) rather than evicting an
+# older session's frames: the older session is already rendering from them.
+_REPLAY_RETAINED_MAX_BYTES = 256 * 1024 * 1024
+
+
+class _ReplayRetentionLedger:
+    """Bytes of replay frames currently retained, per (owner, session id), process-wide.
+
+    One instance (``_REPLAY_LEDGER``) is shared by every ``AcpRuntime``: the
+    multiplexed runtimes each hold their own sessions, and the budget is what
+    the whole gateway process may keep, so it cannot live on a runtime. A
+    session's bytes are reserved as its capture grows, kept while its handle
+    holds the frames, and released when the capture is discarded, the consumer
+    forgets the replay (``discard_replay``) or the session is unregistered.
+
+    Reservations are keyed by the OWNING runtime as well as the sid. Nothing
+    stops two runtimes from resuming the same sid at once (an eager resume
+    racing a first message), and a sid-only key would let the loser's discard
+    or re-arm pop the winner's bytes -- the budget then undercounts what the
+    process really holds and repeated large resumes walk past the cap. Each
+    runtime releases only what it reserved. Locked because the reader loop and
+    the dashboard's discard can run on different threads.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._lock = threading.Lock()
+        self._by_key: dict[tuple[int, str], int] = {}
+        self._total = 0
+
+    def reserve(self, owner: int, sid: str, delta: int) -> bool:
+        """Add ``delta`` bytes to ``owner``'s ``sid``; False (nothing reserved) if it would exceed the budget."""
+        key = (owner, sid)
+        with self._lock:
+            if self._total + delta > self._limit:
+                return False
+            self._by_key[key] = self._by_key.get(key, 0) + delta
+            self._total += delta
+            return True
+
+    def release(self, owner: int, sid: str) -> int:
+        """Forget every byte ``owner`` reserved for ``sid``; returns how many were released."""
+        with self._lock:
+            held = self._by_key.pop((owner, sid), 0)
+            self._total -= held
+            return held
+
+    def total(self) -> int:
+        with self._lock:
+            return self._total
+
+
+_REPLAY_LEDGER = _ReplayRetentionLedger(_REPLAY_RETAINED_MAX_BYTES)
+# Ledger owner token per AcpRuntime. A monotonic counter rather than ``id()``:
+# a dead runtime's handed-off frames stay reserved after the object is
+# collected, and a recycled ``id`` would let its successor pop them.
+_REPLAY_OWNER_IDS = itertools.count(1)
+_REPLAY_OWNER_LOCK = threading.Lock()
+
+
+def _next_replay_owner() -> int:
+    with _REPLAY_OWNER_LOCK:
+        return next(_REPLAY_OWNER_IDS)
+
+
 # Teardown must be snappy: a session is usually terminated on a hot path
 # (background task done, subagent reaped). kiro-cli's terminate handler responds
 # as soon as it enqueues the eviction (the actual shutdown runs in its actor
@@ -714,6 +798,7 @@ class AcpRuntime:
         expect_mcp_reports: bool = True,
         acp_backend: str = ACP_BACKEND_KIRO,
         crew_agent: str = "",
+        capture_replay: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -809,6 +894,34 @@ class AcpRuntime:
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
         )
+        # Transcript-replay capture (dashboard.replay_from_acp). While a
+        # session/load is in flight kiro-cli replays the whole prior transcript
+        # as session/update frames tagged with the resumed sid; that sid has no
+        # registered queue yet, so the reader's default is the counted-drop path.
+        # With capture on, load_session() arms an entry here for the sid and the
+        # reader appends those frames instead — bounded by
+        # _REPLAY_CAPTURE_MAX_FRAMES, everything past the cap is dropped and
+        # counted as before. load_session() pops the entry when the load
+        # resolves (either way), so nothing lingers for an id that never
+        # registered. Off by default: the frames are useful only to a consumer
+        # that renders history from them, and buffering them costs memory
+        # proportional to the transcript.
+        self._capture_replay = capture_replay
+        # This runtime's key into the process-wide retention ledger: only the
+        # bytes reserved under it are ever released by this runtime.
+        self._replay_owner: int = _next_replay_owner()
+        self._replay_capture: dict[str, list[dict[str, Any]]] = {}
+        self._replay_capture_overflow: dict[str, int] = {}
+        # Serialized bytes retained so far per armed sid, and the sids whose
+        # capture blew _REPLAY_CAPTURE_MAX_BYTES or _REPLAY_CAPTURE_MAX_FRAMES
+        # and was discarded outright. ``_frame_capped`` is the subset discarded
+        # for the FRAME cap: every later frame for such a sid still counts
+        # toward ``_replay_capture_overflow`` so the discard log reports how
+        # far past the cap the replay ran, while a byte-ceiling discard keeps
+        # overflow at 0 (it is a size failure, not a count one).
+        self._replay_capture_bytes: dict[str, int] = {}
+        self._replay_capture_discarded: set[str] = set()
+        self._replay_capture_frame_capped: set[str] = set()
         self._next_id = 1
         self._initialized = False
         # Whether kiro-cli advertised session/load support in its initialize
@@ -1983,6 +2096,126 @@ class AcpRuntime:
         self._audit_tasks.add(audit_task)
         audit_task.add_done_callback(self._audit_tasks.discard)
 
+    def _capture_replay_frame(self, session_id: object, msg: JsonRpcMessage) -> bool:
+        """Retain one transcript-replay frame for a session armed by load_session().
+
+        Returns True when the frame was kept; False when capture is off, the
+        sid is not armed, the frame carries no dict params, or the per-load cap
+        is reached — the caller then takes the ordinary counted-drop path, so
+        the accounting a flood relies on is unchanged for everything not kept.
+        Synchronous and allocation-light on purpose: it runs on the hot demux
+        path, and a replayed transcript is exactly the flood that path exists
+        to survive.
+        """
+        if not self._capture_replay or not isinstance(session_id, str):
+            return False
+        bucket = self._replay_capture.get(session_id)
+        if bucket is None:
+            return False
+        params = msg.params
+        if not isinstance(params, dict):
+            return False
+        if session_id in self._replay_capture_discarded:
+            # Armed-but-discarded: every later frame takes the counted-drop
+            # path. Only a FRAME-cap discard keeps counting overflow, so the
+            # discard log reports how far past the cap the replay actually ran.
+            if session_id in self._replay_capture_frame_capped:
+                self._replay_capture_overflow[session_id] = (
+                    self._replay_capture_overflow.get(session_id, 0) + 1
+                )
+            return False
+        if len(bucket) >= _REPLAY_CAPTURE_MAX_FRAMES:
+            # Same discipline as the byte ceiling below: a capture that cannot
+            # hold the whole replay holds none of it, so the consumer renders
+            # its own transcript instead of a silently truncated one.
+            bucket.clear()
+            _REPLAY_LEDGER.release(self._replay_owner, session_id)
+            self._replay_capture_discarded.add(session_id)
+            self._replay_capture_frame_capped.add(session_id)
+            self._replay_capture_overflow[session_id] = (
+                self._replay_capture_overflow.get(session_id, 0) + 1
+            )
+            return False
+        # Cumulative size, measured on the serialized frame in BYTES (the
+        # ceiling is a memory bound, and a CJK-heavy frame is up to 3x its
+        # character count in UTF-8): a count cap alone lets a few
+        # multi-megabyte tool results hold the gateway's memory. json.dumps is
+        # linear in the frame, the same order as the parse the reader already
+        # paid, and runs only for armed sids with capture on.
+        try:
+            size = len(
+                json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+        except (TypeError, ValueError):
+            size = len(repr(params).encode("utf-8"))
+        used = self._replay_capture_bytes.get(session_id, 0) + size
+        if used > _REPLAY_CAPTURE_MAX_BYTES or not _REPLAY_LEDGER.reserve(
+            self._replay_owner, session_id, size
+        ):
+            # Discard the WHOLE capture, not the tail: a transcript with its
+            # middle missing would render as a coherent-looking lie. The sid
+            # stays armed-but-discarded so later frames take the counted drop.
+            # Two ceilings share this branch: this session's own, and the
+            # process-wide budget every retained replay draws on -- when the
+            # gateway already holds that much, a new resume keeps its JSONL
+            # rather than evicting a session that is rendering from its frames.
+            bucket.clear()
+            _REPLAY_LEDGER.release(self._replay_owner, session_id)
+            self._replay_capture_discarded.add(session_id)
+            self._replay_capture_bytes[session_id] = used
+            return False
+        self._replay_capture_bytes[session_id] = used
+        bucket.append(params)
+        return True
+
+    def _arm_replay_capture(self, session_id: str) -> None:
+        """Start retaining session/update frames for ``session_id`` (capture on)."""
+        if self._capture_replay:
+            self._replay_capture[session_id] = []
+            self._replay_capture_overflow.pop(session_id, None)
+            self._replay_capture_bytes.pop(session_id, None)
+            self._replay_capture_discarded.discard(session_id)
+            self._replay_capture_frame_capped.discard(session_id)
+            # A re-armed sid starts from zero in the process budget too: any
+            # frames a previous resume of this id retained are superseded.
+            _REPLAY_LEDGER.release(self._replay_owner, session_id)
+
+    def release_replay_retention(self, session_id: str) -> None:
+        """Return ``session_id``'s retained replay bytes to the process budget.
+
+        Called once nothing holds the frames: the consumer forgot
+        the replay (``discard_replay``) or the session was unregistered. Safe to
+        call for a sid that never reserved anything.
+        """
+        _REPLAY_LEDGER.release(self._replay_owner, session_id)
+
+    def _take_replay_capture(self, session_id: str) -> tuple[list[dict[str, Any]], int]:
+        """Pop the frames retained for ``session_id`` plus how many overflowed the cap.
+
+        An empty list is returned when the capture was discarded for size; the
+        consumer cannot tell that from "nothing replayed" and does not need to --
+        both mean "render your own transcript".
+        """
+        frames = self._replay_capture.pop(session_id, [])
+        overflow = self._replay_capture_overflow.pop(session_id, 0)
+        used = self._replay_capture_bytes.pop(session_id, 0)
+        self._replay_capture_frame_capped.discard(session_id)
+        if session_id in self._replay_capture_discarded:
+            self._replay_capture_discarded.discard(session_id)
+            _REPLAY_LEDGER.release(self._replay_owner, session_id)
+            logger.warning(
+                "Transcript replay for session %s exceeded a capture ceiling "
+                "(%d bytes seen, %d frames past the %d-frame cap, %d bytes retained "
+                "process-wide); capture discarded",
+                session_id,
+                used,
+                overflow,
+                _REPLAY_CAPTURE_MAX_FRAMES,
+                _REPLAY_LEDGER.total(),
+            )
+            return [], overflow
+        return frames, overflow
+
     def _note_dropped_frame(self, session_id: object, method: object) -> None:
         """Count one unroutable frame, flushing a summary at most once per interval.
 
@@ -2345,6 +2578,14 @@ class AcpRuntime:
                         # make every warm session look report-less and pay the
                         # full no-report ceiling.
                         self._pending_init_notifications.append(msg)
+                    elif msg.is_method(METHOD_SESSION_UPDATE) and self._capture_replay_frame(
+                        session_id, msg
+                    ):
+                        # Transcript replay for a session/load that load_session()
+                        # armed for capture: retained for the consumer instead of
+                        # dropped. Past the cap the helper answers False and the
+                        # frame falls through to the counted drop below.
+                        pass
                     else:
                         # Counted, not logged per frame: this is the measured
                         # flood (transcript replay during session/load, plus any
@@ -2556,6 +2797,32 @@ class AcpRuntime:
                 queue.put_nowait(None)  # poison sentinel
             except asyncio.QueueFull:
                 pass
+        # Captures still IN FLIGHT die with the process: their frames live only
+        # in this runtime's buckets, which are cleared right here, so their
+        # reservation in the process-wide ledger goes with them
+        # (dashboard.replay_from_acp). Frames already handed to a session handle
+        # are NOT released here: the handle keeps serving them to the dashboard
+        # after the death, so the memory is still real and the ledger must keep
+        # counting it. Those bytes return when the handle drops the frames --
+        # ``discard_replay`` (a transcript rewrite, or the owning provider's
+        # ``shutdown``) or ``unregister_session``.
+        # ``getattr`` because death can reach a runtime that never finished
+        # construction (a spawn that failed before the capture maps existed).
+        in_flight: dict[str, Any] = getattr(self, "_replay_capture", {})
+        owner = getattr(self, "_replay_owner", None)
+        if owner is not None:
+            for sid in list(in_flight):
+                _REPLAY_LEDGER.release(owner, sid)
+        for attr in (
+            "_replay_capture",
+            "_replay_capture_bytes",
+            "_replay_capture_overflow",
+            "_replay_capture_discarded",
+            "_replay_capture_frame_capped",
+        ):
+            store = getattr(self, attr, None)
+            if store is not None:
+                store.clear()
 
     # ── Protocol Interface (used by AcpSessionHandle) ──
 
@@ -2654,6 +2921,9 @@ class AcpRuntime:
     def unregister_session(self, session_id: str) -> None:
         """Unregister a session queue (called by AcpSessionHandle.destroy)."""
         self._session_queues.pop(session_id, None)
+        # The departing session's retained replay frames go with its handle, so
+        # their process-wide budget is returned here (dashboard.replay_from_acp).
+        _REPLAY_LEDGER.release(self._replay_owner, session_id)
         # Clean up any pending routed requests for this session
         stale = [k for k, v in self._routed_requests.items() if v == session_id]
         for k in stale:
@@ -3326,7 +3596,11 @@ class AcpRuntime:
             )
         budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
+        # Armed BEFORE the request goes out: the first replay frame can arrive
+        # before _send_and_await even returns control to this coroutine.
+        self._arm_replay_capture(resume_sid)
         loaded_session_id = ""
+        replay_frames: list[dict[str, Any]] = []
         try:
             # session/load is gated by the SAME MCP (re-)initialization as
             # session/new — kiro-cli re-initializes the session's servers on
@@ -3347,6 +3621,14 @@ class AcpRuntime:
             raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, mcp_servers) from exc
         finally:
             buffered_init = self._finish_session_init(loaded_session_id)
+            # Popped on EVERY exit so a failed or timed-out load never leaves an
+            # armed bucket that a later session reusing the id would fill.
+            replay_frames, _ = self._take_replay_capture(resume_sid)
+            if not loaded_session_id:
+                # The load did not resume: the frames are dropped with this
+                # frame, so their process-budget reservation goes with them.
+                replay_frames = []
+                _REPLAY_LEDGER.release(self._replay_owner, resume_sid)
 
         # Register the queue AFTER _send_and_await returns. During session/load
         # kiro-cli replays the full prior transcript on stdout; without a
@@ -3372,11 +3654,24 @@ class AcpRuntime:
             crew_agent=_crew,
         )
         handle.store_session_config(resp)
+        # The transcript kiro-cli just replayed, in wire order. Empty unless the
+        # runtime was built with capture_replay=True (dashboard.replay_from_acp).
+        handle.replay_updates = replay_frames
         # session/load echoes ``currentModelId`` exactly like session/new, and a
         # session persisted before the account's served list changed can come
         # back on a default the account does not serve — so the resumed session gets
-        # the same served-default check as a fresh one.
-        await handle.ensure_served_default()
+        # the same served-default check as a fresh one. It can raise on the wire
+        # (set_model), and the caller then falls back to create_session(); the
+        # session/load already succeeded, so terminate this resume_sid first --
+        # same discipline as the set_mode failure below. terminate_session
+        # unregisters the queue and returns the replay frames' process-budget
+        # bytes (dashboard.replay_from_acp); without it every such fallback
+        # leaks one capture's reservation.
+        try:
+            await handle.ensure_served_default()
+        except Exception:
+            await self.terminate_session(resume_sid)
+            raise
         # session/load re-initializes this session's servers, so the resumed
         # session gets its own report against the roster load re-declared.
         handle.mcp_session_report().begin_session(mcp_servers)

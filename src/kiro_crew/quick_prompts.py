@@ -183,3 +183,21 @@ def expand_quick_prompt(text: str) -> str | None:
     # format() would raise KeyError/ValueError on those and lose the turn.
     body = row.with_arg.replace("{arg}", arg) if arg else row.zero_arg
     return f"{_HEADER.format(token=token)}\n{body.strip()}\n\n{_STYLE_CONTRACT.strip()}\n"
+
+
+def quick_prompt_header(text: str) -> str | None:
+    """The ``[QUICK PROMPT <token>]`` header :func:`expand_quick_prompt` would emit for *text*.
+
+    For a reader that has to recognise a persisted quick-prompt turn (``/plain``)
+    inside the EXPANDED prompt the agent actually received: the persisted row
+    keeps the token, the wire carries the macro, and this header is the one line
+    both derive from. ``None`` when *text* is not a registered quick prompt, so a
+    caller falls back to ordinary text matching.
+    """
+    match = _QUICK_PROMPT_RE.match(text or "")
+    if not match:
+        return None
+    token = match.group(1).lower()
+    if token not in QUICK_PROMPTS:
+        return None
+    return _HEADER.format(token=token)

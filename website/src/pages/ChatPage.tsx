@@ -726,6 +726,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // read.
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
   const slotHasMore = useAppSelector(s => s.chat.slotHasMore)
+  // dashboard.replay_from_acp prototype: present only when the slot's rows
+  // were rebuilt from kiro-cli's session/load replay.
+  const transcriptSource = useAppSelector(s => activeSlot ? s.chat.slotTranscriptSource?.[activeSlot] : undefined)
   const slotOldestIndex = useAppSelector(s => s.chat.slotOldestIndex)
   const cursorIsForActiveSlot = useAppSelector(s => s.chat.slotCursorKey === s.chat.activeSlot)
   const loadingOlder = useAppSelector(s => s.chat.loadingOlder)
@@ -7156,6 +7159,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   key gates the bar to match the paging thunk's own precondition. */}
               {slotHasMore && cursorIsForActiveSlot && (
                 <EarlierMessagesBar loading={loadingOlder} failed={olderFailed} onLoad={handleLoadEarlier} onFocusRelease={() => scrollerRef.current?.focus()} />
+              )}
+              {transcriptSource?.source === 'acp_replay' && (
+                <div data-testid="transcript-source-banner" role="status" className="mx-auto my-2 flex max-w-3xl items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-[12px] leading-5 text-muted">
+                  <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[11px] font-medium text-accent">{i18nT('pages.chatPage.transcript_source_replay')}</span>
+                  <span>{i18nT('pages.chatPage.transcript_source_replay_detail', { replay: transcriptSource.report?.replay ?? 0, jsonl: transcriptSource.report?.jsonl ?? 0, turns: transcriptSource.report?.turns ?? 0 })}</span>
+                </div>
               )}
               </>}
               belowRows={<>

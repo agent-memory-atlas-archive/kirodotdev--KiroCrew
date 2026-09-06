@@ -4043,7 +4043,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             )
             return body_err
         assert body is not None  # read_bounded_json returns (dict, None) on success
-        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
+        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "replay_from_acp", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}
         # Read-only keys the GET exposes: both settings surfaces save with
@@ -4199,6 +4199,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     {"error": "session_grid must be a boolean"}, status=400
                 )
             updates["session_grid"] = val
+        if "replay_from_acp" in body:
+            val = body["replay_from_acp"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "replay_from_acp must be a boolean",
+                        "code": "invalid_replay_from_acp",
+                    },
+                    status=400,
+                )
+            updates["replay_from_acp"] = val
         if "mcp_app_panel" in body:
             val = body["mcp_app_panel"]
             if not isinstance(val, bool):
@@ -4365,6 +4379,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "verbosity": cfg.dashboard.verbosity,
             "quick_send": cfg.dashboard.quick_send,
             "session_grid": cfg.dashboard.session_grid,
+            "replay_from_acp": cfg.dashboard.replay_from_acp,
             "mcp_app_panel": cfg.dashboard.mcp_app_panel,
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "session_card_source_links": cfg.dashboard.session_card_source_links,

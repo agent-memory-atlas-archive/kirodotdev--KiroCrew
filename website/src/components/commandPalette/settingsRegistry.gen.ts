@@ -1088,6 +1088,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.show-the-agent-s-own-record-when-a-session-resumes-prototype",
+    "label": "Show the agent's own record when a session resumes (prototype)",
+    "labelKey": "pages.settings.chatPanel.render_history_from_acp_replay",
+    "description": "After a restart, a resumed session shows what the agent itself recorded — including its thinking and tool detail the log leaves out. Kiro Crew still keeps its own log.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.show-thinking-inline",
     "label": "Show Thinking Inline",
     "labelKey": "pages.settings.chatPanel.show_thinking_inline",

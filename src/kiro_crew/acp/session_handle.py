@@ -523,6 +523,12 @@ class AcpSessionHandle:
         # When True, destroy() skips the transcript unlink (subagent
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False
+        # The session/update frames kiro-cli replayed while this session was
+        # being resumed via session/load — raw ``params`` dicts in wire order.
+        # Filled by AcpRuntime.load_session() only when the runtime captures
+        # replay (dashboard.replay_from_acp); otherwise empty. Read by the
+        # dashboard's transcript-from-replay path, never by the dispatch loop.
+        self.replay_updates: list[dict[str, Any]] = []
         # Watchdog windows are snapshotted here (construction time) so the
         # dispatch loop never reads config; the liveness oracle carries the
         # per-session evidence state (tracked child, counter samples).
@@ -1805,6 +1811,19 @@ class AcpSessionHandle:
         self._crew_agent = crew_agent
         self._watchdog = settings if settings is not None else _load_watchdog_settings(crew_agent)
         self._oracle._sample_min_secs = self._watchdog.wellness_sample_secs
+
+    def discard_replay(self) -> None:
+        """Forget the frames kiro-cli replayed on resume (dashboard.replay_from_acp).
+
+        Called when the consumer rewrote the transcript the replay described.
+        Drops the frames AND returns their bytes to the runtime's process-wide
+        retention budget, so a long-lived session that was rewound or cleared
+        stops counting against later resumes.
+        """
+        self.replay_updates = []
+        release = getattr(self._runtime, "release_replay_retention", None)
+        if callable(release):
+            release(self._session_id)
 
     def store_session_config(self, resp: dict[str, Any]) -> None:
         """Extract configOptions and available models from session/new or session/load response.

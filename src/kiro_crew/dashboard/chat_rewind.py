@@ -29,6 +29,7 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
+    discard_slot_replay,
     effective_session_key,
     slot_history_key,
 )
@@ -598,6 +599,11 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     for question_id in retired_question_ids
                     if slot._question_pending.pop(question_id, None) is not None
                 ]
+                # dashboard.replay_from_acp: the live transcript is rewritten here,
+                # so the resume replay must not be rendered over it again (see
+                # chat_replay). Inside the commit -- AFTER every authorization,
+                # busy and boundary gate -- so a refused rewind discards nothing.
+                discard_slot_replay(state.sessions, slot)
                 slot.messages = prospective_slot.messages + arrived_rows
                 # Remove only the entries captured in the pre-await snapshot:
                 # an entry queued while the boundaries were pending belongs to

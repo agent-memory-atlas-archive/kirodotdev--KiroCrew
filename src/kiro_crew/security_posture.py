@@ -1487,6 +1487,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_orchestrator.py",
         "dashboard/chat_persistence.py",
         "dashboard/chat_regenerate.py",
+        # Resume-replay fold (dashboard.replay_from_acp, prototype, default
+        # off). ``agent_sdk/drivers/acp.py``'s ``fold_replay_updates`` applies
+        # the redactors its CALLER injects to every replayed text / tool field
+        # as the transcript rows are BUILT from session/load frames;
+        # ``chat_replay.py`` owns those redactors and scrubs the wire prompt
+        # text while merging the folded rows with the JSONL. Neither owns an
+        # output: the merged rows reach a human only through the registered
+        # dashboard detail / stream sinks (``chat_handlers.py`` serves them).
+        "agent_sdk/drivers/acp.py",
+        "dashboard/chat_replay.py",
         "dashboard/chat_rewind.py",
         "dashboard/chat_title.py",
         "dashboard/chat_utils.py",

@@ -3458,6 +3458,7 @@ class KiroCrewConfig:
                 prevent_sleep=_safe_bool(dashboard_data.get("prevent_sleep"), False),
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
+                replay_from_acp=_safe_bool(dashboard_data.get("replay_from_acp"), False),
                 mcp_app_panel=dashboard_data.get("mcp_app_panel", False),
                 auto_open_git_panel=_safe_bool(dashboard_data.get("auto_open_git_panel"), False),
                 session_card_source_links=_safe_bool(
@@ -4590,6 +4591,15 @@ class KiroCrewConfig:
                 tool_search_min_tokens=tool_search_min_tokens,
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_socket=_gw_socket,
+                # dashboard.replay_from_acp (prototype, default off). Passed to
+                # every provider this factory builds, but a capture only ARMS on
+                # session/load -- i.e. a resumed dashboard session; fresh
+                # session/new sessions (sub-agents, crons, background prompts)
+                # replay nothing and retain nothing. Retention is bounded per
+                # session (AcpRuntime._REPLAY_CAPTURE_MAX_BYTES) and across the
+                # whole process (_REPLAY_RETAINED_MAX_BYTES), so N concurrent
+                # resumes cannot compound past a fixed ceiling.
+                capture_replay=self.dashboard.replay_from_acp,
             )
 
         return _acp

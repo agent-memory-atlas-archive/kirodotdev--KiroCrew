@@ -750,6 +750,45 @@ aggregating without it would discard the only identifying datum; both are also
 bounded by the requests this runtime issued, so neither has the after-teardown
 steady state.
 
+**Transcript-replay capture (`dashboard.replay_from_acp`, default off).** The
+`session/load` replay above is the agent's own record of the conversation, and
+by default it is the largest thing the counted-drop path swallows. With the flag
+on, `AcpRuntime(capture_replay=True)` — set by the provider factory from the
+config — makes `load_session()` arm a per-sid bucket before the request goes out
+and the reader append that sid's `session/update` frames to it. Three bounds
+apply, and each discards the capture WHOLE rather than truncating it (a
+transcript missing its middle would render as a coherent-looking lie): a frame
+count (`_REPLAY_CAPTURE_MAX_FRAMES`; frames past it take the counted drop as
+before), a per-session byte ceiling on the serialized frames
+(`_REPLAY_CAPTURE_MAX_BYTES`), and a process-wide retained-byte budget shared by
+every runtime (`_REPLAY_RETAINED_MAX_BYTES`, kept in `_ReplayRetentionLedger`),
+so N concurrent resumes cannot compound past a fixed ceiling — a new capture that
+would exceed it is discarded and its consumer keeps the JSONL, never evicting a
+session already rendering from its frames. The ledger is keyed by the owning
+runtime as well as the sid: two multiplexed runtimes can resume the same sid at
+once, and each releases only the bytes it reserved, so the loser's discard or
+re-arm never pops the winner's frames from the budget. A session's bytes stay reserved while
+its handle holds the frames and are released when the consumer forgets the
+replay (`AcpSessionHandle.discard_replay`), the session is unregistered, or the
+load fails. The bucket is popped on every exit of the load, success or failure, so a
+failed or timed-out load never leaves an armed bucket for an id a later session
+might reuse, and the frames land on `AcpSessionHandle.replay_updates` in wire
+order. Nothing in the dispatch loop reads them: the only consumer is
+`dashboard/chat_replay.py`, which the slot-detail handler calls to rebuild a
+resumed session's transcript through the same `parse_session_update` the live
+path uses, overlaying from the JSONL only the rows the agent never saw (notices,
+approvals, steer/inject provenance, compaction banners). Measured against
+kiro-cli 2.21.0 (`research/acp-replay` in the operator workspace): the replay is
+authoritative for assistant text, thinking and every tool call's id / rawInput /
+rawOutput / status, while the v1/v2 engines collapse a tool's title to its raw
+name and drop `locations`, and no engine before v3 stamps a `messageId` — which
+is why the JSONL keeps being written and the overlay is keyed on `tool_call_id`
+and prompt-text containment rather than on a message identity. A second
+`session/load` for a sid a live process already holds is refused
+(`Session is active in another process`), so the frames are only ever available
+at the gateway's own resume; a dashboard cannot ask kiro-cli to replay a
+resident session on demand.
+
 **An oversize stdout line is a dropped frame, not a dead runtime.** A single
 JSON-RPC line over the reader's `_STDOUT_BUFFER_LIMIT` (10 MB) used to
 `_mark_dead` the runtime, which fails every pending future and poisons every

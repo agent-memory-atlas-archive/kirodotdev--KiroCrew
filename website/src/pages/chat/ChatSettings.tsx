@@ -111,6 +111,10 @@ export interface DashboardConfig {
   verbosity: 'default' | 'concise' | 'ultra' | 'answer_only'
   quick_send: boolean
   session_grid: boolean
+  /** Prototype (dashboard.replay_from_acp): render a resumed session's history
+   *  from kiro-cli's session/load replay. Optional — a gateway predating the
+   *  flag omits it. */
+  replay_from_acp?: boolean
   tail_fork_enabled: boolean
   link_previews: boolean
   mcp_app_panel: boolean

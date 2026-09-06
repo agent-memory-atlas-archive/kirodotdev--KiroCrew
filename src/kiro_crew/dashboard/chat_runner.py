@@ -105,6 +105,7 @@ from kiro_crew.dashboard.chat_utils import (
     _remove_queued_by_id,
     _validate_tool_name,
     build_recovery_requeue,
+    discard_slot_replay,
     effective_session_key,
     expire_slack_options,
     is_harness_slash_command,
@@ -9893,6 +9894,12 @@ async def _run_chat(
                         assistant_text = ""
                         _wsred.reset()
             elif event.kind == EVENT_CLEAR_STATUS:
+                # dashboard.replay_from_acp: the transcript is being wiped, so
+                # the resume replay the live provider still holds must go with
+                # it (frames, merge cache, cursor space) -- otherwise the next
+                # detail fetch rebuilds the cleared conversation from those
+                # frames. Same discipline as rewind / regenerate / edit-resend.
+                discard_slot_replay(state.sessions, slot)
                 slot.messages.clear()
                 # The boundary was captured against the pre-clear message
                 # count; the list is now empty, so reset it to 0 or the

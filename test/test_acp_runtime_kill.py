@@ -25,6 +25,14 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     r._pending_init_notifications = deque()
     r._routed_requests = {}
     r._session_queues = {}
+    # kill() -> _mark_dead() releases the replay-retention ledger for every sid
+    # this runtime knows and clears the capture state, so the bare runtime needs
+    # those containers too (empty: nothing is retained here).
+    r._replay_capture = {}
+    r._replay_capture_bytes = {}
+    r._replay_capture_overflow = {}
+    r._replay_capture_discarded = set()
+    r._replay_capture_frame_capped = set()
     r._stderr_lines = []
     r._pid = pid
     r._reader_task = None

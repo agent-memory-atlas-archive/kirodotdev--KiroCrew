@@ -676,8 +676,18 @@ interface ChatState {
   slotStopping: boolean
   slotState: SlotState
   slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
+  /** Where a slot's hydrated transcript came from (GET /api/chat/slots/{slot}
+   *  `transcript_source`). `acp_replay` only when `dashboard.replay_from_acp`
+   *  rebuilt the rows from kiro-cli's session/load replay; the report counts
+   *  rows per source so the banner can say how much the replay carried. */
+  slotTranscriptSource: Record<string, { source: string; report?: { replay: number; jsonl: number; turns: number } }>
   slotHasMore: boolean
   slotOldestIndex: number
+  /** Corpus the cursor above was cut from (`cursor_space`: 'acp_replay' |
+   *  'jsonl'), echoed back as `corpus=` on the next page. Present only while
+   *  the backend offers a resume replay for the slot (dashboard.replay_from_acp);
+   *  optional so persisted states predating the field still load. */
+  slotCursorSpace?: string
   /** Slot the cursor above describes. A switch moves activeSlot first, so
    *  without this the cursor silently reads as the new chat's. */
   slotCursorKey: string | null
@@ -707,7 +717,7 @@ interface ChatState {
    *  in `rejected` -- or it silently leaks across a failed switch. */
   slotSwitchOrigin: {
     key: string
-    cursor: { hasMore: boolean; nextBefore: number; olderError: boolean } | null
+    cursor: { hasMore: boolean; nextBefore: number; olderError: boolean; cursorSpace?: string } | null
     /** The active run mirror at capture time, restored verbatim. Kept CURRENT
      *  by the non-active run writers themselves (`syncOriginRun` at every
      *  `slotRun` state write), so a transition mid-flight lands in the
@@ -979,6 +989,7 @@ const initialState: ChatState = {
   slotStopping: false,
   slotState: 'idle',
   slotStatusDetail: {},
+  slotTranscriptSource: {},
   slotHasMore: false,
   slotOldestIndex: 0,
   slotCursorKey: null,
@@ -1411,7 +1422,7 @@ export type CoverageRow = {
   ts?: string
   role?: string
   content?: unknown
-  meta?: { mid?: unknown }
+  meta?: { mid?: unknown; source?: unknown }
 }
 
 /** A row's identity for the coverage test, in the same vocabulary `deduplicateByMid`
@@ -1551,12 +1562,15 @@ let _abortLoadOlder: (() => void) | null = null
  * writing the offset without re-keying leaves paging refusing forever, and
  * re-keying without the offset pages the wrong chat at the wrong place.
  */
-function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: number): void {
+function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: number, cursorSpace?: string): void {
   // A switch installs a cursor only for the slot it targets, so a writer that
   // activated a different slot must write: nothing else will.
   if (state.slotSwitchRequestId !== null && state.slotSwitchTarget === state.activeSlot) return
   state.slotHasMore = hasMore
   state.slotOldestIndex = hasMore ? nextBefore : 0
+  // Travels with the cursor: a cursor without its corpus is applied to whatever
+  // corpus the backend picks next, which is the skip/duplicate this prevents.
+  state.slotCursorSpace = hasMore ? cursorSpace : undefined
   state.slotCursorKey = state.activeSlot
   // One global flag describes a per-slot fetch, so a re-base clears it here: the
   // next slot must not inherit the previous slot's red retry state.
@@ -1567,6 +1581,16 @@ export function isSupersededPagingRejection(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
   const name = (err as { name?: unknown }).name
   return name === 'AbortError' || name === 'ConditionError'
+}
+
+/** A "load earlier" the backend refused with 409 `cursor_stale`: the cursor was
+ *  cut from a replay-merged transcript (dashboard.replay_from_acp) that has since
+ *  been discarded, so its offsets no longer address the rows. Duck-typed on
+ *  `status` + body like `isNotFoundError`, so a mocked `api/client` still matches. */
+export function isStaleCursorRejection(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const { status, body } = err as { status?: unknown; body?: unknown }
+  return status === 409 && typeof body === 'string' && body.includes('"cursor_stale"')
 }
 
 /** Messages a background pane hydrates. Bounds both pane hydrate paths: the
@@ -1779,14 +1803,27 @@ function olderHeadAbovePage(
  *  in the first and silently drop scrollback in the second. */
 const CLIENT_ONLY_ROLES: ReadonlySet<string> = new Set(['queued', 'streaming', 'thinking', 'permission'])
 
+/** A `thinking` row the SERVER sent: dashboard.replay_from_acp rebuilds a resumed
+ *  transcript from the agent's own record, which carries the reasoning the JSONL
+ *  never persisted, and tags every such row `meta.source === 'acp_replay'`. Unlike
+ *  a live-broadcast thinking block it comes back on every detail fetch, so it is
+ *  server-backed for preservation and cursor arithmetic -- holding it out as
+ *  client-only and re-seating it would stack a second copy per refresh. */
+export function isReplayBackedThinking(m: { role?: string; meta?: { source?: unknown } }): boolean {
+  return m.role === 'thinking' && m.meta?.source === 'acp_replay'
+}
+
 /** Does this row survive in the server's transcript?
  *
  *  Typed on the ROLE alone rather than on `ChatMessage`, so the coverage comparison
  *  below can ask the same question of its own narrower row shape. One predicate is the
  *  point: a second copy of this list is how a caller ends up agreeing with three of the
  *  four roles. A row carrying no role at all reads as durable, which is the direction
- *  that keeps a genuine hole observable. */
-function isDurableRow(m: { role?: string }): boolean {
+ *  that keeps a genuine hole observable. The one provenance exception is a replayed
+ *  thinking row (`isReplayBackedThinking`): same role as the client-only block, but the
+ *  server owns it. */
+function isDurableRow(m: { role?: string; meta?: { source?: unknown } }): boolean {
+  if (isReplayBackedThinking(m)) return true
   return !CLIENT_ONLY_ROLES.has(m.role ?? '')
 }
 
@@ -1884,7 +1921,7 @@ async function fetchSlotDetail(key: string, limit?: number) {
   // unbounded to keep the one-arg shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   type QueueItem = string | { content: string; id: string }
-  return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined, transcriptSource: typeof d.transcript_source === 'string' ? { source: d.transcript_source, report: d.replay_report } : undefined, cursorSpace: typeof d.cursor_space === 'string' ? d.cursor_space : undefined }
 }
 
 /** SINGLE hydration path for the slot-detail context-meter fields — the one
@@ -2272,6 +2309,10 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
       priorText.set(t, (priorText.get(t) ?? 0) + 1)
     }
     if (m.role !== 'thinking' || !m.content) continue
+    // A replayed thinking block is SERVER-backed: the page being merged carries
+    // it again, so preserving this copy would seat it twice. Only live-broadcast
+    // reasoning (no `source`) needs re-placing.
+    if (isReplayBackedThinking(m)) continue
     let anchor: ThinkingAnchor | null = null
     let anchorIdx = -1
     let confirmed = false
@@ -2766,6 +2807,30 @@ export const refreshSlot = createAsyncThunk(
      * anchor is guarded rather than indexed blind. */
     const spansView = serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
     const overlapsView = anchors(page.messages[0]?.meta?.mid)
+    /* A page cut from a DIFFERENT corpus than the view's cursor cannot be stitched
+     * either (dashboard.replay_from_acp). The kept-head arithmetic subtracts the
+     * head's row count from the page's cursor, and that is only sound inside one
+     * index space: a JSONL view whose refresh comes back merged from the replay
+     * (the provider came up between the two fetches) holds a head counted in
+     * JSONL rows while the cursor now counts replay rows -- replay-only rows above
+     * the overlap then sit in no page and no head, the same scrollback loss as a
+     * disjoint page. The corpus is named by `cursor_space` on both sides
+     * (absent = JSONL), so the transition is detectable exactly, and the answer is
+     * the same as for a disjoint page: one unbounded round trip. A page that
+     * reaches the start of history replaces the view whole, so no arithmetic
+     * crosses corpora and the check is skipped -- otherwise a short session with
+     * the flag on would pay the extra fetch on every refresh. */
+    const corpusChanged = (page.cursorSpace ?? 'jsonl') !== (after.slotCursorSpace ?? 'jsonl')
+    if (page.hasMore && corpusChanged) {
+      const whole = await fetchSlotDetail(key)
+      /* The unbounded read is only a whole-history read while nothing is
+       * rotated: once a size rotation has moved rows into `archive/`, it still
+       * comes back `hasMore` with a cursor in the OTHER corpus. Handing that
+       * page to the replacing reducer would hide the scrollback the view already
+       * holds behind a cursor that cannot stitch to it. Declining keeps the
+       * current transcript and cursor; the next refresh retries. */
+      return whole.hasMore ? null : whole
+    }
     return !page.hasMore || spansView || overlapsView ? page : fetchSlotDetail(key)
   },
 )
@@ -3025,7 +3090,7 @@ export function abortActiveOlderFetch(): void {
 
 export const loadOlderMessages = createAsyncThunk(
   'chat/loadOlder',
-  async (_, { getState, rejectWithValue }) => {
+  async (_, { getState, dispatch, rejectWithValue }) => {
     const state = (getState() as { chat: ChatState }).chat
     if (!state.activeSlot || !state.slotHasMore) return null
     if (state.slotOldestIndex <= 0) return null
@@ -3042,7 +3107,12 @@ export const loadOlderMessages = createAsyncThunk(
       const isNarrow = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
         && window.matchMedia('(max-width: 640px)').matches
       const walkLimit = isNarrow ? OLDER_PAGE_LIMIT : OLDER_WALK_PAGE_LIMIT
-      const d = await api.chatSlotDetail(slot, walkLimit, state.slotOldestIndex, controller.signal)
+      // The corpus the cursor was cut from rides along only when the backend
+      // named one (dashboard.replay_from_acp on offer); the default call shape
+      // is unchanged so default installs send exactly what they always did.
+      const d = state.slotCursorSpace
+        ? await api.chatSlotDetail(slot, walkLimit, state.slotOldestIndex, controller.signal, state.slotCursorSpace)
+        : await api.chatSlotDetail(slot, walkLimit, state.slotOldestIndex, controller.signal)
       // LANDING BUFFER: the fetch overlaps the reader's gesture, but the
       // MUTATION must not -- splicing rows mid-glide races the pre-paint
       // anchor machinery against the gesture's own pixel-addressed window
@@ -3052,11 +3122,24 @@ export const loadOlderMessages = createAsyncThunk(
       // pauses still gets the page (see scrollQuiet.ts).
       await whenScrollQuiet(controller.signal)
       if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-      return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+      return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0, cursorSpace: typeof d.cursor_space === 'string' ? d.cursor_space : undefined }
     } catch (e) {
       // Rethrow a cancellation so the reducer can tell it from a real failure;
       // a genuine failure names its slot, because a switch may have moved on.
       if (isSupersededPagingRejection(e)) throw e
+      // The cursor was cut from a replay-merged transcript the backend has since
+      // discarded (regenerate / rewind / edit / clear / reset landed between two
+      // pages). Its offsets no longer address these rows, so instead of a red
+      // retry bar re-read the first page: refreshSlot replaces the view with a
+      // count-matched bounded read and installs a fresh cursor to page from.
+      if (isStaleCursorRejection(e)) {
+        // Await the refetch: a first page that ALSO fails must surface as this
+        // load's failure (the red retry bar via `rejected`), not vanish behind a
+        // fire-and-forget dispatch that leaves "load earlier" a silent dead click.
+        const refreshed = await dispatch(refreshSlot(slot))
+        if (refreshSlot.rejected.match(refreshed)) return rejectWithValue({ slot })
+        return null
+      }
       return rejectWithValue({ slot })
     } finally {
       // Only clear our own handle: a newer fetch may already have replaced it.
@@ -5517,7 +5600,7 @@ const chatSlice = createSlice({
           state.slotSwitchOrigin = state.activeSlot === null ? null : {
             key: state.activeSlot,
             cursor: state.slotCursorKey === state.activeSlot
-              ? { hasMore: state.slotHasMore, nextBefore: state.slotOldestIndex, olderError: state.slotOlderError }
+              ? { hasMore: state.slotHasMore, nextBefore: state.slotOldestIndex, olderError: state.slotOlderError, cursorSpace: state.slotCursorSpace }
               : null,
             run: { state: state.slotState, running: state.slotRunning, stopping: state.slotStopping },
           }
@@ -5581,6 +5664,15 @@ const chatSlice = createSlice({
         const comparable = (action.payload as { comparableTotal?: number }).comparableTotal
         retainServerTotal(state, key, comparable ?? action.payload.total, running,
           undefined, comparable !== undefined || action.payload.boundedRead)
+        // Provenance is per RESPONSE: a later fetch that carries none (flag turned
+        // off, provider gone, rotated archive) must clear it or the banner lies.
+        // Optional access: test fixtures and persisted states predating the field
+        // build ChatState without it.
+        // Read the CACHED transcript's corpus first: the kept-head cut below may
+        // only stitch rows that were cut from the same corpus as this page.
+        const cachedCorpus = state.slotTranscriptSource?.[safeKey(key)]?.source === 'acp_replay' ? 'acp_replay' : 'jsonl'
+        if (action.payload.transcriptSource) (state.slotTranscriptSource ??= {})[safeKey(key)] = action.payload.transcriptSource
+        else if (state.slotTranscriptSource) delete state.slotTranscriptSource[safeKey(key)]
         state.slotState = running ? 'streaming' : 'idle'
         // Mark stale permissions as resolved so ApprovalBar ignores them
         if (!running) {
@@ -5662,8 +5754,16 @@ const chatSlice = createSlice({
          * the head are collapsed by the `hydrateQueuedBubbles` call below, which
          * strips every queued row before re-adding the authoritative server set.
          */
-        const priorServerRows = existing.filter(m => m.role !== 'thinking')
-        const { olderHead } = olderHeadAbovePage(priorServerRows, preserved)
+        const priorServerRows = existing.filter(m => m.role !== 'thinking' || isReplayBackedThinking(m))
+        /* dashboard.replay_from_acp: a head may only be kept when it and the page
+         * were cut from the SAME corpus. The cursor shift below subtracts the
+         * head's row count from the page's cursor, which is sound inside one index
+         * space only -- a JSONL head above a replay-merged page would put its
+         * replay-only rows in no page and no head. A page that reaches the start
+         * of history replaces the view whole, so the corpus does not matter there. */
+        const pageCorpus = action.payload.cursorSpace ?? 'jsonl'
+        const sameCorpus = !hasMore || pageCorpus === cachedCorpus
+        const { olderHead } = sameCorpus ? olderHeadAbovePage(priorServerRows, preserved) : { olderHead: [] as ChatMessage[] }
         if (olderHead.length) next = [...olderHead, ...next]
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
@@ -5679,7 +5779,7 @@ const chatSlice = createSlice({
          */
         const keptCursor = pagingCursorAfterKeptHead(
           hasMore, nextBefore, serverRowCount(olderHead))
-        setPagingCursor(state, keptCursor.hasMore, keptCursor.nextBefore)
+        setPagingCursor(state, keptCursor.hasMore, keptCursor.nextBefore, action.payload.cursorSpace)
         // Hydrate queued messages from the backend queue field through the
         // single shared path (hydrateQueuedBubbles) so this reducer cannot drift
         // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
@@ -5773,7 +5873,7 @@ const chatSlice = createSlice({
           // Re-key the paging cursor when the captured one described the origin;
           // no valid cursor existed otherwise, and guessing pages the wrong chat.
           if (origin.cursor) {
-            setPagingCursor(state, origin.cursor.hasMore, origin.cursor.nextBefore)
+            setPagingCursor(state, origin.cursor.hasMore, origin.cursor.nextBefore, origin.cursor.cursorSpace)
             // setPagingCursor clears the flag for a fresh fetch; this is a
             // RESTORE, so the origin's real retry-bar state comes back instead.
             state.slotOlderError = origin.cursor.olderError
@@ -5792,6 +5892,12 @@ const chatSlice = createSlice({
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
         retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
+        // Provenance is per RESPONSE: a later fetch that carries none (flag turned
+        // off, provider gone, rotated archive) must clear it or the banner lies.
+        // Optional access: test fixtures and persisted states predating the field
+        // build ChatState without it.
+        if (action.payload.transcriptSource) (state.slotTranscriptSource ??= {})[safeKey(key)] = action.payload.transcriptSource
+        else if (state.slotTranscriptSource) delete state.slotTranscriptSource[safeKey(key)]
         // Merge permission messages: prefer state perms (have frontend resolved flags)
         // but include API perms for any we don't have locally (e.g. arrived while disconnected)
         const statePerms = new Map<string, typeof state.messages[0]>()
@@ -5831,7 +5937,7 @@ const chatSlice = createSlice({
          * unidentified page declines the cut rather than guessing -- the same
          * boundary the two existing head-keeping reducers already stand on.
          */
-        const priorServerRows = state.messages.filter(m => m.role !== 'thinking' && m.role !== 'permission')
+        const priorServerRows = state.messages.filter(m => (m.role !== 'thinking' || isReplayBackedThinking(m)) && m.role !== 'permission')
         const { olderHead } = olderHeadAbovePage(priorServerRows, messages)
         /* The cursor is a row OFFSET, so a kept head shifts it down by its own
          * server-row count. Both boundary cases (head proves completeness / the two
@@ -5880,7 +5986,7 @@ const chatSlice = createSlice({
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
-        setPagingCursor(state, keptCursor.hasMore, keptCursor.nextBefore)
+        setPagingCursor(state, keptCursor.hasMore, keptCursor.nextBefore, action.payload.cursorSpace)
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
@@ -5892,6 +5998,14 @@ const chatSlice = createSlice({
         if (state.activeSlot === key) return
         if (!state.slotMessages) state.slotMessages = {}
         if (!state.slotPaneHasMore) state.slotPaneHasMore = {}
+        // Provenance travels with the cached rows (dashboard.replay_from_acp):
+        // switchSlot reads the CACHED transcript's corpus before it decides
+        // whether its page can be stitched onto the kept head, so a warm that
+        // left the source unset would make a replay-backed cache read as JSONL
+        // and drop the scrollback it holds. Same per-response rule as
+        // switchSlot/refreshSlot: a fetch carrying no source clears it.
+        if (action.payload.transcriptSource) (state.slotTranscriptSource ??= {})[safeKey(key)] = action.payload.transcriptSource
+        else if (state.slotTranscriptSource) delete state.slotTranscriptSource[safeKey(key)]
         // Preserve permission flags resolved client-side but not yet reflected
         // in the refetched history (a grid pane can resolve an approval between
         // the server snapshot and this warm), then collapse the pane's
@@ -5927,7 +6041,7 @@ const chatSlice = createSlice({
         // second copy of a block the helper re-places at the end. Held out here
         // and restored by that helper, which appends any block it cannot anchor,
         // so holding it out cannot lose one.
-        const prior = priorAll.filter(m => m.role !== 'thinking')
+        const prior = priorAll.filter(m => m.role !== 'thinking' || isReplayBackedThinking(m))
         // Identity is meta.mid only: two rows can share a ts, so a ts match can
         // cut at the wrong row and drop one. No mid means decline, not guess.
         const { cutIdx, olderHead } = olderHeadAbovePage(prior, warmed)
@@ -6220,7 +6334,7 @@ const chatSlice = createSlice({
           const seated = reinsertThinkingOrphans(state.messages, parked[key] ?? [], !action.payload.hasMore)
           state.messages = seated.list
           parked[key] = seated.remaining
-          setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
+          setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore, action.payload.cursorSpace)
         }
       })
       .addCase(loadOlderMessages.rejected, (state, action) => {

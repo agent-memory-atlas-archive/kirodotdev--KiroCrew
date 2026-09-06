@@ -309,6 +309,7 @@ class AcpProvider(LLMProvider):
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
         crew_agent: str | None = None,
+        capture_replay: bool = False,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -353,6 +354,11 @@ class AcpProvider(LLMProvider):
         # conversation_log into the fresh session on the first prompt so the slot
         # is not context-free.
         self._history_replay_needed: bool = False
+        # dashboard.replay_from_acp: ask the kiro-shared runtime to retain the
+        # session/update frames kiro-cli replays during session/load so the
+        # dashboard can render history from them (see replay_updates). Off by
+        # default — the runtime then keeps its counted-drop behaviour.
+        self._capture_replay: bool = bool(capture_replay)
         # Terminal compaction status captured by compact() while draining its
         # prompt turn; consumed by wait_for_compaction() (see compact()).
         self._compact_result: dict | None = None
@@ -393,6 +399,27 @@ class AcpProvider(LLMProvider):
     def client(self) -> AcpClient:
         """Expose underlying client for backward compat (e.g. is_ready check)."""
         return self._client
+
+    @property
+    def replay_updates(self) -> list[dict[str, Any]] | None:
+        """Transcript frames kiro-cli replayed when this session was resumed.
+
+        ``None`` when replay capture is off for this provider — the caller then
+        has no replay to render from and keeps the JSONL transcript. A list
+        (possibly empty: a fresh session/new replays nothing) once capture is
+        on and the live session exists. Raw ``session/update`` params in wire
+        order; :mod:`kiro_crew.dashboard.chat_replay` turns them into rows.
+        """
+        if not self._capture_replay:
+            return None
+        frames = getattr(self._client, "replay_updates", None)
+        return list(frames) if isinstance(frames, list) else []
+
+    def discard_replay(self) -> None:
+        """Drop the resume replay after a transcript rewrite (see LLMProvider)."""
+        discard = getattr(self._client, "discard_replay", None)
+        if callable(discard):
+            discard()
 
     @property
     def child_fidelity_aware(self) -> bool:
@@ -831,6 +858,7 @@ class AcpProvider(LLMProvider):
             mcp_gateway_socket=mcp_gateway_socket,
             acp_backend=self._client.backend,
             crew_agent=self._crew_agent,
+            capture_replay=self._capture_replay,
         )
         _t_spawn = time.monotonic()
         try:
@@ -931,6 +959,7 @@ class AcpProvider(LLMProvider):
                         mcp_gateway_socket=mcp_gateway_socket,
                         acp_backend=self._client.backend,
                         crew_agent=self._crew_agent,
+                        capture_replay=self._capture_replay,
                     )
                     try:
                         await runtime.spawn()

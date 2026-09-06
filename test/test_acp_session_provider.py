@@ -681,6 +681,33 @@ class TestAcpSessionProviderOwnsRuntime:
         # Should not raise
         await provider.shutdown()
 
+    @pytest.mark.asyncio
+    async def test_shutdown_discards_the_handles_replay_before_killing(self):
+        """The resume replay the handle holds is dropped -- and its retention
+        reservation returned -- BEFORE the runtime is killed: kill() itself only
+        releases captures still in flight, so an owned teardown that skipped this
+        would pin the bytes for the gateway's lifetime."""
+        order: list[str] = []
+        handle = _make_handle()
+        handle.discard_replay = MagicMock(side_effect=lambda: order.append("discard"))
+        runtime = _make_runtime()
+        runtime.kill = AsyncMock(side_effect=lambda **_: order.append("kill"))
+        provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
+
+        await provider.shutdown()
+        assert order == ["discard", "kill"]
+
+    @pytest.mark.asyncio
+    async def test_shutdown_survives_discard_replay_failure(self):
+        handle = _make_handle()
+        handle.discard_replay = MagicMock(side_effect=RuntimeError("boom"))
+        runtime = _make_runtime()
+        runtime.kill = AsyncMock()
+        provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
+
+        await provider.shutdown()
+        runtime.kill.assert_awaited_once()
+
 
 class TestAcpSessionProviderRound4Parity:
     """Round-4 AcpClient call-surface parity fixes.

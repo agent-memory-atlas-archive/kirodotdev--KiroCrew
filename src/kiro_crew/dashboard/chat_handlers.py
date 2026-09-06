@@ -96,6 +96,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     history_corpus_unreadable,
     slot_history_key,
+    slot_replay_updates,
     subagents_attached,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
@@ -1915,6 +1916,67 @@ def _append_unflushed_tail(
         return merged_idless
 
 
+# The two corpora a "load earlier" cursor can be cut from under
+# dashboard.replay_from_acp; the value a page returns as ``cursor_space`` and
+# the client echoes back as ``corpus=``. Anything else is treated as absent.
+_CURSOR_SPACES = frozenset({"acp_replay", "jsonl"})
+
+
+def _replay_updates_for(state: DashboardState, slot: Any) -> list[dict[str, Any]] | None:
+    """The session/load replay frames the live provider holds for ``slot``, if any.
+
+    ``None`` when there is no live provider or it offers no replay — every
+    default install, and every backend whose provider leaves
+    ``LLMProvider.replay_updates`` at its declared default. An empty list means
+    capture is on but nothing was replayed (a fresh session/new), which the
+    caller also treats as "use the JSONL". Thin alias of
+    :func:`kiro_crew.dashboard.chat_utils.slot_replay_updates`, kept so the
+    handler's call sites read against ``state``.
+    """
+    return slot_replay_updates(state.sessions, slot)
+
+
+async def _merge_replay_corpus(
+    state: DashboardState, slot: Any, corpus: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], str | None, dict[str, int] | None]:
+    """dashboard.replay_from_acp: rebuild a WHOLE transcript corpus from the resume replay.
+
+    Returns ``(rows, transcript_source, replay_report)``. When the live provider
+    captured kiro-cli's session/load replay for this session, the rows are
+    rebuilt from those frames through the live parser and only the JSONL rows the
+    agent never saw are overlaid (see :mod:`kiro_crew.dashboard.chat_replay`);
+    ``transcript_source`` is then ``"acp_replay"``. Otherwise -- flag off (the
+    provider answers None), no live provider yet, nothing replayed (a fresh
+    session/new), or a merge failure -- the corpus comes back untouched with
+    ``(None, None)``, so the caller serves the JSONL exactly as before.
+
+    Takes the FULL corpus on purpose: the merge is a rebuild, so it is coherent
+    only when every page a client walks is cut from the same merged list. Off-loop
+    because it walks every frame of a possibly multi-thousand-frame replay.
+
+    The replay module is imported HERE, after frames are confirmed present, not
+    at module scope: this handler module is loaded by route registration on the
+    gateway boot path, and the feature is flagged off by default (AUTOSDE
+    ``no-new-work-on-gateway-boot-path`` rule 5 -- gate the import, not just
+    the handler).
+    """
+    frames = _replay_updates_for(state, slot)
+    if not frames:
+        return corpus, None, None
+    from kiro_crew.dashboard.chat_replay import (  # gated import: flag-off installs never load it
+        merge_replay_transcript_cached,
+    )
+
+    try:
+        merged, report = await asyncio.to_thread(
+            merge_replay_transcript_cached, slot.key, frames, corpus
+        )
+    except Exception:
+        logger.warning("replay transcript merge failed for %s", slot.key, exc_info=True)
+        return corpus, None, None
+    return merged, "acp_replay", report
+
+
 async def api_chat_slot_detail(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot} — message history for a slot.
 
@@ -1942,6 +2004,13 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
 
     limit_raw = request.query.get("limit")
     before_raw = request.query.get("before")
+    # dashboard.replay_from_acp: the corpus the client's `before` cursor was cut
+    # from, echoed from the previous page's `cursor_space`. Unknown values are
+    # treated as absent (fail closed to the JSONL corpus), never rejected.
+    corpus_raw = request.query.get("corpus")
+    # Set only when a replay is on offer for this slot; absent from the
+    # response otherwise so default installs gain no new field.
+    cursor_space: str | None = None
 
     # Both params arrive as strings and were converted at their point of use, so a
     # non-integer escaped as a ValueError and the client saw a 500 for what is
@@ -2098,6 +2167,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # would name a different row than the one rendered. That shape is
         # served from the true chained corpus below instead.
         next_before = 0
+        _rotated_any = False
         if state.conversation_log:
             try:
                 rotated = await asyncio.to_thread(
@@ -2113,6 +2183,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 # thing that knows the difference, so it has to answer here.
                 logger.warning("rotated-archive read failed", exc_info=True)
                 return history_corpus_unreadable()
+            _rotated_any = bool(rotated)
             if rotated:
                 rotated_count = len(_collapse_wire_rows(rotated))
                 mid_rotation = False
@@ -2215,6 +2286,76 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # `done` is already excluded upstream (`_UNOWED_WINDOW_ROLES`), so on
         # this path the reduction's remaining job is folding the chunk runs.
         all_msgs = await asyncio.to_thread(_collapse_wire_rows, all_msgs)
+        # dashboard.replay_from_acp: rebuild the WHOLE corpus from the resume
+        # replay BEFORE the slice below, so `total`, `has_more` and
+        # `next_before` are all computed in the merged index space and every
+        # page the client walks is cut from the same corpus. Merging a page
+        # after the cut would hand "load earlier" a cursor into rows that no
+        # longer match what was rendered. See _merge_replay_corpus.
+        #
+        # ONE index space per cursor CHAIN, carried IN the cursor: every page
+        # that hands out `next_before` also names the corpus it was cut from
+        # (`cursor_space`), and the client echoes it back as `corpus=` with the
+        # next `before`. The first page (no `before`) decides -- merged replay,
+        # or the JSONL once a rotated archive exists, because the unbounded
+        # path hands out a JSONL-space cursor for that shape and both first
+        # pages a client can receive must agree -- and every follow-up page
+        # reuses the decision it is handed, so a size rotation landing between
+        # two pages cannot flip the corpus under a cursor the client already
+        # holds (a replay-space cursor applied to JSONL-space rows skips or
+        # duplicates transcript entries). Per-request state only: two clients
+        # paginating one slot each carry their own space, nothing is shared.
+        # The chained read above is the FULL corpus, so merging stays valid
+        # across a rotation. Probed only when a replay is actually on offer
+        # (flag on, live provider), so default installs pay no extra read; a
+        # failed probe and a follow-up page that names no corpus (a caller
+        # predating the field) both fail CLOSED to the JSONL corpus, and a
+        # replay-space cursor whose replay has since been discarded is refused
+        # (409 `cursor_stale`) rather than applied to the JSONL.
+        conversation_log = state.conversation_log
+        replay_on_offer = bool(conversation_log and _replay_updates_for(state, slot))
+        chain_space: bool | None = None
+        if before is not None and corpus_raw in _CURSOR_SPACES:
+            chain_space = corpus_raw == "acp_replay"
+        if chain_space and not replay_on_offer:
+            # The client holds a cursor cut from a merged replay corpus that no
+            # longer exists (a regenerate / rewind / edit / `/clear` / session
+            # reset discarded the replay in between). Its offsets index a
+            # corpus of a different shape, so slicing the JSONL with it would
+            # skip or duplicate rows silently. Refuse instead: the client
+            # re-reads the first page and paginates from a fresh cursor.
+            return web.json_response(
+                {
+                    "error": "the page cursor was cut from a transcript that has been "
+                    "rebuilt; reload the conversation and page again",
+                    "code": "cursor_stale",
+                },
+                status=409,
+            )
+        if not replay_on_offer or conversation_log is None:
+            merge_replay = False
+        elif chain_space is not None:
+            merge_replay = chain_space
+        elif before is not None:
+            merge_replay = False
+        else:
+            try:
+                merge_replay = not bool(
+                    await asyncio.to_thread(
+                        conversation_log.read_rotated_messages_chained, history_key
+                    )
+                )
+            except Exception:
+                logger.warning("rotated-archive probe failed for replay merge", exc_info=True)
+                merge_replay = False
+        if merge_replay:
+            all_msgs, transcript_source, replay_report = await _merge_replay_corpus(
+                state, slot, all_msgs
+            )
+        else:
+            transcript_source, replay_report = None, None
+        if replay_on_offer:
+            cursor_space = "acp_replay" if transcript_source == "acp_replay" else "jsonl"
         total = len(all_msgs)
         if before is not None:
             end = max(0, min(before, total))
@@ -2228,6 +2369,26 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # `_prepare_messages` drops `done`, so the returned row count is not
         # the span consumed here.
         next_before = start
+
+    if limit_raw is None and before_raw is None:
+        # Unbounded path: merge only when the session has NO rotated archive at
+        # all -- the same rule the paginated path applies -- so both responses
+        # a client can receive for one session are cut from the same corpus.
+        # With an archive the response carries a JSONL-space cursor (or serves
+        # the true chained corpus whose pages will), and a rebuilt list under
+        # that cursor would put the shifted archived rows out of reach.
+        if not has_more and not _rotated_any:
+            messages, transcript_source, replay_report = await _merge_replay_corpus(
+                state, slot, list(messages)
+            )
+            total = len(messages)
+        else:
+            transcript_source, replay_report = None, None
+        # Name the chain's index space for the paginated follow-ups: with an
+        # archive the cursor handed out here is JSONL-space, so the pages it
+        # addresses must not merge; the client echoes it back as `corpus=`.
+        if state.conversation_log and _replay_updates_for(state, slot):
+            cursor_space = "acp_replay" if transcript_source == "acp_replay" else "jsonl"
 
     # Snapshot every slot field the response needs BEFORE leaving the event
     # loop: the render below runs in a worker thread, and it must not read
@@ -2267,6 +2428,20 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 "total": total,
                 "has_more": has_more,
                 "next_before": next_before,
+                # Present only when dashboard.replay_from_acp rebuilt the rows
+                # from kiro-cli's resume replay ("acp_replay"); absent on the
+                # default JSONL path so default installs gain no new field.
+                # `replay_report` counts rows per source.
+                **(
+                    {"transcript_source": transcript_source, "replay_report": replay_report}
+                    if transcript_source and replay_report is not None
+                    else {}
+                ),
+                # The corpus `next_before` was cut from ("acp_replay" | "jsonl"),
+                # for the client to echo back as `corpus=` on the next page so
+                # the whole cursor chain is sliced from one corpus. Present
+                # only while a replay is on offer for this slot.
+                **({"cursor_space": cursor_space} if cursor_space else {}),
                 # Seeds the context meter on open. Turn-scoped WS frames alone
                 # leave it empty for a session reopened in a new tab; omitted
                 # entirely (not zeroed) when genuinely unknown, so the frontend

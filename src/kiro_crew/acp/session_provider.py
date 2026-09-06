@@ -177,7 +177,20 @@ class AcpSessionProvider(LLMProvider):
         - Parent sessions (owns_runtime=True): kill the entire runtime.
         - Subagent sessions (owns_runtime=False): cancel any in-flight turn,
           then destroy the handle only.
+
+        Either way the handle's resume replay goes first: the frames kiro-cli
+        replayed on ``session/load`` (dashboard.replay_from_acp) are held by the
+        handle and counted in the runtime's process-wide retention ledger, and
+        ``runtime.kill()`` on its own releases neither -- it only knows about
+        captures still in flight. Without this a torn-down main-chat session
+        would pin its reservation for the gateway's lifetime.
         """
+        discard = getattr(self._handle, "discard_replay", None)
+        if callable(discard):
+            try:
+                discard()
+            except Exception:
+                logger.debug("AcpSessionProvider.shutdown: discard_replay failed", exc_info=True)
         if self._owns_runtime:
             try:
                 await self._runtime.kill(expected=True)  # deliberate session teardown
@@ -763,6 +776,27 @@ class AcpSessionProvider(LLMProvider):
     @resumed.setter
     def resumed(self, value: bool) -> None:
         self._resumed_flag = value
+
+    @property
+    def replay_updates(self) -> list[dict[str, Any]]:
+        """The session/update frames kiro-cli replayed on resume (wire order).
+
+        Empty unless the owning runtime captured them (dashboard.replay_from_acp)
+        AND this session came up through session/load. A fresh session/new has
+        nothing to replay, so an empty list is also what a brand-new
+        conversation reports.
+        """
+        return list(getattr(self._handle, "replay_updates", None) or [])
+
+    def discard_replay(self) -> None:
+        """Forget the frames kiro-cli replayed on resume (transcript was rewritten)."""
+        discard = getattr(self._handle, "discard_replay", None)
+        if callable(discard):
+            # The handle also returns the frames' bytes to the runtime's
+            # process-wide retention budget.
+            discard()
+        elif hasattr(self._handle, "replay_updates"):
+            self._handle.replay_updates = []
 
     def set_resume_session_id(self, sid: str) -> None:
         """Store a session ID for future resume via session/load."""

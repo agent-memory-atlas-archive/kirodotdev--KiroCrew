@@ -1139,8 +1139,14 @@ def _build_tool_call_event(
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
+    record_metrics: bool = True,
 ) -> AcpEvent:
-    """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
+    """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction).
+
+    ``record_metrics=False`` skips the duration-histogram clock: a transcript
+    REPLAY re-parses calls that finished long ago, and timing their frames would
+    put near-zero samples into ``kirocrew.tool.call.duration``.
+    """
     title = update.get("title", "unknown")
     _wire_title = title if isinstance(title, str) and title != "unknown" else ""
     kind = update.get("kind", "unknown")
@@ -1196,9 +1202,10 @@ def _build_tool_call_event(
     # above, because one runtime hosts many sessions and a backend-assigned
     # toolCallId is unique only within one of them. Idempotent per scoped id, so
     # the tool_call_update refinements that follow cannot restart the clock.
-    note_tool_call_started(
-        tool_call_id, kind=kind, mcp_server_name=_mcp_server_name, scope=cache_scope
-    )
+    if record_metrics:
+        note_tool_call_started(
+            tool_call_id, kind=kind, mcp_server_name=_mcp_server_name, scope=cache_scope
+        )
     # Same lifecycle for the trusted tool name (_meta.kiro.toolName) so the
     # permission event can reconstruct the canonical mcp__<server>__<tool> for
     # per-tool governance in the app-own-server auto-approve.
@@ -1586,7 +1593,9 @@ def log_unrenderable_content(log: logging.Logger, tool_use_id: Any, content: Any
     )
 
 
-def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> AcpEvent | None:
+def _build_tool_result_event(
+    update: dict[str, Any], cache_scope: str = "", *, record_metrics: bool = True
+) -> AcpEvent | None:
     """Build an ``EVENT_TOOL_RESULT`` from a ``tool_call_update`` carrying output.
 
     Three output shapes: ``content[].content.text`` blocks (stream mid-turn),
@@ -1606,7 +1615,8 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
     # update: a tool that completed with no output is still a completed
     # round-trip. A non-terminal status is a no-op here, so a mid-stream update
     # leaves the clock running for the real completion.
-    record_tool_call_finished(tool_use_id, status=update.get("status"), scope=cache_scope)
+    if record_metrics:
+        record_tool_call_finished(tool_use_id, status=update.get("status"), scope=cache_scope)
     # Parts are collected RAW and redaction runs once over their JOIN, before
     # the single 8000-char bound. Both orderings matter: bounding first can
     # split a credential at a cut into fragments no redaction regex matches,
@@ -1934,6 +1944,7 @@ def parse_session_update(
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
+    record_metrics: bool = True,
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -1945,6 +1956,10 @@ def parse_session_update(
     ``tool_input_cache`` (caller-owned) is written with ``toolCallId -> redacted
     input`` for ``tool_call`` / refinement updates, mirroring each class's
     ``_tool_call_inputs`` map. Stats and stall bookkeeping stay with the caller.
+
+    ``record_metrics=False`` is for a caller re-parsing a transcript REPLAY
+    (``dashboard.chat_replay``): the calls finished long ago, so their frames
+    must not open or close duration-histogram clocks.
     """
     if not isinstance(update, dict):
         return []
@@ -1972,11 +1987,12 @@ def parse_session_update(
                 cache_scope=cache_scope,
                 tool_input_redacted_cache=tool_input_redacted_cache,
                 diff_path_cache=diff_path_cache,
+                record_metrics=record_metrics,
             )
         )
         return events
     if kind == UPDATE_TOOL_CALL_UPDATE:
-        result = _build_tool_result_event(update, cache_scope)
+        result = _build_tool_result_event(update, cache_scope, record_metrics=record_metrics)
         if result is not None:
             events.append(result)
         refine = _build_tool_refinement_event(

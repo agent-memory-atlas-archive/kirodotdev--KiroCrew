@@ -5921,6 +5921,7 @@
         "prevent_sleep": false,
         "quick_send": false,
         "session_grid": false,
+        "replay_from_acp": false,
         "mcp_app_panel": false,
         "auto_open_git_panel": false,
         "session_card_source_links": true,
@@ -6427,6 +6428,20 @@
       "tags": [],
       "label": "Session Grid (Split View)",
       "help": "Opt-in: enable terminal-style split view to run multiple chat sessions side by side.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.replay_from_acp",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Render history from ACP replay (prototype)",
+      "help": "Opt-in: on resume, build the transcript from kiro-cli's session/load replay and overlay only Kiro Crew-side rows from the JSONL. Rows show their source. JSONL is still written.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

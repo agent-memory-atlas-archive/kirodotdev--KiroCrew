@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
 from kiro_crew.acp.types import (  # noqa: F401
@@ -264,6 +264,31 @@ class LLMProvider(ABC):
         never as a wildcard.
         """
         return ""
+
+    @property
+    def replay_updates(self) -> list[dict[str, Any]] | None:
+        """Transcript frames the backend replayed when this session was resumed.
+
+        ``None`` means the provider has no replay to offer -- capture is off, or
+        the backend has no resume replay at all -- and the consumer keeps its own
+        transcript. A list (possibly empty) means capture is on for this session.
+        Declared here with the safe default so a consumer reads the capability
+        off every provider directly instead of probing for the attribute
+        (harness-parity H14): a backend that never sets it is read as "no
+        replay", never as an AttributeError or a silently different type.
+        """
+        return None
+
+    def discard_replay(self) -> None:
+        """Forget the resume replay (see ``replay_updates``). Default no-op.
+
+        Called when the consumer REWRITES its transcript (rewind, regenerate,
+        edit-and-resend, variant switch): the frames describe the conversation
+        as it was resumed, and a rewritten row would otherwise be resurrected
+        by the next render. After this, ``replay_updates`` answers an empty
+        list and the consumer renders its own transcript.
+        """
+        return None
 
     def touch_activity(self) -> None:
         """Refresh provider activity timestamp without I/O. Default no-op."""

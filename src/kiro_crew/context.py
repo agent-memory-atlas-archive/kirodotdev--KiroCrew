@@ -92,6 +92,13 @@ _CONTEXT_BUDGET_BASE = 165_000  # ~55k tokens
 _THREAD_FENCE_OPEN = "<<<UNTRUSTED_THREAD_PARENT"
 _THREAD_FENCE_CLOSE = ">>>END_UNTRUSTED_THREAD_PARENT"
 _THREAD_FENCE_NEUTRALIZED = "[fence-marker-removed]"
+#: Header line that separates the assembled context from the human's own words in
+#: every prompt this module builds. A reader that has to find the user's text
+#: inside a prompt (the dashboard's replay-transcript path) imports THIS rather
+#: than respelling it, so a wording change here cannot silently orphan it. Note
+#: the em dash: the outbound sanitizer folds it to ASCII ``--`` on the wire, so
+#: such a reader must compare dash-folded.
+USER_REQUEST_HEADER = "[CURRENT USER REQUEST — respond to this]"
 
 
 def _fence_marker_regex(marker: str) -> re.Pattern[str]:
@@ -3823,7 +3830,7 @@ class ContextBuilder:
             if _guidance_precedes_request and _interactive_guidance:
                 parts.append(_REPLY_FORMAT_RULES_MARKER + "\n")
                 parts.extend(_interactive_guidance)
-            parts.append("[CURRENT USER REQUEST — respond to this]\n")
+            parts.append(f"{USER_REQUEST_HEADER}\n")
         # The current turn is scrubbed of the primary boundary markers so a
         # pasted [END OF SESSION CONTEXT] / [CURRENT USER REQUEST ...] pair cannot
         # forge a second boundary after the request header above. This covers the

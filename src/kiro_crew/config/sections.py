@@ -2740,6 +2740,21 @@ class DashboardConfig:
             "Opt-in: enable terminal-style split view to run multiple chat sessions side by side.",
         ),
     )
+    # Prototype (off by default). When on, the kiro-cli runtime keeps the
+    # transcript frames it replays during session/load instead of dropping
+    # them, and a resumed session's history is rendered from that replay with
+    # Kiro Crew's JSONL supplying only the rows the agent never saw (notices,
+    # approvals, injected-context provenance). JSONL is still written either
+    # way — this changes what is READ on open, never what is persisted.
+    replay_from_acp: bool = field(
+        default=False,
+        metadata=_meta(
+            "Render history from ACP replay (prototype)",
+            "Opt-in: on resume, build the transcript from kiro-cli's session/load "
+            "replay and overlay only Kiro Crew-side rows from the JSONL. Rows show "
+            "their source. JSONL is still written.",
+        ),
+    )
     mcp_app_panel: bool = field(
         default=False,
         metadata=_meta(

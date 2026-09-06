@@ -36,11 +36,17 @@ sandbox posture at their defining modules.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 __all__ = [
     "claude_adapter_cached_negative",
     "claude_adapter_install_command",
     "claude_components_resolve",
     "derived_agent_permissions",
+    "fold_replay_updates",
     "kiro_cli_resolves",
     "resolve_pin_spelling",
     "run_kiro_native_commands",
@@ -268,3 +274,194 @@ async def run_kiro_native_commands(
     finally:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(client.shutdown(), timeout=10.0)
+
+
+def fold_replay_updates(
+    updates: list[dict],
+    *,
+    redact_text: "Callable[[str], str]",
+    redact_field: "Callable[..., str]",
+    purpose_limit: int,
+) -> list[dict]:
+    """Fold raw ``session/update`` params from a ``session/load`` replay into turns.
+
+    Returns PLAIN data -- ``[{"prompt_text": str, "rows": [row], "tool_index":
+    {toolCallId: row_index}}]`` -- where each row is a transcript row dict
+    (``role`` user/thinking/assistant/tool, ``content``, ``cls``, ``meta``) in
+    the shape the dashboard's live path persists. Goes through the SAME
+    ``parse_session_update`` the live dispatch loop uses, with metrics recording
+    off because the calls finished long ago. Frames before the first user prompt
+    (an engine-internal pre-turn tool call) belong to no turn and are skipped;
+    other update kinds (plan, mode/config, session_info) are not transcript rows
+    on the live path either.
+
+    ``redact_text`` / ``redact_field`` are the consumer's redactors (the dashboard
+    passes its exfiltration + credential battery), so no dashboard module is
+    imported here and no ACP type crosses upward.
+    """
+    # Function-local by design, like every other kiro_crew.acp import in this
+    # module (see the module docstring): the ACP package pulls in the client and
+    # runtime, and this module sits on the dashboard boot path.
+    from kiro_crew.acp._dispatch import parse_session_update
+    from kiro_crew.acp.types import (
+        EVENT_TEXT_CHUNK,
+        EVENT_THINKING_CHUNK,
+        EVENT_TOOL_CALL,
+        EVENT_TOOL_CALL_UPDATE,
+        EVENT_TOOL_RESULT,
+        UPDATE_AGENT_MESSAGE_CHUNK,
+        UPDATE_AGENT_THOUGHT_CHUNK,
+        UPDATE_TOOL_CALL,
+        UPDATE_TOOL_CALL_UPDATE,
+        UPDATE_USER_MESSAGE_CHUNK,
+    )
+
+    source = "acp_replay"
+    turns: list[dict] = []
+    current: dict | None = None
+    tool_input_cache: dict[str, str] = {}
+    shell_cache: dict[str, bool] = {}
+    raw_params_cache: dict[str, dict] = {}
+    mcp_server_name_cache: dict[str, str] = {}
+    tool_name_cache: dict[str, str] = {}
+    tool_input_redacted_cache: dict[str, bool] = {}
+    text_buf: list[str] = []
+    think_buf: list[str] = []
+
+    def chunk_text(update: dict) -> str:
+        content = update.get("content")
+        if isinstance(content, dict) and content.get("text"):
+            return str(content["text"])
+        flat = update.get("text")
+        return str(flat) if flat else ""
+
+    def flush_text() -> None:
+        if current is None:
+            return
+        if think_buf:
+            body = redact_text("".join(think_buf))
+            think_buf.clear()
+            if body.strip():
+                current["rows"].append(
+                    {"role": "thinking", "content": body, "cls": "", "meta": {"source": source}}
+                )
+        if text_buf:
+            body = redact_text("".join(text_buf))
+            text_buf.clear()
+            if body.strip():
+                current["rows"].append(
+                    {
+                        "role": "assistant",
+                        "content": body,
+                        "cls": "msg msg-a",
+                        "meta": {"source": source},
+                    }
+                )
+
+    prev_kind: object = None
+    for params in updates:
+        update = params.get("update") if isinstance(params, dict) else None
+        if not isinstance(update, dict):
+            continue
+        kind = update.get("sessionUpdate")
+        if kind == UPDATE_USER_MESSAGE_CHUNK:
+            flush_text()
+            text = chunk_text(update)
+            if current is not None and prev_kind == UPDATE_USER_MESSAGE_CHUNK:
+                # Consecutive user chunks are one prompt: merge, do not open a turn.
+                current["prompt_text"] += text
+            else:
+                current = {"prompt_text": text, "rows": [], "tool_index": {}}
+                turns.append(current)
+            prev_kind = kind
+            continue
+        prev_kind = kind
+        if current is None:
+            continue
+        rows: list[dict] = current["rows"]
+        tool_index: dict[str, int] = current["tool_index"]
+        if kind in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK):
+            for ev in parse_session_update(update):
+                if ev.kind == EVENT_THINKING_CHUNK:
+                    # A thought after visible text belongs to the NEXT segment.
+                    if text_buf:
+                        flush_text()
+                    think_buf.append(ev.text)
+                elif ev.kind == EVENT_TEXT_CHUNK:
+                    text_buf.append(ev.text)
+            continue
+        if kind not in (UPDATE_TOOL_CALL, UPDATE_TOOL_CALL_UPDATE):
+            continue
+        flush_text()
+        events = parse_session_update(
+            update,
+            tool_input_cache=tool_input_cache,
+            shell_cache=shell_cache,
+            raw_params_cache=raw_params_cache,
+            mcp_server_name_cache=mcp_server_name_cache,
+            tool_name_cache=tool_name_cache,
+            cache_scope="replay",
+            tool_input_redacted_cache=tool_input_redacted_cache,
+            record_metrics=False,
+        )
+        for ev in events:
+            tcid = redact_field(ev.tool_call_id)
+            if ev.kind == EVENT_TOOL_CALL:
+                row = {
+                    "role": "tool",
+                    "content": f"\U0001f527 {redact_text(ev.title)}",
+                    "cls": "msg msg-tool",
+                    "meta": {
+                        "source": source,
+                        "tool_call_id": tcid,
+                        "purpose": redact_field(ev.tool_purpose, limit=purpose_limit),
+                        "input": redact_field(ev.tool_input),
+                        "kind": redact_field(ev.tool_kind, limit=64),
+                    },
+                }
+                if tcid in tool_index:
+                    # A second tool_call frame for a known id refines, not duplicates.
+                    rows[tool_index[tcid]] = row
+                else:
+                    tool_index[tcid] = len(rows)
+                    rows.append(row)
+            elif ev.kind == EVENT_TOOL_CALL_UPDATE:
+                idx = tool_index.get(tcid)
+                if idx is None:
+                    continue
+                meta = rows[idx]["meta"]
+                if ev.title:
+                    rows[idx]["content"] = f"\U0001f527 {redact_text(ev.title)}"
+                if ev.tool_input:
+                    meta["input"] = redact_field(ev.tool_input)
+                if ev.tool_purpose:
+                    meta["purpose"] = redact_field(ev.tool_purpose, limit=purpose_limit)
+                if ev.tool_kind:
+                    meta["kind"] = redact_field(ev.tool_kind, limit=64)
+            elif ev.kind == EVENT_TOOL_RESULT:
+                idx = tool_index.get(tcid)
+                if idx is None:
+                    # Result for a call the replay never announced: keep the
+                    # output visible rather than silently dropping it.
+                    tool_index[tcid] = len(rows)
+                    rows.append(
+                        {
+                            "role": "tool",
+                            "content": "\U0001f527 tool",
+                            "cls": "msg msg-tool",
+                            "meta": {
+                                "source": source,
+                                "tool_call_id": tcid,
+                                "input": "",
+                                "purpose": "",
+                                "kind": "",
+                            },
+                        }
+                    )
+                    idx = tool_index[tcid]
+                meta = rows[idx]["meta"]
+                meta["output"] = redact_field(ev.tool_output)
+                if ev.tool_final or ev.tool_output:
+                    meta["done"] = True
+    flush_text()
+    return turns

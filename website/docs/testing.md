@@ -335,6 +335,10 @@ above, and got a **named** ceiling next to the helper that owns the wait (`TREE_
 `PANE_READY`, `NOTICE_READY`; the approval ghost's 150ms settle-guard timer; the
 `['artifact', slug]` fetch). Two were new shapes, and each one is a rule:
 
+For Testing Library's bound `findBy*` queries, pass a named timeout as the third
+argument, for example `screen.findByTestId(id, undefined, PANE_READY)`. The second
+argument configures matching and does not change the wait timeout.
+
 - **A wait that resolves on a row from the WRONG query.** The path bar's `complete` mock
   answers every key with the same entry, so the suggestion row first rendered for the
   PRE-debounce key (fetched on focus); 150ms later the debounced draft flipped the query

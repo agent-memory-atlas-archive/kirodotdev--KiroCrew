@@ -29,7 +29,11 @@ from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.handlers import kiro_usage_api
-from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS
+from kiro_crew.dashboard.handlers._shared import (
+    SESSION_SEARCH_TEXT_FIELDS,
+    internal_memory_scope,
+    private_owner_surface_refusal,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
@@ -61,6 +65,9 @@ def _sel():
 
 async def api_sessions_context(request: web.Request) -> web.Response:
     """GET /api/sessions/context — context usage for all active sessions."""
+    refusal = await private_owner_surface_refusal(request, "api_sessions_context")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     return web.json_response({"sessions": state.sessions.context_info()})
 
@@ -73,6 +80,9 @@ _memory_sampler = SessionMemorySampler()
 
 async def api_sessions_memory(request: web.Request) -> web.Response:
     """GET /api/sessions/memory — per-session and per-task memory footprint."""
+    refusal = await private_owner_surface_refusal(request, "api_sessions_memory")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     # Built on the loop, not in the sampling thread: it walks live slot objects.
     # Pure dict work, so it costs nothing here. Guarded because `state` is a
@@ -100,6 +110,9 @@ _HEALTH_REFRESH_SECS = 15
 
 async def api_sessions_health(request: web.Request) -> web.Response:
     """GET /api/sessions/health — slots flagged as stalled from log scan."""
+    refusal = await private_owner_surface_refusal(request, "api_sessions_health")
+    if refusal is not None:
+        return refusal
     global _health_cache, _health_cache_ts
     now = time.monotonic()
     if now - _health_cache_ts > _HEALTH_REFRESH_SECS:
@@ -946,6 +959,9 @@ async def _fetch_usage_bg() -> None:
 
 async def api_sessions_usage(request: web.Request) -> web.Response:
     """GET /api/sessions/usage — cached kiro credit usage (background refresh)."""
+    refusal = await private_owner_surface_refusal(request, "api_sessions_usage")
+    if refusal is not None:
+        return refusal
     # Same browser-storm guard as api_models: the /usage scrape shells out to
     # `kiro-cli chat --no-interactive ... /usage`, which auto-opens a browser
     # login while signed out. This endpoint is polled every 30s by the top-bar
@@ -1024,6 +1040,9 @@ async def api_sessions(request: web.Request) -> web.Response:
 
     Returns ``{sessions, total, has_more}`` for pagination.
     """
+    refusal = await private_owner_surface_refusal(request, "api_sessions")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response({"sessions": [], "total": 0, "has_more": False})
@@ -1200,6 +1219,9 @@ async def api_sessions_summarize(request: web.Request) -> web.Response:
     usable summary are omitted. Best-effort: a per-session failure never fails
     the whole request.
     """
+    refusal = await private_owner_surface_refusal(request, "api_sessions_summarize")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response({"summaries": {}})
@@ -1239,6 +1261,9 @@ async def api_sessions_search(request: web.Request) -> web.Response:
     Returns ``{sessions}`` — same metadata shape as:func:`api_sessions`.
     Session titles may be LLM-generated and are redacted before return.
     """
+    refusal = await private_owner_surface_refusal(request, "api_sessions_search")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response({"sessions": []})
@@ -1262,6 +1287,9 @@ async def api_sessions_search(request: web.Request) -> web.Response:
 
 async def api_session_detail(request: web.Request) -> web.Response:
     """GET /api/sessions/{key} — return messages for a session."""
+    refusal = await private_owner_surface_refusal(request, "api_session_detail")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     if not state.conversation_log:
@@ -1277,6 +1305,9 @@ async def api_session_detail(request: web.Request) -> web.Response:
 
 async def api_session_delete(request: web.Request) -> web.Response:
     """DELETE /api/sessions/{key} — permanently delete a history session."""
+    refusal = await private_owner_surface_refusal(request, "api_session_delete")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     if not state.conversation_log:
@@ -1443,6 +1474,9 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     ``state._slots``) and sessions with ``pinned=True`` on disk.
     Bulk-archiving open unpinned/idle sessions is out of scope here.
     """
+    refusal = await private_owner_surface_refusal(request, "api_sessions_clear")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
@@ -1520,10 +1554,9 @@ def _clearable_history_keys(
     Returns ``(clearable, skipped)``. A session is skipped when it is reachable as
     an open tab, when its metadata says ``pinned``, or when that metadata could not
     be read — the same exclusions ``delete_session(..., skip_pinned=True)``
-    applies, so the two agree. Note that metadata which is present but unparseable
-    is NOT an exclusion: ``get_metadata_status`` reports it as readable-with-no-
-    metadata (``({}, True)``), so such a session reads as unpinned and is cleared.
-    The delete resolves it identically, which is what matters here.
+    applies, so the two agree. Present but unparseable metadata is unreadable:
+    ``get_metadata_status`` returns ``({}, False)``, so both the preview and
+    the delete exclude it rather than treating missing identity as permission.
 
     Reads the filesystem (``list_sessions`` globs and stats every session file),
     so callers offload it off the event loop.
@@ -1578,6 +1611,9 @@ async def api_sessions_clearable_count(request: web.Request) -> web.Response:
     :func:`_clearable_history_keys` for why offering one here would report a
     subset of what the delete actually takes.
     """
+    refusal = await private_owner_surface_refusal(request, "api_sessions_clearable_count")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response(
@@ -1636,6 +1672,11 @@ async def api_session_directive(request: web.Request) -> web.Response:
     not a silent drop: the only legitimate callers are Kiro Crew's own directive
     tools, so a request that does not derive did not come from one.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_directive", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     # Re-assert the caller's locality BEFORE the header is read. The route is in
     # server.py's strict allowlist, but a ``local_only=False`` deployment
     # reclassifies strict paths as MIXED — so the auth middleware also admits a
@@ -1766,6 +1807,11 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     field in it is advisory: a caller that sends ``{}`` gets the original
     touch-only behaviour.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_keepalive", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     session_key = request.headers.get("X-Session-Key", "").strip()
     if not session_key:
@@ -2036,6 +2082,11 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     callers that cannot prove identity get an error, not an empty policy).
     Authenticated via X-Internal-Secret + X-Session-Key.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_tool_policy", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     session_key = request.headers.get("X-Session-Key", "").strip()
     if not session_key:
@@ -2192,6 +2243,9 @@ async def api_sessions_restart(request: web.Request) -> web.Response:
     Also syncs MCP servers from mcp.json → kirocrew.json so newly
     installed servers (e.g. via AIM) are picked up on restart.
     """
+    refusal = await private_owner_surface_refusal(request, "api_sessions_restart")
+    if refusal is not None:
+        return refusal
     # Sync MCP servers before restarting so new installs take effect.
     # Run in thread — the sync does blocking file I/O. Cap at 30s so a hung
     # rebuild doesn't stall the restart. sync_discovered_servers serializes
@@ -2215,6 +2269,9 @@ async def api_sessions_restart(request: web.Request) -> web.Response:
 
 async def api_session_archive_list(request: web.Request) -> web.Response:
     """GET /api/session/archive?key=... — list archive files for a session key."""
+    refusal = await private_owner_surface_refusal(request, "api_session_archive_list")
+    if refusal is not None:
+        return refusal
     from typing import Any
 
     from kiro_crew.history import _archive_dir, _safe_key
@@ -2255,6 +2312,9 @@ async def api_session_archive_list(request: web.Request) -> web.Response:
 
 async def api_session_archive_read(request: web.Request) -> web.Response:
     """GET /api/session/archive/{name} — read a single archive file as JSONL text."""
+    refusal = await private_owner_surface_refusal(request, "api_session_archive_read")
+    if refusal is not None:
+        return refusal
     name = request.match_info.get("name", "")
     if not name.endswith(".jsonl"):
         return web.json_response({"error": "invalid archive name"}, status=400)

@@ -37,7 +37,7 @@ from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_k
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls, redact_local_paths
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 
@@ -92,11 +92,13 @@ Rules:
 - If genuinely torn between two topics, use "ask" with ONE short casual question.
 - A topic with status "running" cannot take a routed message now: use "hold" (it will be dispatched when the topic finishes). Exception: a droppable advisory correction to in-flight work (style/approach preference, "prefer X", "don't touch Y") may use "steer".
 - Messages that are meta-questions about the topics themselves ("what's in flight?", "list topics") use "meta".
+- A new request that clearly belongs to one of the CREWS listed below uses "delegate" with that crew's exact name: the work then runs with THAT crew's own memory and tools instead of this one's. Delegate ONLY on a specific, high-confidence match against the crew's triggers; if no crew clearly owns it, use "spawn" and handle it here. Delegating is not free — the crew you delegate to cannot see this conversation's memory, which is the point.
 
 Output schema:
 {"actions": [
   {"do": "route", "msg_id": "<id>", "topic_id": "<id>"},
   {"do": "spawn", "msg_id": "<id>", "title": "<short title>"},
+  {"do": "delegate", "msg_id": "<id>", "title": "<short title>", "crew": "<crew name>"},
   {"do": "hold",  "msg_id": "<id>", "topic_id": "<id>"},
   {"do": "steer", "msg_id": "<id>", "topic_id": "<id>"},
   {"do": "ask",   "msg_id": "<id>", "question": "<one short line>"},
@@ -284,9 +286,7 @@ class CrewStore:
             # save() wrote it back over the real file. A store file that decodes
             # to an object is damage from outside exactly as a torn one is, so it
             # gets the same answer — refuse, and leave the bytes to salvage.
-            raise RuntimeError(
-                f"crew store: {path} is not a JSON list (got {type(data).__name__})"
-            )
+            raise RuntimeError(f"crew store: {path} is not a JSON list (got {type(data).__name__})")
         return data
 
     def _save(self, name: str, data: list[dict[str, Any]]) -> Any:
@@ -346,14 +346,15 @@ class CrewStore:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             _write()
-            return None       # already on disk: nothing to await
+            return None  # already on disk: nothing to await
         # Reap only futures that already completed SUCCESSFULLY. The obvious
         # `add_done_callback(discard)` is a hole in the barrier: a write that
         # fails FAST is discarded before `wait_writes()` snapshots the set, so
         # the barrier reports durability for a write that never landed — which
         # is exactly the guarantee every caller here depends on.
         for done in [
-            f for f in list(self._pending_writes)
+            f
+            for f in list(self._pending_writes)
             if f.done() and not f.cancelled() and f.exception() is None
         ]:
             self._pending_writes.discard(done)
@@ -396,11 +397,15 @@ class CrewStore:
     def save(self) -> list[Any]:
         self._prune_queue()
         self._prune_topics()
-        return [f for f in (
-            self._save("queue.json", self.queue),
-            self._save("topics.json", self.topics),
-            self._save("forwards.json", self.forwards),
-        ) if f is not None]
+        return [
+            f
+            for f in (
+                self._save("queue.json", self.queue),
+                self._save("topics.json", self.topics),
+                self._save("forwards.json", self.forwards),
+            )
+            if f is not None
+        ]
 
     def save_queue(self) -> list[Any]:
         """Persist ONLY ``queue.json``.
@@ -447,7 +452,8 @@ class CrewStore:
         }
         pinned.discard("")
         idle = [
-            t for t in self.topics
+            t
+            for t in self.topics
             if t.get("status") != "running"
             and not (t.get("held") or [])
             and str(t.get("topic_id") or "") not in pinned
@@ -526,9 +532,14 @@ class CrewStore:
 
     def add_topic(self, topic_id: str, run_id: str, title: str, origin_msg: str) -> dict[str, Any]:
         t = {
-            "topic_id": topic_id, "active_run_id": run_id, "title": title,
-            "digest": "", "status": "running", "last_activity": _now(),
-            "origin_msg_id": origin_msg, "held": [],
+            "topic_id": topic_id,
+            "active_run_id": run_id,
+            "title": title,
+            "digest": "",
+            "status": "running",
+            "last_activity": _now(),
+            "origin_msg_id": origin_msg,
+            "held": [],
         }
         self.topics.append(t)
         self.save()
@@ -592,9 +603,9 @@ class CrewOrchestrator:
         # entry is one short key.
         self._purged: set[str] = set()
         self._ack_i = 0
-        self._decision_model = getattr(
-            getattr(cfg, "dashboard", None), "crew_decision_model", None
-        ) or None
+        self._decision_model = (
+            getattr(getattr(cfg, "dashboard", None), "crew_decision_model", None) or None
+        )
 
     # ---- wiring ----
 
@@ -650,8 +661,13 @@ class CrewOrchestrator:
                 logger.warning("crew: could not cancel %s during purge", rid, exc_info=True)
             self._owned.pop(rid, None)
         self._stores.pop(slot_key, None)
-        for book in (self._locks, self._drain_locks, self._ingest_locks,
-                     self._rerun, self._decide_attempts):
+        for book in (
+            self._locks,
+            self._drain_locks,
+            self._ingest_locks,
+            self._rerun,
+            self._decide_attempts,
+        ):
             book.pop(slot_key, None)
         try:
             await asyncio.get_running_loop().run_in_executor(
@@ -745,15 +761,15 @@ class CrewOrchestrator:
             return 0
         resumed = 0
         for slot_key in names:
-            await asyncio.sleep(0)      # yield between slots; never hog the loop
+            await asyncio.sleep(0)  # yield between slots; never hog the loop
             try:
-                st = await self._store_async(slot_key)          # reconciles on first touch
+                st = await self._store_async(slot_key)  # reconciles on first touch
             except Exception:
                 logger.warning("crew: could not load store for %s", slot_key, exc_info=True)
                 continue
             slot = self._state.get_slot(slot_key) if self._state else None
             if slot is None:
-                continue        # not an open slot; its forwards wait on disk
+                continue  # not an open slot; its forwards wait on disk
             work = any(e.get("state") in ("pending", "ask") for e in st.queue)
             if not (work or st.forwards):
                 continue
@@ -796,7 +812,8 @@ class CrewOrchestrator:
             # with many accepted entries stalled the loop one stat() at a time.
             # Gather that evidence in the executor first and hand it over.
             evidence = await loop.run_in_executor(
-                None, self._durable_evidence, self._rids_needing_evidence(st))
+                None, self._durable_evidence, self._rids_needing_evidence(st)
+            )
             self._reconcile(slot_key, st, evidence)
         return st
 
@@ -804,10 +821,12 @@ class CrewOrchestrator:
     def _rids_needing_evidence(st: CrewStore) -> list[str]:
         rids = [
             str(e.get("run_id") or e.get("dispatch_id") or "")
-            for e in st.queue if e.get("state") in ("claimed", "accepted")
+            for e in st.queue
+            if e.get("state") in ("claimed", "accepted")
         ]
-        rids += [str(t.get("active_run_id") or "") for t in st.topics
-                 if t.get("status") == "running"]
+        rids += [
+            str(t.get("active_run_id") or "") for t in st.topics if t.get("status") == "running"
+        ]
         return [r for r in dict.fromkeys(rids) if r]
 
     @staticmethod
@@ -861,7 +880,7 @@ class CrewOrchestrator:
         if self._subagents is not None and self._subagents.get(rid) is not None:
             return True
         if evidence is not None and rid in evidence:
-            return evidence[rid]      # already read, off the loop
+            return evidence[rid]  # already read, off the loop
         try:
             if read_state(rid) is not None:
                 return True
@@ -873,10 +892,11 @@ class CrewOrchestrator:
             return _agent_dir(rid).exists()
         except Exception:
             logger.warning("crew: durable run lookup failed for %s", rid, exc_info=True)
-            return True      # fail closed: never re-execute on an unknown answer
+            return True  # fail closed: never re-execute on an unknown answer
 
-    def _reconcile(self, slot_key: str, st: CrewStore,
-                   evidence: dict[str, bool] | None = None) -> None:
+    def _reconcile(
+        self, slot_key: str, st: CrewStore, evidence: dict[str, bool] | None = None
+    ) -> None:
         """Restart reconciliation: re-own live runs; re-open interrupted
         dispatches (claimed/accepted whose run is unknown -> pending)."""
         for t in st.topics:
@@ -951,9 +971,7 @@ class CrewOrchestrator:
         # Held msg_ids were just reopened to pending; drop them from every
         # topic's held list so a later completion cannot double-dispatch.
         for t in st.topics:
-            t["held"] = [
-                m for m in t.get("held", []) if (st.entry(m) or {}).get("state") == "held"
-            ]
+            t["held"] = [m for m in t.get("held", []) if (st.entry(m) or {}).get("state") == "held"]
         st.save()
         # Re-deliver forwards that were persisted but never posted because the
         # previous process died between the two (at-least-once).
@@ -966,6 +984,14 @@ class CrewOrchestrator:
                 asyncio.get_running_loop().create_task(self._drain_forwards(slot))
 
     # ---- transcript posting (workflow_inject shape) ----
+
+    def _post_start_failure(self, slot: Any, error: Exception) -> None:
+        """Explain a retryable dispatch failure without exposing host paths or secrets."""
+        try:
+            reason = redact_local_paths(self._safe_for_log(str(error)))[0][:1000]
+        except Exception:
+            reason = "The failure details could not be safely displayed."
+        self._post(slot, f"Couldn't start this member task: {reason}", kind="crew_ask")
 
     @staticmethod
     def _safe_for_log(raw: str) -> str:
@@ -1016,9 +1042,7 @@ class CrewOrchestrator:
         a dispatch failure, because ``spawn()`` still reports the real error.
         """
         try:
-            await warm_project_agents_for_spawn(
-                self._state, self._slot_cwd(slot)
-            )
+            await warm_project_agents_for_spawn(self._state, self._slot_cwd(slot))
         except Exception:
             logger.debug("crew: agent-cache warm failed", exc_info=True)
 
@@ -1040,8 +1064,8 @@ class CrewOrchestrator:
 
         The warm is kept and runs first — the resolved template may itself be a
         project agent, which ``_validate_agent`` only ever sees through the warmed
-        cache. Falls back to the crew name on any resolution failure, so a broken
-        config degrades to the previous behaviour instead of losing the dispatch.
+        cache. A resolution failure stops dispatch: a template name alone cannot
+        prove which private memory belongs to the requested member.
 
         An UNKNOWN crew name (``requested_resolved`` False) also returns the raw
         crew name rather than the default binding the resolver fell back to:
@@ -1059,7 +1083,7 @@ class CrewOrchestrator:
         await self._warm_agent_cache(slot)
         crew = str(getattr(slot, "agent", "") or "")
 
-        def _resolve() -> str:
+        def _resolve() -> tuple[str, str]:
             cfg = KiroCrewConfig.load()
             bindings = resolve_agent_bindings(cfg, crew or None, self._slot_cwd(slot) or None)
             if crew and not getattr(bindings, "requested_resolved", True):
@@ -1073,16 +1097,22 @@ class CrewOrchestrator:
                     "crew: crew %r is unknown; refusing default-agent fallback",
                     crew,
                 )
-                return crew
-            return str(bindings.kiro_agent or crew)
+                return crew, ""
+            return str(bindings.kiro_agent or crew), getattr(bindings, "memory_store_name", "")
 
         try:
             # KiroCrewConfig.load() reads and parses from disk; this runs on the
             # event loop, so it goes to a worker thread.
-            return await asyncio.to_thread(_resolve)
+            template, memory_store = await asyncio.to_thread(_resolve)
+            if memory_store and memory_store != "default":
+                existing = getattr(slot, "memory_store", "")
+                if existing and existing != memory_store:
+                    raise ValueError("memory_unavailable: coordinator member binding changed")
+                slot.memory_store = memory_store
+            return template
         except Exception:
             logger.warning("crew: could not resolve crew %r to a template", crew, exc_info=True)
-            return crew
+            raise
 
     async def _post_durable(self, slot: Any, content: str, kind: str = "crew") -> bool:
         """`_post`, then wait for the durable transcript row to actually land.
@@ -1176,11 +1206,17 @@ class CrewOrchestrator:
             _frame_meta = _row.get("meta") if isinstance(_row.get("meta"), dict) else meta
             self._state.broadcast_ws(
                 "chat_message",
-                {"slot": slot.key, "role": "assistant", "content": content,
-                 # Both fields ride the frame: the store reducer reads each off
-                 # the payload, and `meta` is the one that survives every
-                 # persistence path (see the comment above).
-                 "cls": cls, "meta": _frame_meta, "kind": kind},
+                {
+                    "slot": slot.key,
+                    "role": "assistant",
+                    "content": content,
+                    # Both fields ride the frame: the store reducer reads each off
+                    # the payload, and `meta` is the one that survives every
+                    # persistence path (see the comment above).
+                    "cls": cls,
+                    "meta": _frame_meta,
+                    "kind": kind,
+                },
             )
         except Exception:
             logger.warning("crew: transcript post failed for %s", slot.key, exc_info=True)
@@ -1206,8 +1242,9 @@ class CrewOrchestrator:
 
     # ---- ingress ----
 
-    async def ingest(self, slot: Any, message: str, *,
-                     user_meta: dict[str, Any] | None = None) -> str | None:
+    async def ingest(
+        self, slot: Any, message: str, *, user_meta: dict[str, Any] | None = None
+    ) -> str | None:
         """Called from api_chat for crew slots. Enqueue DURABLY, then show the
         user's message, ack, and schedule the decision pass.
 
@@ -1254,8 +1291,9 @@ class CrewOrchestrator:
         async with ingest_lock:
             return await self._ingest_locked(slot, message, user_meta)
 
-    async def _ingest_locked(self, slot: Any, message: str,
-                             user_meta: dict[str, Any] | None) -> str | None:
+    async def _ingest_locked(
+        self, slot: Any, message: str, user_meta: dict[str, Any] | None
+    ) -> str | None:
         """The ordered half of :meth:`ingest`, serialized per slot by its caller."""
         # A live request revives a key that was purged by a permanent delete.
         # The marker is what stops an in-flight decision pass from dispatching
@@ -1326,7 +1364,8 @@ class CrewOrchestrator:
             logger.warning(
                 "crew: ack transcript not durable for %s; the request is queued "
                 "and will still run (its transcript row may be missing after a "
-                "restart)", slot.key,
+                "restart)",
+                slot.key,
             )
         asyncio.create_task(self._decide(slot))
         return None
@@ -1390,8 +1429,13 @@ class CrewOrchestrator:
         tries = self._decide_attempts.get(slot.key, 0) + 1
         self._decide_attempts[slot.key] = tries
         if tries < _DECIDE_MAX_ATTEMPTS:
-            logger.info("crew: %d entr(ies) unsettled for %s, retry %d/%d",
-                        len(stuck), slot.key, tries, _DECIDE_MAX_ATTEMPTS)
+            logger.info(
+                "crew: %d entr(ies) unsettled for %s, retry %d/%d",
+                len(stuck),
+                slot.key,
+                tries,
+                _DECIDE_MAX_ATTEMPTS,
+            )
             return True
         for e in stuck:
             e["state"] = "failed"
@@ -1411,7 +1455,7 @@ class CrewOrchestrator:
         )
         return False
 
-    def _snapshot(self, st: CrewStore) -> str:
+    def _snapshot(self, st: CrewStore, slot: Any) -> str:
         return json.dumps(
             {
                 "queue": [
@@ -1420,26 +1464,94 @@ class CrewOrchestrator:
                 ],
                 "topics": [
                     {
-                        "topic_id": t["topic_id"], "title": t["title"],
-                        "digest": t.get("digest", "")[:200], "status": t["status"],
+                        "topic_id": t["topic_id"],
+                        "title": t["title"],
+                        "digest": t.get("digest", "")[:200],
+                        "status": t["status"],
                     }
-                    for t in st.topics if t.get("status") != "released"
+                    for t in st.topics
+                    if t.get("status") != "released"
                 ],
+                # Delegation candidates. Only crews with triggers appear, which is
+                # the operator's opt-out, and the executor re-validates the name
+                # against the same roster -- a crew the model invents cannot become
+                # a dispatch, and one it names but that has no silo simply runs
+                # here instead.
+                "crews": self._delegation_roster(str(slot.agent or "")),
             },
             ensure_ascii=False,
         )
+
+    def _delegation_roster(self, here: str = "") -> list[dict[str, str]]:
+        """Crews this slot may delegate to: name, purpose, triggers.
+
+        Excludes the crew running the conversation -- delegating to yourself is
+        the ``spawn`` move -- and any crew with no triggers, which is how an
+        operator keeps a crew off the routing surface entirely.
+
+        Never raises. A config that will not load means no delegation candidates,
+        so the orchestrator keeps handling work itself, which is what it did
+        before delegation existed.
+        """
+        try:
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            cfg = KiroCrewConfig.load()
+            return [
+                {
+                    "crew": name,
+                    "description": (c.description or "").strip()[:160],
+                    "triggers": (c.triggers or "").strip()[:200],
+                }
+                for name, c in cfg.agents.items()
+                if name != here and (c.triggers or "").strip()
+            ]
+        except Exception:
+            logger.debug("crew: could not build the delegation roster", exc_info=True)
+            return []
+
+    def _resolve_delegate(self, crew: str) -> tuple[str, str]:
+        """Resolve an explicitly delegated member's template and private store.
+
+        Unknown members, disabled routing and unreadable bindings refuse dispatch.
+        An empty crew denotes an ordinary topic in the coordinator's own memory.
+        """
+        if not crew:
+            return "", ""
+        try:
+            from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+
+            cfg = KiroCrewConfig.load()
+            entry = cfg.agents.get(crew)
+            if entry is None:
+                raise ValueError(f"unknown Crew Member '{crew}'; select an existing member")
+            # The SAME rule the roster applies, applied again here. Excluding a
+            # crew from the roster is not a gate: the decision model can name any
+            # string, so a crew whose operator gave it no triggers -- the opt-out
+            # from being delegated to at all -- was reachable by naming it anyway,
+            # and the work landed in that crew's silo.
+            if not (entry.triggers or "").strip():
+                raise ValueError(f"Crew Member '{crew}' has not enabled delegation triggers")
+            b = resolve_agent_bindings(cfg, crew)
+            return b.kiro_agent, b.memory_store_name
+        except Exception:
+            logger.warning("crew: could not resolve delegate %r", crew, exc_info=True)
+            raise
 
     async def _decide_once(self, slot: Any) -> None:
         st = await self._store_async(slot.key)
         if not st.pending():
             return
-        prompt = _DECISION_PROMPT % self._snapshot(st)
+        prompt = _DECISION_PROMPT % self._snapshot(st, slot)
         raw = ""
         for attempt in (1, 2):
             try:
                 raw = await run_bg_oneliner(
-                    self._sessions, prompt, model=self._decision_model,
-                    sel_source="crew_decision", timeout=_DECISION_TIMEOUT,
+                    self._sessions,
+                    prompt,
+                    model=self._decision_model,
+                    sel_source="crew_decision",
+                    timeout=_DECISION_TIMEOUT,
                 )
                 data = _extract_json_of_type(raw, dict, prefer=_decision_shaped)
                 if not isinstance(data, dict):
@@ -1453,8 +1565,9 @@ class CrewOrchestrator:
                 break
             except Exception:
                 if attempt == 2:
-                    logger.warning("crew: unparseable decision, deferring: %r",
-                                   self._safe_for_log(raw[:200]))
+                    logger.warning(
+                        "crew: unparseable decision, deferring: %r", self._safe_for_log(raw[:200])
+                    )
                     return
         for a in actions:
             try:
@@ -1462,8 +1575,9 @@ class CrewOrchestrator:
             except Exception:
                 # `a` is LLM-authored too — its field values are model output,
                 # so it gets the same treatment as the raw decision above.
-                logger.warning("crew: action failed: %s",
-                               self._safe_for_log(repr(a)), exc_info=True)
+                logger.warning(
+                    "crew: action failed: %s", self._safe_for_log(repr(a)), exc_info=True
+                )
         st.save()
 
     # ---- executor (validates every action; LLM only picks legal moves) ----
@@ -1475,7 +1589,7 @@ class CrewOrchestrator:
         e = st.entry(str(a.get("msg_id", "")))
         if e is None or e.get("state") not in ("pending", "ask"):
             return  # unknown/settled msg — reject silently
-        if do == "spawn":
+        if do in ("spawn", "delegate"):
             # Persist a STABLE dispatch identity before spawning so a crash in
             # the window between spawn() starting the run and the accepted-state
             # write is recoverable WITHOUT re-executing the task (GPT finding on
@@ -1507,13 +1621,37 @@ class CrewOrchestrator:
                 # leaked stored memory and lessons into every subagent it spawned.
                 no_reads = bool(getattr(slot, "blocks_reads", False))
                 dispatch_agent = await self._dispatch_agent(slot)
-            except Exception:
+                # A delegation runs as ANOTHER crew. Its SILO always travels --
+                # that is what delegating buys and what keeps this crew's memory
+                # out of the work. Its TEMPLATE travels only when the target
+                # declares one; a crew that declares none means "the install
+                # default", so overriding with the empty string would be a claim
+                # the config never made. An unresolvable crew degrades to a plain
+                # spawn: the work stays in the crew already handling it, so the
+                # fallback cannot land it in a silo nobody chose.
+                delegate_store = ""
+                if do == "delegate":
+                    crew_name = str(a.get("crew") or "")
+                    tmpl, delegate_store = await asyncio.to_thread(
+                        self._resolve_delegate, crew_name
+                    )
+                    # Recorded on the SILO, not on the template: a crew that
+                    # declares no kiro_agent still delegates (it takes the install
+                    # default), and keying the record on the template lost the
+                    # only trace that the work left this crew.
+                    if delegate_store:
+                        e["delegated_to"] = crew_name
+                    if tmpl:
+                        dispatch_agent = tmpl
+            except Exception as exc:
                 e["state"] = prior_state or "pending"
                 e.pop("dispatch_id", None)
                 logger.warning(
                     "crew: dispatch aborted before spawning; reopened %s",
-                    e.get("msg_id"), exc_info=True,
+                    e.get("msg_id"),
+                    exc_info=True,
                 )
+                self._post_start_failure(slot, exc)
                 raise
             info = self._subagents.spawn(
                 (e["text"] + _SUB_TASK_SUFFIX),
@@ -1536,14 +1674,25 @@ class CrewOrchestrator:
                 _preassigned_id=dispatch_id,
                 include_memory=not no_reads,
                 include_lessons=not no_reads,
+                # The silo this run reads and writes. A plain topic inherits the
+                # crew's own -- an orchestrating crew is still that crew, and a
+                # child on the global store would end its isolation at the moment
+                # it delegates. A DELEGATION overrides it with the target crew's,
+                # which is the whole point: handing work to the coding crew must
+                # not carry this crew's memory along with it.
+                memory_store=delegate_store or slot.memory_store or "",
             )
             if info is None or (getattr(info, "done", False) and getattr(info, "error", "")):
                 e["state"] = "pending"
-                self._post(
-                    slot,
-                    "Couldn't start that one — say the word and I'll retry.",
-                    kind="crew_ask",
-                )
+                refusal = str(getattr(info, "error", ""))
+                if refusal.startswith("memory_unavailable:"):
+                    self._post_start_failure(slot, RuntimeError(refusal))
+                else:
+                    self._post(
+                        slot,
+                        "Couldn't start that one — say the word and I'll retry.",
+                        kind="crew_ask",
+                    )
                 return
             # The title comes from the decision agent, so it is model output on
             # the same trust footing as a result body — and it is persisted to
@@ -1551,6 +1700,11 @@ class CrewOrchestrator:
             # title. Redact where it is derived, once.
             title = self._safe_for_log(str(a.get("title") or e["text"][:24]))
             st.add_topic(info.id, info.id, title, e["msg_id"])
+            topic = st.topic(info.id)
+            if topic is not None:
+                topic["memory_store"] = delegate_store or slot.memory_store or ""
+                topic["dispatch_agent"] = dispatch_agent
+                topic["delegated_to"] = e.get("delegated_to", "")
             self._owned[info.id] = slot.key
             e["state"] = "accepted"
             e["run_id"] = info.id
@@ -1605,7 +1759,8 @@ class CrewOrchestrator:
                 e.pop("run_id", None)
                 logger.warning(
                     "crew: steer aborted before injection; reopened %s",
-                    e.get("msg_id"), exc_info=True,
+                    e.get("msg_id"),
+                    exc_info=True,
                 )
                 raise
             ok, _detail = await self._subagents.steer_run(t["active_run_id"], e["text"])
@@ -1622,12 +1777,21 @@ class CrewOrchestrator:
                 await self._dispatch_continue(slot, st, t, e)
         elif do == "ask":
             e["state"] = "ask"
-            self._post(slot, str(a.get("question") or "Quick check — is that about an existing topic, or something new?"), kind="crew_ask")
+            self._post(
+                slot,
+                str(
+                    a.get("question")
+                    or "Quick check — is that about an existing topic, or something new?"
+                ),
+                kind="crew_ask",
+            )
         elif do == "meta":
             e["state"] = "done"
             self._post(slot, self._render_topics(st), kind="crew_meta")
 
-    async def _dispatch_continue(self, slot: Any, st: CrewStore, t: dict[str, Any], e: dict[str, Any]) -> None:
+    async def _dispatch_continue(
+        self, slot: Any, st: CrewStore, t: dict[str, Any], e: dict[str, Any]
+    ) -> None:
         if slot.key in self._purged:
             return
         dispatch_id = uuid.uuid4().hex[:8]
@@ -1644,22 +1808,27 @@ class CrewOrchestrator:
         # otherwise persist a continuation that never happened.
         try:
             await CrewStore.wait_for(st.save_queue())
-        except Exception:
+            # Legacy topics have no cached agent. Resolve before the side
+            # effect, inside the rollback window, just like a fresh spawn.
+            dispatch_agent = t.get("dispatch_agent") or await self._dispatch_agent(slot)
+        except Exception as exc:
             e["state"] = prior_state or "pending"
             e.pop("dispatch_id", None)
             logger.warning(
                 "crew: continuation aborted before dispatch; reopened %s",
-                e.get("msg_id"), exc_info=True,
+                e.get("msg_id"),
+                exc_info=True,
             )
+            self._post_start_failure(slot, exc)
             raise
         # Same contract as the spawn path: the dispatch identity is durable
         # BEFORE the side effect, so a crash between the two is recoverable by
         # id rather than a guess. Without this the continuation minted its id
         # inside the call, and a restart could neither adopt the started run nor
         # safely reopen the entry.
-        dispatch_agent = await self._dispatch_agent(slot)
         info = self._subagents.continue_conversation(
-            t["topic_id"], e["text"] + _SUB_TASK_SUFFIX,
+            t["topic_id"],
+            e["text"] + _SUB_TASK_SUFFIX,
             # Same governance key as the spawn path: a continuation re-enters the
             # capability check, so keying it to the tab would let a resumed topic
             # run under a surface the linked session never granted.
@@ -1677,6 +1846,10 @@ class CrewOrchestrator:
             e["state"] = "pending"
             return
         if getattr(info, "done", False) and getattr(info, "error", ""):
+            if str(info.error).startswith("memory_unavailable:"):
+                e["state"] = "pending"
+                self._post_start_failure(slot, RuntimeError(str(info.error)))
+                return
             err = str(info.error)
             if err.startswith("conversation_busy"):
                 t.setdefault("held", []).append(e["msg_id"])
@@ -1690,7 +1863,6 @@ class CrewOrchestrator:
                 # and the acceptance write leaves an id nothing can match, and
                 # reconciliation re-executes the task.
                 respawn_id = uuid.uuid4().hex[:8]
-                respawn_prior = e.get("state")
                 e["dispatch_id"] = respawn_id
                 # Queue-only barrier: see the spawn path. The respawn's identity is
                 # the recovery record; an unrelated store write failing here would
@@ -1699,24 +1871,53 @@ class CrewOrchestrator:
                 # persists a respawn that never happened.
                 try:
                     await CrewStore.wait_for(st.save_queue())
-                except Exception:
-                    e["state"] = respawn_prior or "pending"
+                    no_reads = bool(getattr(slot, "blocks_reads", False))
+                    dispatch_agent = t.get("dispatch_agent") or await self._dispatch_agent(slot)
+                    if "memory_store" in t:
+                        retry_store = t["memory_store"]
+                    else:
+                        # Recover the original protected binding, never the
+                        # coordinator's store, before committing to a respawn.
+                        from kiro_crew.subagent_persistence import (
+                            _run_memory_identity_path,
+                            read_state,
+                        )
+
+                        retry_store = self._subagents._inherited_memory_store(t["topic_id"])
+                        if (
+                            not retry_store
+                            and not _run_memory_identity_path(t["topic_id"]).exists()
+                            and read_state(t["topic_id"]) is None
+                        ):
+                            from kiro_crew.memory_stores import UnknownMemoryStore
+
+                            raise UnknownMemoryStore(
+                                "memory_unavailable: this legacy topic's run identity is missing; "
+                                "start a new topic instead of resuming with Global memory"
+                            )
+                except Exception as exc:
+                    e["state"] = prior_state or "pending"
                     e.pop("dispatch_id", None)
                     logger.warning(
                         "crew: respawn aborted before spawning; reopened %s",
-                        e.get("msg_id"), exc_info=True,
+                        e.get("msg_id"),
+                        exc_info=True,
                     )
+                    self._post_start_failure(slot, exc)
                     raise
-                no_reads = bool(getattr(slot, "blocks_reads", False))
-                dispatch_agent = await self._dispatch_agent(slot)
                 fresh = self._subagents.spawn(
                     seed + _SUB_TASK_SUFFIX,
                     parent_session_key=effective_session_key(slot),
                     cwd=self._slot_cwd(slot),
-                    agent=dispatch_agent, keep=True,
+                    agent=dispatch_agent,
+                    keep=True,
                     _preassigned_id=respawn_id,
                     include_memory=not no_reads,
                     include_lessons=not no_reads,
+                    # Same silo as the run this replaces (see the primary
+                    # dispatch): a respawn that fell back to the global store
+                    # would quietly widen the crew's reach on a retry.
+                    memory_store=retry_store,
                 )
                 if fresh is not None and not (
                     getattr(fresh, "done", False) and getattr(fresh, "error", "")
@@ -1731,11 +1932,15 @@ class CrewOrchestrator:
                     # Refused respawn (SubagentInfo(done=True, error=...)):
                     # recording it as live would wedge the topic forever.
                     e["state"] = "pending"
-                    self._post(
-                        slot,
-                        "Couldn't pick that one back up — say the word and I'll retry.",
-                        kind="crew_ask",
-                    )
+                    refusal = str(getattr(fresh, "error", ""))
+                    if refusal.startswith("memory_unavailable:"):
+                        self._post_start_failure(slot, RuntimeError(refusal))
+                    else:
+                        self._post(
+                            slot,
+                            "Couldn't pick that one back up — say the word and I'll retry.",
+                            kind="crew_ask",
+                        )
             return
         t["active_run_id"] = info.id
         t["status"] = "running"
@@ -1752,7 +1957,9 @@ class CrewOrchestrator:
         for t in live:
             n = len(t.get("held", []))
             extra = f" (+{n} queued)" if n else ""
-            lines.append(f"- **{t['title']}** — {t['status']}{extra}: {t.get('digest') or 'just started'}")
+            lines.append(
+                f"- **{t['title']}** — {t['status']}{extra}: {t.get('digest') or 'just started'}"
+            )
         return "\n".join(lines)
 
     # ---- completion delivery ----
@@ -1804,7 +2011,10 @@ class CrewOrchestrator:
         summary = (m.group(1).strip() if m else raw.strip()[:800]) or "(no output)"
         # Canonical three-way outcome (SubagentInfo.outcome docstring: consumers
         # MUST use it): a user-stopped run is neither success nor failure.
-        outcome = str(getattr(info, "outcome", "") or ("failed" if getattr(info, "error", "") else "completed"))
+        outcome = str(
+            getattr(info, "outcome", "")
+            or ("failed" if getattr(info, "error", "") else "completed")
+        )
         if outcome == "stopped":
             summary = "Stopped at your request."
         elif outcome == "failed":
@@ -1865,7 +2075,11 @@ class CrewOrchestrator:
                 )
             except Exception:
                 logger.debug("crew: closed-slot notification failed", exc_info=True)
-            logger.info("crew: completion %s settled for closed slot %s (forward persisted)", info.id, slot_key)
+            logger.info(
+                "crew: completion %s settled for closed slot %s (forward persisted)",
+                info.id,
+                slot_key,
+            )
             return
         try:
             await self._queue_forward(slot, body)
@@ -1874,13 +2088,18 @@ class CrewOrchestrator:
             # idle now, so no future completion would ever dispatch these and
             # they would sit behind it forever. Delivering the result and
             # dispatching the queue are independent obligations of one completion.
-            held = t.get("held", [])
-            if held:
-                head = st.entry(held.pop(0))
-                if head is not None:
-                    head["state"] = "pending"
-                    await self._dispatch_continue(slot, st, t, head)
-            st.save()
+            try:
+                held = t.get("held", [])
+                if held:
+                    head = st.entry(held.pop(0))
+                    if head is not None:
+                        head["state"] = "pending"
+                        await self._dispatch_continue(slot, st, t, head)
+            finally:
+                # Resolution can fail after the durable claim but before any
+                # continuation starts. Persist its rollback and the held-list
+                # removal even when that failure propagates to the callback.
+                await CrewStore.wait_for(st.save())
 
     async def _queue_forward(self, slot: Any, body: str) -> None:
         """Deliver ONE completion as ONE message, immediately.
@@ -1909,7 +2128,7 @@ class CrewOrchestrator:
         lock = self._drain_locks.setdefault(slot.key, asyncio.Lock())
         async with lock:
             fid = st.add_forward(body)
-            await st.wait_writes()      # durable BEFORE the post, not just queued
+            await st.wait_writes()  # durable BEFORE the post, not just queued
             # Clear ONLY on a delivery that happened. `_post` has handled failure
             # paths (redaction refusal, transcript error); dropping the persisted
             # copy on those turned a failed delivery into a permanently lost result.

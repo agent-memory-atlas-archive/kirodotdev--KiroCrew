@@ -36,6 +36,7 @@ MANIFEST.in, so a wheel-only build cannot observe an sdist regression at all.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import sys
 import sysconfig
@@ -60,6 +61,52 @@ _LIBS_SRC = _VENDOR_SRC / _LIBS_DIR_NAME
 # packaging exclude must be re-included explicitly, so assert the exclusion
 # patterns MANIFEST.in actually uses still have a matching re-include.
 _PACKAGING_EXCLUDE_GLOBS = ("*.so", "*.py[cod]")
+
+
+def _manifest_rules(text: str) -> list[tuple[str, str, str]]:
+    """Parse the ordered MANIFEST.in directives that can change membership."""
+    rules: list[tuple[str, str, str]] = []
+    for raw in text.splitlines():
+        fields = raw.strip().split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        directive, args = fields[0], fields[1:]
+        if directive == "global-exclude":
+            rules += [("exclude", "", pattern) for pattern in args]
+        elif directive in ("exclude", "include"):
+            rules += [(f"{directive}-path", "", pattern.replace("\\", "/")) for pattern in args]
+        elif directive == "prune" and args:
+            rules.append(("exclude", args[0].rstrip("/"), "*"))
+        elif directive in ("recursive-include", "recursive-exclude") and len(args) > 1:
+            action = "include" if directive == "recursive-include" else "exclude"
+            rules += [(action, args[0].rstrip("/"), pattern) for pattern in args[1:]]
+    return rules
+
+
+def _manifest_path_matches(path: str, pattern: str) -> bool:
+    """Match an anchored setuptools path pattern without crossing separators."""
+    path_parts = path.split("/")
+    pattern_parts = pattern.split("/")
+    return len(path_parts) == len(pattern_parts) and all(
+        fnmatch.fnmatchcase(part, part_pattern)
+        for part, part_pattern in zip(path_parts, pattern_parts)
+    )
+
+
+def _manifest_ships(path: str, rules: list[tuple[str, str, str]]) -> bool:
+    """Apply setuptools-style ordered patterns to one normalized relative path."""
+    normalized = path.replace("\\", "/")
+    directory, _, name = normalized.rpartition("/")
+    shipped = False
+    for action, rule_dir, pattern in rules:
+        if action.endswith("-path"):
+            if _manifest_path_matches(normalized, pattern):
+                shipped = action == "include-path"
+            continue
+        under = not rule_dir or directory == rule_dir or directory.startswith(rule_dir + "/")
+        if under and fnmatch.fnmatchcase(name, pattern):
+            shipped = action == "include"
+    return shipped
 
 
 def test_source_tree_carries_every_required_lib() -> None:
@@ -174,9 +221,9 @@ def test_both_ci_lanes_run_the_shared_payload_verifier() -> None:
     for lane in ("build.yml", "build-wheel.yml"):
         text = (_REPO_ROOT / ".github" / "workflows" / lane).read_text(encoding="utf-8")
         assert "scripts/verify_vendored_payload.py" in text, f"{lane} skips the shared verifier"
-        assert "python -m build --wheel" not in text, (
-            f"{lane} builds only the wheel, so MANIFEST.in is never evaluated there"
-        )
+        assert (
+            "python -m build --wheel" not in text
+        ), f"{lane} builds only the wheel, so MANIFEST.in is never evaluated there"
 
 
 def test_manifest_rules_keep_every_required_lib() -> None:
@@ -195,35 +242,28 @@ def test_manifest_rules_keep_every_required_lib() -> None:
     having no test. `test_manifest_directives_are_all_modelled` fails if
     MANIFEST.in starts using a directive this parser does not understand.
     """
-    import fnmatch
-
-    # (kind, dir, filename-pattern) in file order. `recursive-include DIR PAT`
-    # and `recursive-exclude DIR PAT` match PAT against the basename at any
-    # depth under DIR; `global-exclude PAT` matches the basename tree-wide;
-    # `prune DIR` drops everything under DIR.
-    rules: list[tuple[str, str, str]] = []
-    for raw in (_REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines():
-        fields = raw.strip().split()
-        if not fields or fields[0].startswith("#"):
-            continue
-        directive, args = fields[0], fields[1:]
-        if directive == "global-exclude":
-            rules += [("exclude", "", pat) for pat in args]
-        elif directive == "prune" and args:
-            rules.append(("exclude", args[0].rstrip("/"), "*"))
-        elif directive in ("recursive-include", "recursive-exclude") and len(args) > 1:
-            kind = "include" if directive == "recursive-include" else "exclude"
-            rules += [(kind, args[0].rstrip("/"), pat) for pat in args[1:]]
+    rules = _manifest_rules((_REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8"))
 
     for plat, required in _REQUIRED_VENDORED_LIBS.items():
         directory = f"src/kiro_crew/_vendor/{_LIBS_DIR_NAME}/{plat}"
         for name in required:
-            shipped = False
-            for kind, rule_dir, pattern in rules:
-                under = not rule_dir or directory == rule_dir or directory.startswith(rule_dir + "/")
-                if under and fnmatch.fnmatch(name, pattern):
-                    shipped = kind == "include"
-            assert shipped, f"MANIFEST.in rules exclude {directory}/{name} from the sdist"
+            path = f"{directory}/{name}"
+            assert _manifest_ships(path, rules), f"MANIFEST.in rules exclude {path} from the sdist"
+
+
+def test_manifest_exclude_uses_setuptools_glob_semantics() -> None:
+    """Anchored wildcards do not cross directories, and later rules win."""
+    directory = "src/kiro_crew/eval/bench/data"
+    rules = _manifest_rules(
+        f"recursive-include {directory} *.json\n"
+        f"exclude {directory}/member-v2-hybrid-*.json\n"
+        f"include {directory}/member-v2-hybrid-qwen3-current.json\n"
+    )
+
+    assert not _manifest_ships(f"{directory}/member-v2-hybrid-qwen3.json", rules)
+    assert _manifest_ships(f"{directory}/member-v2-hybrid-qwen3-current.json", rules)
+    assert _manifest_ships(f"{directory}/nested/member-v2-hybrid-qwen3.json", rules)
+    assert _manifest_ships(f"{directory}/kb_golden_v1.json", rules)
 
 
 def test_manifest_directives_are_all_modelled() -> None:
@@ -234,16 +274,22 @@ def test_manifest_directives_are_all_modelled() -> None:
     otherwise be silently skipped, turning the guard above into a false
     negative — the one outcome worse than no guard at all.
     """
-    modelled = {"global-exclude", "prune", "recursive-include", "recursive-exclude", "include"}
+    modelled = {
+        "exclude",
+        "global-exclude",
+        "include",
+        "prune",
+        "recursive-exclude",
+        "recursive-include",
+    }
     used = set()
     for raw in (_REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines():
         fields = raw.strip().split()
         if fields and not fields[0].startswith("#"):
             used.add(fields[0])
 
-    # `include` needs no modelling: it takes literal paths, and none of the
-    # required libs is named by one. Any OTHER unmodelled directive can remove
-    # files and must be added to the model before this test can pass.
+    # Every currently used directive is applied by `_manifest_rules`; a future
+    # directive must be added there before the membership guard may trust it.
     assert used <= modelled, f"unmodelled MANIFEST.in directives: {sorted(used - modelled)}"
 
 

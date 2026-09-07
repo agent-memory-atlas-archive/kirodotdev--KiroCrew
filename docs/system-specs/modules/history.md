@@ -4,6 +4,37 @@
 
 Persistent conversation history with provenance tracking and LLM-driven consolidation. Conversations survive session expiry and gateway restarts.
 
+Consolidation resolves its destination through the same strict recorded memory
+binding as interactive turns, before starting an extraction provider. A named
+member store must be declared, readable and prepared; malformed or unavailable
+identity aborts the pass without writing to Global Memory V1. Sessions with no
+memory binding retain the V1 consolidation path.
+
+Owned V2 consolidation never publishes or refines shared auto-skills and does
+not run the global skill lifecycle. Member experience remains in that member's
+store; the existing V1 auto-skill behavior is unchanged.
+
+The extraction pass freezes its original transcript and rechecks it after the
+model returns, before writing memory. A generation change, edit/deletion or new
+user turn leaves that pass pending; an appended assistant acknowledgment can
+remain for the next pass. Revision checks additionally prevent a stale proposal
+from overwriting a newer fact. V2 preference/project Markdown is read-only to
+the consolidator even when the global legacy migration flag is false; new facts
+and corrections use structured records. The full policy is owned by
+[memory-skills-hooks](memory-skills-hooks.md#consolidation-historypy-historyconsolidator).
+
+Metadata readability is part of this contract: invalid JSON or invalid text
+encoding in an existing transcript returns an unreadable status. Identity-aware
+consumers refuse the operation; the legacy `get_metadata()` projection still
+returns an empty dictionary for callers that only display history.
+
+Bulk clear excludes transcripts whose metadata cannot be read, including Global
+V1 transcripts. Their owner and pinned state cannot safely be inferred. An owner
+can still delete an exact session through the sidebar's individual Delete action
+(`DELETE /api/sessions/{key}`); that explicit deletion does not require metadata
+parsing and leaves other sessions untouched. This is the recovery path for a
+damaged transcript, without weakening the identity checks on scoped bulk clear.
+
 ### Composition and source ownership
 
 `kiro_crew.history` remains the compatibility facade and defines the real

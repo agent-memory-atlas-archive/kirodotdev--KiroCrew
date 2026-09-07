@@ -41,6 +41,7 @@ _SUBAGENTS_DIR: Path | None = None
 SUBAGENT_CONVERSATION_PREFIX = "subagent:"
 _CLEANUP_IDENTITIES_FILE = "cleanup-identities.json"
 _CLEANUP_IDENTITIES_TRUST_DIR = "subagent-cleanup-identities"
+_RUN_MEMORY_BINDINGS_DIR = "member-memory-bindings"
 _CLEANUP_IDENTITY_LOCK = threading.Lock()
 _LIVE_CLEANUP_IDENTITIES: dict[str, list[dict[str, object]]] = {}
 _LIVE_CLEANUP_HINTS: set[str] = set()
@@ -86,6 +87,16 @@ def _protect_cleanup_identities_path(agent_id: str) -> Path:
 def _delete_cleanup_identities_file(agent_id: str) -> None:
     """Remove the protected generation record after its run folder is gone."""
     shutil.rmtree(_cleanup_identities_path(agent_id).parent, ignore_errors=True)
+    shutil.rmtree(_run_memory_identity_path(agent_id).parent, ignore_errors=True)
+
+
+def _run_memory_identity_path(agent_id: str) -> Path:
+    """A top-level, sandbox-readonly identity tree, never the writable trust tree."""
+    _agent_dir(agent_id)
+    path = _subagents_dir().parent.resolve() / _RUN_MEMORY_BINDINGS_DIR / agent_id / "memory.json"
+    if path.resolve() != path:
+        raise ValueError("memory binding unavailable: protected identity path is redirected")
+    return path
 
 
 def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
@@ -359,6 +370,7 @@ def create_agent_folder(
     parent_session: str = "",
     max_turns: int = 0,
     context_groups: str = "",
+    memory_store: str = "",
 ) -> Path:
     """Create ``~/.kiro/crew/subagents/{id}/`` with ``state.json``.
 
@@ -371,6 +383,13 @@ def create_agent_folder(
     withheld — distinct from the key being absent, which marks a run from before
     the field existed and resolves to all-on.
     """
+    # Resume identity is gateway-owned; the run folder itself is agent writable.
+    memory_path = _run_memory_identity_path(agent_id)
+    for directory in (memory_path.parent.parent, memory_path.parent):
+        platform_compat.make_owner_only_dir(directory)
+        platform_compat.restrict_dir_to_owner(directory)
+    _atomic_write(memory_path, {"memory_store": memory_store, "version": 2})
+    platform_compat.restrict_to_owner(memory_path)
     d = _agent_dir(agent_id)
     d.mkdir(parents=True, exist_ok=True)
     state = {
@@ -385,10 +404,51 @@ def create_agent_folder(
         "turns": 0,
         "last_tool": "",
         "context_groups": context_groups,
+        "memory_store": memory_store,
+        "memory_binding_version": 2,
         "updated_at": time.time(),
     }
     _atomic_write(d / "state.json", state)
     return d
+
+
+def read_run_memory_store(agent_id: str, *, validate_memory_files: bool = True) -> str:
+    """Restore a run's protected memory identity, preserving legacy global runs."""
+    path = _run_memory_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # A known protected directory cannot become a legacy run when its record
+        # disappears. The former trust-tree record was agent-writable and must
+        # never be imported as authority.
+        old_path = _cleanup_identities_path(agent_id).parent / "memory.json"
+        if path.parent.exists() or old_path.exists():
+            raise ValueError(
+                "memory binding unavailable: restore this run's protected memory record"
+            )
+        try:
+            state = json.loads((_agent_dir(agent_id) / "state.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            state = {}
+        except (OSError, ValueError, RecursionError) as exc:
+            raise ValueError("memory binding unavailable: run metadata is unreadable") from exc
+        if not isinstance(state, dict):
+            raise ValueError("memory binding unavailable: run metadata is unreadable")
+        if "memory_binding_version" in state or state.get("memory_store"):
+            raise ValueError(
+                "memory binding unavailable: restore this run's protected memory record"
+            )
+        return ""
+    if not isinstance(payload, dict) or payload.get("version") != 2:
+        raise ValueError("memory binding unavailable: invalid protected memory record")
+    store = payload.get("memory_store")
+    if not isinstance(store, str):
+        raise ValueError("memory binding unavailable: invalid protected memory store")
+    if store:
+        from kiro_crew.memory_stores import require_memory_store
+
+        require_memory_store(store, require_directory=validate_memory_files)
+    return store
 
 
 # ── read / update ────────────────────────────────────────────────────
@@ -547,9 +607,7 @@ def _retention_lock_for_agent(agent_id: str) -> "_AgentLock":
 
 def _try_acquire_retention_lock(agent_id: str) -> "_AgentLock | None":
     """Return held per-agent retention arbitration, or None without blocking."""
-    return _try_acquire_registry_lock(
-        agent_id, _RETENTION_LOCKS, _RETENTION_LOCKS_GUARD
-    )
+    return _try_acquire_registry_lock(agent_id, _RETENTION_LOCKS, _RETENTION_LOCKS_GUARD)
 
 
 def _acquire_retention_locks(*agent_ids: str) -> list["_AgentLock"]:
@@ -687,9 +745,7 @@ def write_tombstone(
     d = _agent_dir(agent_id)
     state = read_state(agent_id) or {}
     cleanup_identity = {
-        key: state[key]
-        for key in ("session_id", "provider", "cwd")
-        if state.get(key)
+        key: state[key] for key in ("session_id", "provider", "cwd") if state.get(key)
     }
     live_cleanup_identities = _live_cleanup_identities(agent_id)
     latest_live_identity = live_cleanup_identities[-1] if live_cleanup_identities else {}
@@ -856,11 +912,7 @@ _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS = 90 * 86400
 def _tombstone_died(ts: dict[str, object], path: Path, now: float) -> int | float:
     """Return a finite, positive, non-future death time with bounded fallback."""
     died = ts.get("died")
-    if (
-        isinstance(died, (int, float))
-        and not isinstance(died, bool)
-        and 0 < died <= now
-    ):
+    if isinstance(died, (int, float)) and not isinstance(died, bool) and 0 < died <= now:
         return died
     try:
         fallback = path.stat().st_mtime
@@ -883,9 +935,7 @@ def _should_defer_tombstone_cleanup(
     """Return whether prune must preserve provider files and identity folder."""
     if retention_unknown:
         if not cleanup_session_id or not (
-            isinstance(died, (int, float))
-            and not isinstance(died, bool)
-            and 0 < died <= now
+            isinstance(died, (int, float)) and not isinstance(died, bool) and 0 < died <= now
         ):
             return False
         return died >= cutoff - _UNREADABLE_STATE_GRACE_SECS
@@ -912,9 +962,7 @@ def _cleanup_identity_fallback_record(
     return records[-1]
 
 
-def _cleanup_retention_fallback(
-    agent_id: str, session_id: object
-) -> tuple[bool | None, str, str]:
+def _cleanup_retention_fallback(agent_id: str, session_id: object) -> tuple[bool | None, str, str]:
     """Return trusted fallback retention, owner, and SID."""
     record = _cleanup_identity_fallback_record(agent_id, session_id)
     if record is None:
@@ -951,9 +999,11 @@ def _tombstone_cleanup_identities(agent_id: str) -> list[tuple[str, str, str]]:
         identities.append(
             (
                 sid,
-                record_provider
-                if isinstance(record_provider, str) and record_provider
-                else PROVIDER_LABEL_DEFAULT,
+                (
+                    record_provider
+                    if isinstance(record_provider, str) and record_provider
+                    else PROVIDER_LABEL_DEFAULT
+                ),
                 record_cwd if isinstance(record_cwd, str) else "",
             )
         )
@@ -1087,9 +1137,7 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
                                 # to honor because it only preserves material.
                                 if sidecar_keep:
                                     retention_unknown = False
-                            conversation_key = str(
-                                fallback_record.get("conversation_key") or ""
-                            )
+                            conversation_key = str(fallback_record.get("conversation_key") or "")
                         owner_id = subagent_id_from_conversation_key(conversation_key)
                         if owner_id and owner_id != d.name:
                             try:
@@ -1120,19 +1168,13 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
                     # arriving after the keep=False decision returns retryable
                     # instead of writing keep=True just before deletion.
                     cleanup_identities = _tombstone_cleanup_identities(d.name)
-                    within_retry_window = (
-                        died >= now - _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS
-                    )
+                    within_retry_window = died >= now - _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS
                     # Legacy/pre-upgrade runs can carry a SID only in the
                     # agent-writable state/tombstone. It is not safe deletion
                     # authority, but the folder is useful for a later trusted
                     # migration. Bound that lookup window so an unavailable
                     # migration cannot accumulate private run folders forever.
-                    if (
-                        lookup_session_id
-                        and not cleanup_identities
-                        and within_retry_window
-                    ):
+                    if lookup_session_id and not cleanup_identities and within_retry_window:
                         continue
                     cleanup_succeeded = True
                     for cleanup_sid, cleanup_provider, cleanup_cwd in cleanup_identities:

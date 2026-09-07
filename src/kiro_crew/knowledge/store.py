@@ -165,6 +165,28 @@ def _validated_aliases(value: object) -> str:
     return text
 
 
+def _validated_embedding_sig(value: object) -> str | None:
+    """``items.embedding_sig``: an opaque signature string, or NULL.
+
+    Deliberately shape-only. The value's grammar belongs to its producer
+    (:func:`kiro_crew.knowledge.embedder.embed_signature`), and a signature this
+    store cannot recognise is safe in the only direction that matters: it fails
+    to equal the importing store's own signature, so ``_vector_search`` refuses
+    the vector instead of scoring it across spaces. What is NOT safe is a
+    non-string reaching the bind, which raises past the typed-error contract --
+    hence the guard here rather than at one HTTP path.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise KnowledgeBundleError("'items.embedding_sig' must be a non-empty string or null")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise KnowledgeBundleError("'items.embedding_sig' must be valid UTF-8 text") from None
+    return value
+
+
 def _without_sync_status(properties):
     """*properties* with any ``sync_status`` key removed.
 
@@ -318,6 +340,13 @@ class SimpleDiGraph:
         with self._lock:
             return iter(list(self._rev.get(nid, {})))
 
+
+# ``knowledge_meta`` key holding the embedding vector space the corpus is currently
+# reconciled to (an ``embedder.embed_signature`` value). Un-set means the store has
+# never been reconciled, which is NOT the same as "reconciled to the bundled model":
+# the KB records provenance per item, so an unrecorded store carries no store-wide
+# claim about its vectors either way.
+_EMBED_SPACE_KEY = "embedding_space"
 
 # The per-document state tables, each with the status that means "this row owns a
 # live item group". The vocabularies genuinely differ and are NOT interchangeable:
@@ -629,6 +658,19 @@ class KnowledgeStore:
             CREATE TABLE IF NOT EXISTS dismissed_auto_sources (
                 uri TEXT PRIMARY KEY,
                 dismissed_at TEXT NOT NULL
+            );
+
+            -- Store-level key/value facts about the corpus as a whole, as opposed
+            -- to anything a source or an item owns. Its one key today is the
+            -- embedding vector space (_EMBED_SPACE_KEY): a per-item signature can
+            -- only say what produced THAT row, so a store-wide "which space is
+            -- current" answer has nowhere else to live, and reconciliation needs
+            -- it to tell a swap apart from a store that has simply never been
+            -- reconciled.
+            CREATE TABLE IF NOT EXISTS knowledge_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
 
         """)
@@ -1280,6 +1322,94 @@ class KnowledgeStore:
         the reload that :meth:`delete_items_batch` would have done for it.
         """
         self._load_graph()
+
+    def recorded_embedding_space(self) -> str | None:
+        """The embedding space this corpus is reconciled to, or None if unrecorded.
+
+        Read-only companion to :meth:`reconcile_embedding_space`, for a caller
+        that must DETECT a stale vector space without mutating -- a one-shot CLI
+        can then leave the vector leg off for the run instead of invalidating
+        signatures it has no way to re-stamp.
+        """
+        row = self.db.execute(
+            "SELECT value FROM knowledge_meta WHERE key = ?", (_EMBED_SPACE_KEY,)
+        ).fetchone()
+        return row["value"] if row else None
+
+    def reconcile_embedding_space(self, signature: str) -> int:
+        """Point the corpus at embedding space *signature*. Returns rows invalidated.
+
+        Stored vectors are comparable only to vectors from the same model at the
+        same width. After a model change an OLD-SPACE vector of the SAME WIDTH
+        would otherwise be cosine-scored against a NEW-SPACE query and returned
+        with a confident score -- the per-search dimension guard cannot see it,
+        because the widths agree. This is the store-side half of the fix: it
+        records the active space and NULLs every active item's ``embedding_sig``,
+        which makes ``HybridRetriever._vector_search`` (whose candidate
+        selection pins ``embedding_sig``) refuse those rows immediately. The KB
+        then answers from FTS5 + graph until the sig-gated rebuild re-stamps
+        them, rather than scoring stale vectors.
+
+        Cheap and reversible by construction: it touches no ``embedding`` blob,
+        re-embeds nothing, and is one UPDATE of one column, so re-stamping the
+        same signature restores the previous state exactly.
+
+        **Deliberately NOT rollback-able the way vector memory's namesake is,**
+        and the asymmetry is structural rather than an omission. Memory records
+        one space for the whole store and clears blobs, so its reconcile either
+        happened or did not. Here the authority is PER ITEM, and
+        ``rebuild_embeddings`` overwrites blobs in place one item at a time, so
+        there is no instant at which the corpus is atomically in one space: an
+        interrupted rebuild leaves some items in the new space and some in the
+        old, whatever this method does. NULLing the signature is the honest
+        substitute -- an interrupted swap is RESUMABLE (every not-yet-rebuilt
+        item still reads as stale and is refused meanwhile) instead of corrupt
+        (a stale vector stamped current and skipped forever).
+
+        Idempotent: a signature that already matches is a no-op, so a caller may
+        run this on every boot. The record and the invalidation land in ONE
+        ``BEGIN IMMEDIATE`` transaction, because a crash between them in either
+        order is a lie -- a stamped space over un-invalidated signatures serves
+        stale vectors permanently, and invalidation without the stamp re-runs
+        forever.
+
+        A store with NO recorded space is treated as unproven and invalidated:
+        nothing recorded which space produced its vectors, and refusing to serve
+        them costs a re-embed while serving them costs silently wrong answers.
+        Callers must therefore not invoke this speculatively on an upgrade path
+        where the space is known to be unchanged.
+
+        Blocking SQLite work under a write lock -- call it off the event loop.
+        """
+        if self.recorded_embedding_space() == signature:
+            return 0
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                "INSERT INTO knowledge_meta (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (_EMBED_SPACE_KEY, signature, datetime.now().isoformat()),
+            )
+            invalidated = self.db.execute(
+                "UPDATE items SET embedding_sig = NULL "
+                "WHERE status = 'active' AND embedding_sig IS NOT NULL"
+            ).rowcount
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        if invalidated:
+            logger.warning(
+                "Knowledge embedding space changed (now %s) -- invalidated the signature on "
+                "%d active item(s). They stay keyword- and graph-searchable and are dropped "
+                "from vector search until the sig-gated rebuild re-embeds them.",
+                signature,
+                invalidated,
+            )
+        else:
+            logger.info("Recorded knowledge embedding space %s", signature)
+        return max(0, invalidated)
 
     def source_count(self) -> int:
         """Total number of registered sources (all types)."""
@@ -2159,12 +2289,22 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                         raw_emb = base64.b64decode(raw_emb)
                     except Exception:
                         raw_emb = None
+                # ``embedding_sig`` travels WITH the blob. It is the only thing
+                # that says which vector space the imported vector belongs to,
+                # and ``HybridRetriever._vector_search`` pins it -- so dropping
+                # it lands every imported item at NULL, which the vector leg
+                # reads as unproven provenance and refuses. The vectors are in
+                # the bundle and would simply never be scored again until a full
+                # re-embed. A foreign-space signature is exactly as welcome: it
+                # will not match the importing store's own signature, so those
+                # vectors are refused on purpose rather than by accident.
                 cursor = self.db.execute(
-                    "INSERT OR IGNORE INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, status, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, embedding_sig, status, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (item["id"], item["title"], item["content"], item["item_type"],
                      item.get("source_id"), item.get("chunk_index", 0), item.get("namespace", "default"), item.get("summary"),
-                     item.get("tags", "[]"), raw_emb, item.get("status", "active"),
+                     item.get("tags", "[]"), raw_emb, _validated_embedding_sig(item.get("embedding_sig")),
+                     item.get("status", "active"),
                      item.get("created_at", now), now))
                 if cursor.rowcount > 0:
                     items_imported += 1

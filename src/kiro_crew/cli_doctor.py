@@ -206,7 +206,10 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         bindings = resolve_agent_bindings(cfg)
         override = normalize_agent_model(bindings.model)
         bound = bindings.kiro_agent or "kirocrew"
-    except Exception:  # noqa: BLE001 -- a broken alias must not kill the report
+    except Exception as exc:  # noqa: BLE001 -- a broken alias must not kill the report
+        print(f"  binding:     unavailable ({_safe_display(str(exc))})")
+        print("               Open the member settings and initialize private memory if missing.")
+        issues.append("default agent binding unavailable")
         override = ""
         bound = "kirocrew"
     # kiro_agent is free text in config.json and this name reaches a path join.

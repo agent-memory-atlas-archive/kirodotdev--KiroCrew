@@ -15,6 +15,7 @@ from aiohttp import web
 from kiro_crew.context import ContextBuilder
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -76,7 +77,10 @@ def _build_context(state: DashboardState) -> str:
 
     # Active workspace memory
     try:
-        memory = ContextBuilder.get_memory_for(None)
+        # The GLOBAL store by name, not by omission. This surface summarizes the
+        # operator's own memory for a dashboard panel, so it stays on the v1
+        # path deliberately rather than inheriting whichever crew spoke last.
+        memory = ContextBuilder.get_memory_for(memory_store=DEFAULT_MEMORY_STORE)
         prefs = memory.read_preferences()
         if prefs and prefs.strip() != "# User Preferences\n\n<!-- Learned from conversations -->":
             parts.append(f"## User Preferences\n{prefs[:2000]}")
@@ -186,9 +190,7 @@ async def generate_suggestions(state: DashboardState) -> list[str]:
     # of failing permanently. Best-effort: on any error fall back to the static
     # suggestions rather than surfacing it.
     try:
-        text = await run_bg_oneliner(
-            state.sessions, prompt, sel_source="suggestions", timeout=60
-        )
+        text = await run_bg_oneliner(state.sessions, prompt, sel_source="suggestions", timeout=60)
     except Exception:
         logger.warning("Suggestions generation failed", exc_info=True)
         return list(_FALLBACK_SUGGESTIONS)
@@ -268,8 +270,14 @@ async def api_suggestions(request: web.Request) -> web.Response:
     else:
         await maybe_refresh(state, cache)
 
-    return web.json_response({
-        "suggestions": cache.suggestions,
-        "generated_at": cache.generated_at,
-        "stale": (time.time() - cache.generated_at) > _REFRESH_INTERVAL_SECS if cache.generated_at else True,
-    })
+    return web.json_response(
+        {
+            "suggestions": cache.suggestions,
+            "generated_at": cache.generated_at,
+            "stale": (
+                (time.time() - cache.generated_at) > _REFRESH_INTERVAL_SECS
+                if cache.generated_at
+                else True
+            ),
+        }
+    )

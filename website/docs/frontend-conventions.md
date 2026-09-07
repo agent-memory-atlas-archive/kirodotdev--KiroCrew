@@ -37,6 +37,11 @@ hand-rolling:
 There is deliberately no `Select` primitive: use `SimpleSelect`,
 `SettingsSelect`, or `SearchableSelect`.
 
+`SimpleSelect` accepts optional decorative `optionIcons` alongside its text
+labels. Desktop rows and the selected value show those identities; touch devices
+retain the native text option list and show the selected icon beside the control.
+An icon does not replace the option's accessible name or typeahead text.
+
 The provenance pill is **`SourceBadge`**, not a badge named after any one source.
 Two implementations exist on purpose:
 `ui.tsx`'s takes a required `source` string and renders it as the label;
@@ -92,6 +97,13 @@ All three take their metrics from `ui/tabsPill.ts`, so they cannot drift apart
 visually — `src/test/tabsPillParity.test.tsx` pins that. Do NOT hand-roll a
 fourth: a `border-b-2` row of buttons has no keyboard model and no selected state
 for assistive tech, which is the defect this consolidation removed.
+
+Radix Tabs uses a static selected indicator when reduced motion is requested.
+Setting a shared-layout spring's duration to zero still permits projection
+transforms; those can cover another tab after a layout change. Memory record
+selection panels and cards likewise disable layout projection in this mode.
+The rail owns the stacking context for its indicators, so a sliding background
+stays behind every tab label while crossing between segments.
 
 A navigation rail sits in `TABS_RAIL_ROW_CLASS` (rail, rule, then content). The
 rule is load-bearing rather than decoration: it is the only thing telling a
@@ -261,6 +273,23 @@ constant also decides which paths are treated as local file reads, so the two
 decisions must stay on the one exported copy in `urlTransform.ts`.
 
 ## Data fetching
+
+The shared memory editor keeps the existing global V1 Key/Value/Set action
+inside the lazily loaded Overview memory drill-in. The shell shows the shared
+`ContentSkeleton` while that chunk loads; the member/store URL remains the
+navigation owner throughout loading. This keeps record editing and recovery
+tools out of the initial dashboard bundle. The create action remains
+beside the paged browser. Its unscoped semantic writer is available only when
+the selected store is global and the surface is not private. The narrow form
+stacks its inputs and submit button; its draft joins the store-switch guard,
+pending submission disables the fields, and an error retains them for retry.
+
+Private recall presents the returned fact and experience snippets as compact
+evidence cards. Exact serialized model context and source diagnostics live in
+the collapsed Source and retrieval details disclosure. Rules have their own
+indicator and full context there; fact snippets do not represent the rules
+included in recall. The disclosure accepts the recall API's structured copy
+origin as well as the record browser's serialized origin.
 
 Always React Query (`useQuery` / `useMutation`) for server state. Do NOT use
 manual `useState` + `useEffect` + `useCallback` for an API call. Prefer optimistic

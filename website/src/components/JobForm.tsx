@@ -174,6 +174,9 @@ interface Props {
    *  that embed the form inside a single crew's own surface, where offering a
    *  crew picker would just be a way to file the job in the wrong place. */
   lockedAgent?: string
+  /** Durable member identity, distinct from its provider template. */
+  memberId?: string
+  providerAgent?: string
   onSaved: () => void
   /** Vertical layout for side panel, horizontal for inline create */
   layout?: 'vertical' | 'horizontal'
@@ -192,9 +195,11 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void
 }
 
-export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onDirtyChange }: Props) {
+export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onDirtyChange }: Props) {
   // "" and undefined both mean unlocked, so render and submit share one truth.
-  const locked = lockedAgent || undefined
+  const boundMember = job?.member_id || memberId
+  const privateMember = !!boundMember && boundMember !== 'default'
+  const locked = boundMember || lockedAgent || undefined
   const defaults = parseJobDefaults(job)
   // In create mode (no job), a preset can seed the prompt + schedule fields.
   // Edit mode always reflects the job as-stored and ignores any prefill.
@@ -292,7 +297,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // Recomputed as the prompt is typed, which is why it is a local regex pass
   // and not a round trip. Reads minimalContext too, so the hint stops once the
   // reader has acted on it.
-  const advice = useMemo(() => adviseCronMode(msg, minimalContext), [msg, minimalContext])
+  const advice = useMemo(() => privateMember ? 'none' : adviseCronMode(msg, minimalContext), [msg, minimalContext, privateMember])
 
   /** Model-override rows as the two parallel arrays `SimpleSelect` takes.
    *
@@ -313,6 +318,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
     const body = buildBody(f, tz, setError, !!job)
     if (!body) { setSaving(false); return }
+    if (boundMember && !isLlmless) {
+      body.member_id = boundMember
+      body.agent = providerAgent || job?.agent || ''
+    }
     try {
       const res = job
         ? await api.updateCron(job.id, body)
@@ -531,7 +540,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             )}
             <SettingsToggle
               label={i18nT('components.jobForm.minimal_context')}
-              description={i18nT('components.jobForm.minimal_context_description')}
+              description={i18nT(privateMember ? 'components.jobForm.private_minimal_context_description' : 'components.jobForm.minimal_context_description')}
               checked={minimalContext}
               onChange={setMinimalContext}
             />

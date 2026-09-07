@@ -85,9 +85,7 @@ class ScenarioResult:
 
     @property
     def passed_assertions(self) -> int:
-        return sum(
-            1 for s in self.sessions for t in s.turns for _, ok in t.assertion_results if ok
-        )
+        return sum(1 for s in self.sessions for t in s.turns for _, ok in t.assertion_results if ok)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -158,12 +156,7 @@ ProviderFactory = Callable[[str], LLMProvider]
 # Tools considered safe to auto-approve during eval (read-only).
 # Fully-qualified names use exact match; ambiguous short names require
 # additional path validation before approval.
-_SAFE_TOOL_EXACT: frozenset[str] = frozenset(
-    s.lower()
-    for s in (
-        "WorkspaceSearch",
-    )
-)
+_SAFE_TOOL_EXACT: frozenset[str] = frozenset(s.lower() for s in ("WorkspaceSearch",))
 
 _SAFE_TOOL_PREFIXES_FS: tuple[str, ...] = tuple(
     s.lower()
@@ -264,7 +257,9 @@ class EvalRunner:
                 if isinstance(provider, AcpProvider):
                     # Access private attribute directly to avoid modifying core provider
                     # files. TODO: add set_workspace() to AcpProvider.
-                    if not (hasattr(provider, "_client") and hasattr(provider._client, "_work_dir")):
+                    if not (
+                        hasattr(provider, "_client") and hasattr(provider._client, "_work_dir")
+                    ):
                         raise RuntimeError(
                             "AcpProvider internals changed — eval workspace override broken"
                         )
@@ -303,8 +298,8 @@ class EvalRunner:
                 await asyncio.to_thread(skills.sync_builtins)
             except Exception:
                 logger.warning(
-                    "builtin-skill sync failed; continuing without synced "
-                    "builtins", exc_info=True,
+                    "builtin-skill sync failed; continuing without synced " "builtins",
+                    exc_info=True,
                 )
             ctx_builder = ContextBuilder(
                 memory=memory,
@@ -322,7 +317,8 @@ class EvalRunner:
 
             for idx, session_def in enumerate(scenario.sessions):
                 session_result = await self._run_session(
-                    session_def, ws,
+                    session_def,
+                    ws,
                     provider_factory=shared_ws_factory,
                     ctx_builder=ctx_builder if idx > 0 else None,
                 )
@@ -349,7 +345,7 @@ class EvalRunner:
             if session_mgr:
                 await session_mgr.close_all()
             if vector_store:
-                vector_store.close()
+                await asyncio.to_thread(vector_store.close)
             if old_ws is None:
                 os.environ.pop("KIROCREW_WORKSPACE", None)
             else:
@@ -451,7 +447,10 @@ class EvalRunner:
         return ""
 
     async def _run_turn(
-        self, provider: LLMProvider, turn_def: Turn, session_key: str,
+        self,
+        provider: LLMProvider,
+        turn_def: Turn,
+        session_key: str,
     ) -> TurnResult:
         """Send a message and collect the response."""
         t0 = time.monotonic()
@@ -585,8 +584,7 @@ def format_results(results: list[ScenarioResult]) -> str:
                 for assertion, ok in tr.assertion_results:
                     a_status = "✅" if ok else "❌"
                     lines.append(
-                        f"     {a_status} {assertion.type.value}: "
-                        f"`{assertion.value[:50]}`"
+                        f"     {a_status} {assertion.type.value}: " f"`{assertion.value[:50]}`"
                     )
                 if not tr.passed:
                     snippet = tr.agent_response[:200].replace("\n", " ")

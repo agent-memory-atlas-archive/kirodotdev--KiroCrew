@@ -44,6 +44,13 @@ from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX, SUBAGENT_TIMEOUT_SECS
+
+# Imported for its NAME, not for a call in this module:
+# ``bind_component_globals`` rebinds every ``*_impl`` function's globals to
+# this module's namespace, so ``subagent_manager.run`` can only reach the
+# helper if it resolves HERE. Removing this as "unused" reintroduces a
+# NameError that fails the whole subagent run.
+from kiro_crew.context import prepare_store_vectors  # noqa: F401
 from kiro_crew.context import (
     CONTEXT_GROUP_LESSONS,
     CONTEXT_GROUP_MEMORY,
@@ -1354,6 +1361,17 @@ class SubagentInfo:
     include_memory: bool = True
     include_lessons: bool = True
     include_project: bool = True
+    # The memory silo this child reads and writes, or "" for the global store.
+    # Carried rather than derived: `agent` above holds a kiro-cli modeId, a
+    # namespace disjoint from cfg.agents, so resolving a store from it answers
+    # `default` for exactly the crew that configured otherwise — silently, and
+    # toward the operator's own memory. The caller passes a name it already
+    # resolved (ResolvedBindings.memory_store_name) or nothing at all.
+    #
+    # Empty is the correct default for a plain spawn: a child that inherits no
+    # crew reads the global store, which is what every spawn did before crews
+    # had silos.
+    memory_store: str = ""
     # Session key override for continuation runs: a spawn_continue run reuses
     # the ORIGINAL run's session key (``subagent:<conv-id>``) so get_or_create
     # finds the persisted sid and arms session/load. Empty ⇒ the default
@@ -2081,6 +2099,7 @@ class SubagentManager:
         include_memory: bool = True,
         include_lessons: bool = True,
         include_project: bool = True,
+        memory_store: str = "",
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
@@ -2105,6 +2124,7 @@ class SubagentManager:
             include_memory,
             include_lessons,
             include_project,
+            memory_store,
             _agent_prevalidated,
             _from_queue,
             _preassigned_id,
@@ -2158,6 +2178,9 @@ class SubagentManager:
 
     def _inherited_context_groups(self, conv_id: str) -> tuple[bool, bool, bool]:
         return self._continuation._inherited_context_groups_impl(conv_id)
+
+    def _inherited_memory_store(self, conv_id: str) -> str:
+        return self._continuation._inherited_memory_store_impl(conv_id)
 
     async def steer_run(self, agent_id: str, message: str) -> tuple[bool, str]:
         return await self._continuation.steer_run_impl(agent_id, message)

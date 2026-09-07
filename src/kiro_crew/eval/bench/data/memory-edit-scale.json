@@ -1,0 +1,35 @@
+{
+  "python": "3.12.14",
+  "platform": "Windows",
+  "workload": "synthetic indexed facts; every fifth row contains one email; one pass with tracemalloc",
+  "results": [
+    {
+      "version": "v1",
+      "store_rows": 10000,
+      "email_matches": 2000,
+      "edited": 2000,
+      "preview_sample": 25,
+      "peak_python_allocation_mib": 7.09,
+      "timings_with_tracemalloc": {
+        "last_page_ms": 962.86,
+        "preview_ms": 1533.19,
+        "apply_ms": 3119.93
+      },
+      "embedding_calls": 0
+    },
+    {
+      "version": "v2",
+      "store_rows": 10000,
+      "email_matches": 2000,
+      "edited": 2000,
+      "preview_sample": 25,
+      "peak_python_allocation_mib": 6.99,
+      "timings_with_tracemalloc": {
+        "last_page_ms": 1112.82,
+        "preview_ms": 1613.9,
+        "apply_ms": 2857.99
+      },
+      "embedding_calls": 0
+    }
+  ]
+}

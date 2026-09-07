@@ -65,6 +65,7 @@ from kiro_crew.history import (
     transcript_sort_key,
     update_metadata_off_loop,
 )
+from kiro_crew.memory_stores import named_store_or_empty
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -765,6 +766,47 @@ def _attach_variants(slot: _ChatSlot, m: dict) -> None:
         slot.messages[-1]["variant_idx"] = m.get("variant_idx", 0)
 
 
+def _pin_private_agent_assignment(
+    session_key: str,
+    agent: str,
+    config: KiroCrewConfig,
+    *,
+    conversation_log=None,
+    native_context: bool = False,
+) -> str:
+    """Pin an owner-selected member, never a name recovered from history.
+
+    Callers must positively authorize the owner request before using this
+    helper. Legacy members keep their declared V1 memory until owner opt-in.
+    """
+    selected = agent or config.default_agent
+    if selected == "default":
+        return ""
+    member = config.agents.get(selected)
+    store = getattr(member, "memory_store", "")
+    if not store:
+        return ""
+    record = config.memory_stores.get(store) if isinstance(store, str) else None
+    if record is None or record.memory_version != 2:
+        return ""
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+    from kiro_crew.memory_stores import require_member_memory_store
+
+    store = require_member_memory_store(config, selected)
+    log = conversation_log if conversation_log is not None else ConversationLog()
+    if read_private_session_store(session_key) is None and (
+        native_context or log.has_log(session_key)
+    ):
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
+        raise UnknownMemoryStore(
+            "This conversation retains its V1 history. Open a new conversation for private memory."
+        )
+    bind_private_session_store(session_key, store)
+    return store
+
+
 def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
     """Resolve a member slot's restore identity from its binding.
 
@@ -785,7 +827,7 @@ def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
     prefix = members_mod.DM_SLOT_KEY_PREFIX
     if not slot_name.startswith(prefix):
         return None
-    binding = members_mod.read_dm_binding(slot_name[len(prefix) :])
+    binding = members_mod.read_dm_binding_for_slot(slot_name)
     member = (binding or {}).get("member", "")
     if not member:
         logger.warning(
@@ -942,6 +984,7 @@ def _rehydrate_slot_from_history(
         # Legacy metadata has no ``created_at``: record the observation
         # itself so the guard's missing-file witness still fires for it.
         slot._disk_meta_observed = bool(meta)
+        slot._memory_assignment_from_history = True
         # Member keys keep the binding-derived agent/mode: transcript metadata
         # is the operator-editable file the pin must not re-derive from.
         if meta.get("agent") and _member_identity is None:
@@ -970,6 +1013,8 @@ def _rehydrate_slot_from_history(
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if meta.get("workspace"):
             slot.workspace = meta["workspace"]
+        if meta.get("memory_store"):
+            slot.memory_store = str(meta["memory_store"])
         if meta.get("project"):
             slot.project = meta["project"]
         # Restore the remote executor marker INDEPENDENTLY of its target fields.
@@ -1507,6 +1552,7 @@ def _apply_recent_session(
     # Legacy metadata has no ``created_at``: record the observation itself so
     # the guard's missing-file witness still fires for it.
     slot._disk_meta_observed = bool(meta)
+    slot._memory_assignment_from_history = True
     # Member keys keep the binding-derived agent/mode: transcript metadata is
     # the operator-editable file the pin must not re-derive from.
     if meta.get("agent") and _member_identity is None:
@@ -1532,6 +1578,8 @@ def _apply_recent_session(
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
+    if meta.get("memory_store"):
+        slot.memory_store = str(meta["memory_store"])
     if meta.get("project"):
         slot.project = meta["project"]
     if meta.get("mode") and _member_identity is None:
@@ -2850,6 +2898,14 @@ def _save_slot_to_history(
                     fields["agent"] = slot.agent
                 if slot.workspace:
                     fields["workspace"] = slot.workspace
+                # CLEARABLE, and it has to be: the merge cannot delete a key, so a
+                # crew rebound from a silo back to the default store would keep
+                # consolidating into the silo it left. The cleared spelling is ""
+                # rather than "default" so it reads as falsy everywhere -- the
+                # rehydrate mirror and the consolidator's own resolver both treat
+                # falsy as "the global store", which is also how a session written
+                # before crew stores existed reads.
+                fields["memory_store"] = named_store_or_empty(slot.memory_store)
                 if slot.project:
                     fields["project"] = slot.project
                 if slot._app:
@@ -3159,6 +3215,8 @@ def _save_slot_to_history(
                 meta_line["mode"] = slot.mode
             if slot.workspace and slot.workspace != "default":
                 meta_line["workspace"] = slot.workspace
+            if _named := named_store_or_empty(slot.memory_store):
+                meta_line["memory_store"] = _named
             if slot.project:
                 meta_line["project"] = slot.project
             # Remote-execution binding. All three are written together or not at

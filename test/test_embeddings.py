@@ -178,9 +178,7 @@ def _load_bundled_linux_llama(monkeypatch, vendor: Path, cpu_probe):
     env_was_set = embeddings_mod._LIB_PATH_ENV in os.environ
     prior_env = os.environ.get(embeddings_mod._LIB_PATH_ENV)
     monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", vendor)
-    monkeypatch.setattr(
-        embeddings_mod, "_platform_libs_dirname", lambda: "linux_x86_64"
-    )
+    monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "linux_x86_64")
     monkeypatch.setattr(embeddings_mod, "_linux_x86_64_cpu_flags", cpu_probe)
     embeddings_mod._load_llama_class.cache_clear()
     try:
@@ -197,9 +195,7 @@ def _load_bundled_linux_llama(monkeypatch, vendor: Path, cpu_probe):
 
 
 class TestBundledLinuxX86CpuGate:
-    def test_cpuinfo_parser_normalizes_sse3_and_intersects_processors(
-        self, tmp_path: Path
-    ) -> None:
+    def test_cpuinfo_parser_normalizes_sse3_and_intersects_processors(self, tmp_path: Path) -> None:
         cpuinfo = tmp_path / "cpuinfo"
         cpuinfo.write_text(
             "processor: 0\nflags: pni ssse3 avx avx2 bmi2 f16c fma\n\n"
@@ -217,9 +213,7 @@ class TestBundledLinuxX86CpuGate:
     def test_unreadable_cpuinfo_is_unknown(self, tmp_path: Path) -> None:
         assert embeddings_mod._linux_x86_64_cpu_flags(tmp_path / "missing") is None
 
-    def test_compatible_cpu_continues_to_native_import(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_compatible_cpu_continues_to_native_import(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
         _stub_bundled_linux_libs(tmp_path)
         fake_llama_cpp = ModuleType("llama_cpp")
@@ -284,16 +278,12 @@ class TestBundledLinuxX86CpuGate:
         assert "SIGILL" in caplog.text
         assert embeddings_mod._LIB_PATH_ENV not in os.environ
 
-    def test_unknown_cpu_features_fail_closed(
-        self, tmp_path: Path, monkeypatch, caplog
-    ) -> None:
+    def test_unknown_cpu_features_fail_closed(self, tmp_path: Path, monkeypatch, caplog) -> None:
         monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
         _stub_bundled_linux_libs(tmp_path)
 
         with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
-            result, active_lib_path = _load_bundled_linux_llama(
-                monkeypatch, tmp_path, lambda: None
-            )
+            result, active_lib_path = _load_bundled_linux_llama(monkeypatch, tmp_path, lambda: None)
 
         assert result is None
         assert active_lib_path is None
@@ -379,9 +369,7 @@ class TestLlamaCppEmbedder:
         assert len(vec) == _DIM
         assert emb.is_ready()
 
-    def test_embed_returns_none_when_model_file_missing(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_embed_returns_none_when_model_file_missing(self, tmp_path: Path, monkeypatch) -> None:
         """No model file → None without ever constructing the Llama class."""
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
@@ -410,9 +398,7 @@ class TestLlamaCppEmbedder:
         assert emb.wait_ready(timeout=5)
         assert emb.embed("hello") is None
 
-    def test_embed_returns_none_on_malformed_response(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_embed_returns_none_on_malformed_response(self, tmp_path: Path, monkeypatch) -> None:
         """Vector count mismatch (empty data) degrades to None, not a crash."""
         fake_cls = _make_fake_llama_class()
         fake_cls.response_override = {"data": []}
@@ -612,9 +598,7 @@ class TestLlamaCppEmbedder:
         first_worker.join(timeout=5)
         assert not first_worker.is_alive()
 
-    def test_inference_error_propagates_from_the_worker(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_inference_error_propagates_from_the_worker(self, tmp_path: Path, monkeypatch) -> None:
         """A failure raised on the worker thread still degrades to None, not a hang."""
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
@@ -651,7 +635,7 @@ def _fake_urlopen_factory(
             self.headers = {"Content-Length": str(len(data))}
 
         def read(self, n: int) -> bytes:
-            chunk = self._data[self._pos:self._pos + n]
+            chunk = self._data[self._pos : self._pos + n]
             self._pos += n
             return chunk
 
@@ -751,9 +735,7 @@ class TestModelDownloadManager:
         tiny = b"tiny placeholder"
         fake_urlopen, _state = _fake_urlopen_factory(payload=tiny)
         monkeypatch.setattr("kiro_crew.embeddings.urllib.request.urlopen", fake_urlopen)
-        monkeypatch.setattr(
-            "kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(tiny).hexdigest()
-        )
+        monkeypatch.setattr("kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(tiny).hexdigest())
         mgr = self._mgr(tmp_path)
         assert await mgr.ensure_model(attempts=1) is False
         assert not mgr.target.exists()
@@ -762,9 +744,7 @@ class TestModelDownloadManager:
         assert "download failed" in str(mgr.status["error"])
 
     @pytest.mark.asyncio
-    async def test_network_failure_reports_failed_status(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    async def test_network_failure_reports_failed_status(self, tmp_path: Path, monkeypatch) -> None:
         fake_urlopen, _state = _fake_urlopen_factory(fail_rcs=[True])
         monkeypatch.setattr("kiro_crew.embeddings.urllib.request.urlopen", fake_urlopen)
         mgr = self._mgr(tmp_path)
@@ -1015,13 +995,14 @@ class TestEmbedThreads:
 
     def test_default_when_unset(self, monkeypatch) -> None:
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
-        assert embeddings_mod._embed_threads() == embeddings_mod._DEFAULT_EMBED_THREADS
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
+        assert embeddings_mod._DEFAULT_EMBED_THREADS == 4
+        assert embeddings_mod._embed_threads() == 4
 
     def test_configured_value_is_used(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 2}
-        )
-        assert embeddings_mod._embed_threads() == 2
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 6})
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
+        assert embeddings_mod._embed_threads() == 6
 
     @pytest.mark.parametrize("bad", [0, -1, True, False, "4", 2.5, None])
     def test_invalid_values_fall_back_to_the_default(self, monkeypatch, bad) -> None:
@@ -1029,22 +1010,23 @@ class TestEmbedThreads:
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": bad}
         )
-        assert embeddings_mod._embed_threads() == embeddings_mod._DEFAULT_EMBED_THREADS
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
+        assert embeddings_mod._embed_threads() == 4
 
-    def test_clamped_to_the_core_count(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (8, 8)])
+    def test_clamped_to_core_count(self, monkeypatch, cores, expected) -> None:
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 9999}
         )
-        monkeypatch.setattr("os.cpu_count", lambda: 8)
-        assert embeddings_mod._embed_threads() == 8
+        monkeypatch.setattr("os.cpu_count", lambda: cores)
+        assert embeddings_mod._embed_threads() == expected
 
     def test_threads_reach_the_llama_constructor(self, tmp_path: Path, monkeypatch) -> None:
         """BOTH pools are pinned, not only the batch pool that runs inference."""
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
-        monkeypatch.setattr(
-            embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 3}
-        )
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 3})
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
         assert emb.wait_ready(timeout=5)
         kwargs = fake_cls.instances[0].kwargs
@@ -1079,9 +1061,7 @@ class TestEmbedQueueTiming:
     tells the two apart.
     """
 
-    def test_a_queued_embed_reports_wait_not_inference(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_a_queued_embed_reports_wait_not_inference(self, tmp_path: Path, monkeypatch) -> None:
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))

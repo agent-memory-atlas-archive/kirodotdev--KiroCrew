@@ -3,6 +3,7 @@ import { Loader2, Play, Settings, SlidersHorizontal } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { chatErrorDisplayText } from '../../lib/chatErrorRecovery'
 import type { ChatMessage } from '../../types'
 
 /** Row kind the backend stamps on a terminal model-entitlement rejection
@@ -15,8 +16,9 @@ export const isModelUnentitled = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolea
   m.kind === MODEL_UNENTITLED_KIND || (m.meta as { kind?: string } | undefined)?.kind === MODEL_UNENTITLED_KIND
 
 export interface ErrorCardProps {
-  /** Server- or client-authored error prose, rendered verbatim. */
+  /** Server- or client-authored prose; typed diagnostic prefixes are display-only. */
   content: string
+  meta?: ChatMessage['meta']
   /**
    * True on a `model_unentitled` row rendered by a surface that cannot offer
    * one or both fix actions (a pane has no picker; an embed or popout has no
@@ -47,7 +49,6 @@ export interface ErrorCardProps {
 
 const ACTION_BTN =
   'shrink-0 inline-flex items-center gap-2 text-[12px] leading-5 font-medium px-3 py-1 rounded-md border-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
-
 /**
  * The error row in a chat transcript.
  *
@@ -67,6 +68,7 @@ const ACTION_BTN =
  */
 export const ErrorCard = memo(function ErrorCard({
   content,
+  meta,
   onContinue,
   continuing,
   onPickModel,
@@ -74,6 +76,7 @@ export const ErrorCard = memo(function ErrorCard({
   unentitledElsewhere,
 }: ErrorCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const displayText = chatErrorDisplayText(content, meta)
   const unentitledActions = onPickModel || onOpenDefaultModel
   // Name only the affordance THIS surface lacks: a pane has neither, an
   // embed/popout has the picker but not the settings route. Saying "the
@@ -93,7 +96,7 @@ export const ErrorCard = memo(function ErrorCard({
         data-testid="error-card"
       >
         <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-          {content}
+          {displayText}
         </div>
         {onPickModel && onOpenDefaultModel && (
           // Both actions are needed, and a primary/secondary pair reads as
@@ -146,8 +149,9 @@ export const ErrorCard = memo(function ErrorCard({
       <div
         className="bg-danger-subtle text-danger text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-danger/15 self-center animate-scale-in"
         data-testid="error-card"
+        style={{ overflowWrap: 'anywhere' }}
       >
-        {content}
+        {displayText}
         {elsewhere && (
           <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-elsewhere-hint">
             {i18nT(elsewhereKey!)}
@@ -163,7 +167,7 @@ export const ErrorCard = memo(function ErrorCard({
       data-continuable="true"
     >
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-        {content}
+        {displayText}
       </div>
       <button
         type="button"

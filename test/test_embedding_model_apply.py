@@ -135,9 +135,7 @@ class TestGatedCandidateLifecycle:
         assert cand.dim == 768
         assert cand.is_ready() is True
 
-    def test_boot_mismatch_refusal_is_unchanged_by_adopt_mode(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_boot_mismatch_refusal_is_unchanged_by_adopt_mode(self, tmp_path, monkeypatch) -> None:
         """#961's loud refusal must still fire for a concrete configured dim."""
         import kiro_crew.embeddings as emb
 
@@ -176,8 +174,8 @@ class TestGatedCandidateLifecycle:
         cand = emb.LlamaCppEmbedder(
             model_path=_write_model(tmp_path / "m.gguf"), dim=0, serving=False
         )
-        cand.retire()         # the apply timed out and rolled back
-        cand._load_model()    # the abandoned loader finishes afterwards
+        cand.retire()  # the apply timed out and rolled back
+        cand._load_model()  # the abandoned loader finishes afterwards
         assert cand.is_ready() is False, "a retired candidate must stay unloaded"
         assert freed == [True], "the abandoned model must be freed, not published"
 
@@ -257,7 +255,8 @@ class TestEnvOverrideRefusal:
         model = _write_model(tmp_path / "env-model.gguf")
         monkeypatch.setenv("KIROCREW_EMBED_MODEL_PATH", str(model))
         monkeypatch.setattr(
-            emb, "_read_memory_config",
+            emb,
+            "_read_memory_config",
             lambda: {"embed_model_path": "/models/config-model.gguf", "embedding_dim": 768},
         )
         spec = emb.resolve_custom_model()
@@ -294,9 +293,9 @@ class TestSpaceGenerationGuard:
             return [0.1, 0.2, 0.3, 0.4]
 
         store.embed_fn = _embed_then_swap
-        assert store._try_embed("hello") is None, (
-            "a vector produced across a space change must be dropped, not committed"
-        )
+        assert (
+            store._try_embed("hello") is None
+        ), "a vector produced across a space change must be dropped, not committed"
 
     def test_a_normal_embed_is_unaffected(self, tmp_path) -> None:
         store = self._store(tmp_path)
@@ -361,9 +360,9 @@ class TestKnowledgeIngestSignatureBinding:
             "stamp an old-model vector with the new signature"
         )
         assert cap < update
-        assert "embedder_signature(self.embedder)," not in src, (
-            "the UPDATE must bind the captured sig, not re-evaluate it inline"
-        )
+        assert (
+            "embedder_signature(self.embedder)," not in src
+        ), "the UPDATE must bind the captured sig, not re-evaluate it inline"
 
     def test_the_batch_path_still_binds_sig_explicitly(self) -> None:
         """_write_item_embedding already took sig as a parameter — keep it that way."""
@@ -554,9 +553,9 @@ class TestCommitTimeGenerationCheck:
                 "SELECT text, embedding FROM episodic_memories WHERE is_deleted = 0"
             ).fetchone()
             assert row is not None, "the text must still be written — nothing is lost"
-            assert row["embedding"] is None, (
-                "a vector from the previous space must not be committed"
-            )
+            assert (
+                row["embedding"] is None
+            ), "a vector from the previous space must not be committed"
         finally:
             store.close()
 
@@ -578,6 +577,7 @@ class TestCommitTimeGenerationCheck:
     ) -> None:
         store = self._store(tmp_path)
         try:
+
             def _embed_then_swap(text: str) -> list[float]:
                 vec = [0.5, 0.5, 0.5, 0.5]
                 store.begin_space_change()
@@ -636,9 +636,9 @@ class TestCommitTimeGenerationCheck:
             rows = store.db.execute(
                 "SELECT COUNT(*) AS n FROM semantic_memory WHERE embedding IS NOT NULL"
             ).fetchone()
-            assert rows["n"] == 0, (
-                "a lazily backfilled vector from the previous space must not persist"
-            )
+            assert (
+                rows["n"] == 0
+            ), "a lazily backfilled vector from the previous space must not persist"
         finally:
             store.close()
 
@@ -657,9 +657,7 @@ class TestCommitTimeGenerationCheck:
         finally:
             store.close()
 
-    def test_a_precomputed_vector_is_dropped_when_a_swap_follows_its_embed(
-        self, tmp_path
-    ) -> None:
+    def test_a_precomputed_vector_is_dropped_when_a_swap_follows_its_embed(self, tmp_path) -> None:
         """A caller-supplied vector carries provenance the store cannot infer.
 
         The dashboard's lesson handler embeds once off the loop and reuses the
@@ -687,9 +685,7 @@ class TestCommitTimeGenerationCheck:
             row = store.db.execute(
                 "SELECT embedding FROM semantic_memory WHERE embedding IS NOT NULL"
             ).fetchone()
-            assert row is None, (
-                "a caller-supplied vector from the previous space must not persist"
-            )
+            assert row is None, "a caller-supplied vector from the previous space must not persist"
         finally:
             store.close()
 
@@ -743,9 +739,7 @@ class TestCommitTimeGenerationCheck:
             lock_at = src.find("with self._db_lock:")
             check_at = src.find("self._space_generation !=")
             assert -1 not in (lock_at, check_at), fn.__name__
-            assert check_at > lock_at, (
-                f"{fn.__name__} must re-check INSIDE the lock, not before it"
-            )
+            assert check_at > lock_at, f"{fn.__name__} must re-check INSIDE the lock, not before it"
 
 
 class TestRevertToBundledIsGatedToo:
@@ -778,20 +772,21 @@ class TestRevertToBundledIsGatedToo:
 
         custom = _write_model(tmp_path / "custom.gguf")
         monkeypatch.setattr(
-            emb, "_read_memory_config",
+            emb,
+            "_read_memory_config",
             lambda: {"embed_model_path": str(custom), "embedding_dim": 1024},
         )
         # Precondition: the implicit default really would resolve the custom path.
         assert emb.active_model_path() == custom
 
         cand = emb.build_gated_bundled()
-        assert cand.model_path == emb.default_model_path(), (
-            "reverting to bundled must load the bundled file, not the custom one"
-        )
+        assert (
+            cand.model_path == emb.default_model_path()
+        ), "reverting to bundled must load the bundled file, not the custom one"
         assert cand.model_path != custom
-        assert cand.model_id != emb._custom_model_id(custom, ""), (
-            "and must not carry the custom space identity"
-        )
+        assert cand.model_id != emb._custom_model_id(
+            custom, ""
+        ), "and must not carry the custom space identity"
 
     def test_both_branches_install_a_gated_candidate(self) -> None:
         import inspect
@@ -812,9 +807,9 @@ class TestRevertToBundledIsGatedToo:
         first_write = src.find("_write_embed_model_config(")
         wait_at = src.find("wait_ready(")
         assert -1 not in (first_write, wait_at)
-        assert wait_at < first_write, (
-            "persisting before the model loads can strand an unloadable config"
-        )
+        assert (
+            wait_at < first_write
+        ), "persisting before the model loads can strand an unloadable config"
 
 
 class TestReconcileOutcomeIsChecked:
@@ -851,9 +846,9 @@ class TestReconcileOutcomeIsChecked:
         store.init()
         try:
             recorded = store.recorded_embedding_space()
-            assert recorded != embeddings_mod.active_embedding_space_signature(), (
-                "an unstamped store must not compare equal to the active space"
-            )
+            assert (
+                recorded != embeddings_mod.active_embedding_space_signature()
+            ), "an unstamped store must not compare equal to the active space"
         finally:
             store.close()
 
@@ -876,7 +871,7 @@ class TestApplyOrdering:
     def test_activation_comes_after_config_write_and_reconcile(self) -> None:
         src = self._src()
         write_at = src.find("_write_embed_model_config(raw, embedder.dim)")
-        reconcile_at = src.find("reconcile_store_embedding_space(store)")
+        reconcile_at = src.find("reconcile_store_embedding_space(target)")
         activate_at = src.find("activate_shared_embedder()")
         assert -1 not in (write_at, reconcile_at, activate_at)
         assert write_at < activate_at, "activating before persistence exposes the new space"
@@ -891,7 +886,7 @@ class TestApplyOrdering:
         than config, so deferring the write costs nothing.
         """
         src = self._src()
-        reconcile_at = src.find("reconcile_store_embedding_space(store)")
+        reconcile_at = src.find("reconcile_store_embedding_space(target)")
         write_at = src.find("_write_embed_model_config(raw, embedder.dim)")
         assert -1 not in (reconcile_at, write_at)
         assert reconcile_at < write_at
@@ -942,9 +937,9 @@ class TestConfigWriteHasNoOrphanWindow:
 
         src = inspect.getsource(mem._apply_embedding_model)
         assert "fut.result()" in src, "the config write must be awaited unbounded"
-        assert "timeout=" not in src.split("fut.result")[0].split("run_coroutine_threadsafe")[-1], (
-            "a timeout on the config-write future reintroduces the orphan-write window"
-        )
+        assert (
+            "timeout=" not in src.split("fut.result")[0].split("run_coroutine_threadsafe")[-1]
+        ), "a timeout on the config-write future reintroduces the orphan-write window"
 
     @pytest.mark.asyncio
     async def test_a_slow_lock_still_produces_a_consistent_pair(
@@ -978,18 +973,20 @@ class TestStaleModelIdIsCleared:
     """
 
     @pytest.mark.asyncio
-    async def test_changing_the_path_drops_a_pinned_model_id(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    async def test_changing_the_path_drops_a_pinned_model_id(self, tmp_path, monkeypatch) -> None:
         from kiro_crew.dashboard.handlers.memory import _write_embed_model_config
 
         cfg = tmp_path / "config.json"
         cfg.write_text(
-            json.dumps({"memory": {
-                "embed_model_path": "/models/old.gguf",
-                "embed_model_id": "pinned-to-old-model",
-                "embedding_dim": 1024,
-            }}),
+            json.dumps(
+                {
+                    "memory": {
+                        "embed_model_path": "/models/old.gguf",
+                        "embed_model_id": "pinned-to-old-model",
+                        "embedding_dim": 1024,
+                    }
+                }
+            ),
             encoding="utf-8",
         )
         monkeypatch.setattr(
@@ -998,9 +995,9 @@ class TestStaleModelIdIsCleared:
         await _write_embed_model_config("/models/new-same-dim.gguf", 1024)
         mem_cfg = json.loads(cfg.read_text(encoding="utf-8"))["memory"]
         assert mem_cfg["embed_model_path"] == "/models/new-same-dim.gguf"
-        assert "embed_model_id" not in mem_cfg, (
-            "a pinned id would keep the old space signature and retain stale vectors"
-        )
+        assert (
+            "embed_model_id" not in mem_cfg
+        ), "a pinned id would keep the old space signature and retain stale vectors"
 
     @pytest.mark.asyncio
     async def test_reverting_to_bundled_also_drops_the_pinned_id(
@@ -1010,10 +1007,14 @@ class TestStaleModelIdIsCleared:
 
         cfg = tmp_path / "config.json"
         cfg.write_text(
-            json.dumps({"memory": {
-                "embed_model_path": "/models/old.gguf",
-                "embed_model_id": "pinned-to-old-model",
-            }}),
+            json.dumps(
+                {
+                    "memory": {
+                        "embed_model_path": "/models/old.gguf",
+                        "embed_model_id": "pinned-to-old-model",
+                    }
+                }
+            ),
             encoding="utf-8",
         )
         monkeypatch.setattr(
@@ -1039,9 +1040,9 @@ class TestPathIsValidatedAtPointOfUse:
         from kiro_crew.dashboard.handlers import memory as mem
 
         src = inspect.getsource(mem._apply_embedding_model)
-        assert "validate_custom_model_path(" in src, (
-            "the worker must re-apply the sensitive-path gate before opening the file"
-        )
+        assert (
+            "validate_custom_model_path(" in src
+        ), "the worker must re-apply the sensitive-path gate before opening the file"
         # The backend must be built from the VALIDATED path, never from a
         # re-derived raw string.
         assert "build_gated_candidate(candidate)" in src
@@ -1087,9 +1088,7 @@ class TestValidateCustomModelPath:
 
     def test_rejects_protected_location(self, tmp_path: Path, monkeypatch) -> None:
         secret = _write_model(tmp_path / "credentials")
-        monkeypatch.setattr(
-            "kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True
-        )
+        monkeypatch.setattr("kiro_crew.embeddings.is_sensitive_path", lambda p, base_dir=None: True)
         _, error, code = validate_custom_model_path(str(secret))
         assert "protected location" in error
         assert code == "model_path_protected"

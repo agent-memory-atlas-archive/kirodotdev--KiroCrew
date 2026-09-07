@@ -174,7 +174,6 @@ src/kiro_crew/connections/l0_probe.py
 src/kiro_crew/connections/l0_record.py
 src/kiro_crew/connections/registry.py
 src/kiro_crew/connections/tool_aliases.py
-src/kiro_crew/crew_chat.py
 src/kiro_crew/cron_history.py
 src/kiro_crew/dashboard/cautious_boot.py
 src/kiro_crew/dashboard/channel_folders.py
@@ -196,7 +195,6 @@ src/kiro_crew/dashboard/handlers/link_meta.py
 src/kiro_crew/dashboard/handlers/mcp.py
 src/kiro_crew/dashboard/handlers/mcp_apps.py
 src/kiro_crew/dashboard/handlers/mcp_custom.py
-src/kiro_crew/dashboard/handlers/memory.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/side.py
@@ -243,7 +241,6 @@ src/kiro_crew/eval/bench/ingest.py
 src/kiro_crew/eval/bench/retrieval.py
 src/kiro_crew/eval/bench/run.py
 src/kiro_crew/eval/bench/scorers.py
-src/kiro_crew/eval/runner.py
 src/kiro_crew/eval/scenario.py
 src/kiro_crew/frontend.py
 src/kiro_crew/gateway_shutdown_budget.py
@@ -270,7 +267,6 @@ src/kiro_crew/knowledge/store.py
 src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
 src/kiro_crew/mcp_apps_render.py
-src/kiro_crew/mcp_caller.py
 src/kiro_crew/mcp_cleanup.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
@@ -292,7 +288,6 @@ src/kiro_crew/mcp_gateway/spill.py
 src/kiro_crew/mcp_gateway/stub.py
 src/kiro_crew/mcp_gateway/transport.py
 src/kiro_crew/mcp_gateway/verdict_cache.py
-src/kiro_crew/mcp_shared.py
 src/kiro_crew/mcp_tools/apps.py
 src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/mcp_tools/knowledge.py
@@ -312,7 +307,6 @@ src/kiro_crew/pod/provision.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
-src/kiro_crew/security/__init__.py
 src/kiro_crew/seed.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
@@ -331,12 +325,9 @@ src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
 src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/sessions_view.py
-src/kiro_crew/subagent_persistence.py
 src/kiro_crew/subagent_scale.py
-src/kiro_crew/suggestions.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
-src/kiro_crew/vector_memory.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
 src/kiro_crew/workflows/agent_exec.py
@@ -366,7 +357,6 @@ test/test_acp_true_provider_error.py
 test/test_acp_turn_lock.py
 test/test_admission_gate.py
 test/test_agent.py
-test/test_agent_default_model.py
 test/test_agent_delete_reference_guard.py
 test/test_agent_discovery.py
 test/test_agent_import_hoist.py
@@ -423,7 +413,6 @@ test/test_artifacts_handlers.py
 test/test_artifacts_handlers_coverage.py
 test/test_ask_question_roundtrip.py
 test/test_ask_user_question_validation.py
-test/test_auto_approve.py
 test/test_auto_research.py
 test/test_auto_research_handlers_coverage.py
 test/test_auto_research_onloop_db.py
@@ -515,7 +504,6 @@ test/test_connections_l0_probe.py
 test/test_connections_registry.py
 test/test_connections_tool_aliases.py
 test/test_consolidate_cmd.py
-test/test_consolidation_placeholder_guard.py
 test/test_context_marker_neutralization.py
 test/test_context_ui_language.py
 test/test_continuable_followups.py
@@ -647,9 +635,7 @@ test/test_doc_parser.py
 test/test_docker_entrypoint.py
 test/test_doctor_sandbox_verdict.py
 test/test_effort.py
-test/test_embedding_model_apply.py
 test/test_embedding_space_reconcile.py
-test/test_embeddings.py
 test/test_enable_embeddings_faiss.py
 test/test_enterprise.py
 test/test_env.py
@@ -691,14 +677,12 @@ test/test_handlers_channel_clear_context.py
 test/test_handlers_channel_presets.py
 test/test_handlers_files_upload.py
 test/test_handlers_mcp_coverage.py
-test/test_handlers_memory_coverage.py
 test/test_heartbeat_atomic_merge.py
 test/test_heartbeat_prompt_deliver.py
 test/test_heartbeat_retention.py
 test/test_heartbeat_sel_prune_offload.py
 test/test_history.py
 test/test_history_atomic_rewrite.py
-test/test_history_consolidation_retry.py
 test/test_history_coverage.py
 test/test_history_locking_remediation.py
 test/test_history_race.py
@@ -754,7 +738,6 @@ test/test_knowledge_kiroignore.py
 test/test_knowledge_source_spend.py
 test/test_knowledge_sync_local_file.py
 test/test_learn.py
-test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
 test/test_lifecycle_hooks.py
 test/test_link_dashboard.py
@@ -796,7 +779,6 @@ test/test_mcp_gateway_exclusive_backend.py
 test/test_mcp_gateway_image_budget.py
 test/test_mcp_gateway_oversize.py
 test/test_mcp_gateway_pool_integ.py
-test/test_mcp_gateway_recaller.py
 test/test_mcp_gateway_session_inject.py
 test/test_mcp_gateway_shutdown_and_env.py
 test/test_mcp_gateway_stub_admission_fallback.py
@@ -818,7 +800,6 @@ test/test_mcp_registry_governance.py
 test/test_mcp_seed.py
 test/test_mcp_server_alias.py
 test/test_mcp_shareability.py
-test/test_mcp_shared.py
 test/test_mcp_shared_cache.py
 test/test_mcp_shared_cancelled_bound.py
 test/test_mcp_skill_registry.py
@@ -875,14 +856,12 @@ test/test_papyrus_tectonic.py
 test/test_parse_options.py
 test/test_parse_time_string_tz.py
 test/test_pending_skill_notification_content.py
-test/test_perf_boot_path.py
 test/test_perf_memory_quickwins.py
 test/test_perf_sampler.py
 test/test_persist_off_loop.py
 test/test_persistence_probe.py
 test/test_personal_shopper_no_purchase_capability.py
 test/test_platform_admission.py
-test/test_platform_compat_coverage.py
 test/test_playwright_e2e.py
 test/test_pod_e2e_video_guard.py
 test/test_pod_launchd.py
@@ -1067,7 +1046,6 @@ test/test_tailnet_serve.py
 test/test_tailnet_session_url.py
 test/test_taskrunner_atomic_persistence.py
 test/test_taskrunner_autoapprove.py
-test/test_taskrunner_v2_scenarios.py
 test/test_tcc_protected_dirs.py
 test/test_teams_config.py
 test/test_teams_gateway.py
@@ -1098,9 +1076,7 @@ test/test_use_builtin_browser_config.py
 test/test_user_resolution_fallback.py
 test/test_validation.py
 test/test_validation_user_actions.py
-test/test_vector_memory.py
 test/test_vector_memory_coverage.py
-test/test_vendored_llama_payload.py
 test/test_verbosity_config.py
 test/test_voice_reply.py
 test/test_wait_countdown_keepalive.py

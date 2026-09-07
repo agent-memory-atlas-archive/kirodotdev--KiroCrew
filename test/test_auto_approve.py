@@ -258,9 +258,13 @@ class TestAutoApproveExecution:
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
         runner._on_tool_approval = on_tool_approval
 
-        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running", task_id="t1")
+        run = TaskRun(
+            spec_path=str(tmp_path / "t.md"), spec_content="s", status="running", task_id="t1"
+        )
         run.auto_approve = True
-        safety_override().activate_scoped(_auto_approve_scope("t1"), source="dashboard")  # live grant
+        safety_override().activate_scoped(
+            _auto_approve_scope("t1"), source="dashboard"
+        )  # live grant
         step = Step(index=1, title="Write", description="d")
         run.tasks = [step]
 
@@ -282,7 +286,9 @@ class TestAutoApproveExecution:
 
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
         # No interactive handler → after trust lapses, deny-by-default applies.
-        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running", task_id="t1")
+        run = TaskRun(
+            spec_path=str(tmp_path / "t.md"), spec_content="s", status="running", task_id="t1"
+        )
         run.auto_approve = True  # intent set, but NO active SafetyOverride grant (expired/absent)
         step = Step(index=1, title="Write", description="d")
         run.tasks = [step]
@@ -329,6 +335,7 @@ class TestAutoApproveRespectsHookDeny:
 
         # ctx.hooks.on_tool_call returns TOOL_DENY (deny-list / sensitive-path block).
         ctx = MagicMock()
+        ctx.conversation_log.get_metadata_status.return_value = ({}, True)
         ctx.build_message = MagicMock(return_value=("prompt", {}))
         ctx.hooks.on_tool_call = MagicMock(return_value=MagicMock(action=TOOL_DENY))
 
@@ -359,6 +366,7 @@ class TestAutoApproveRespectsHookDeny:
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
 
         ctx = MagicMock()
+        ctx.conversation_log.get_metadata_status.return_value = ({}, True)
         ctx.build_message = MagicMock(return_value=("prompt", {}))
         ctx.hooks.on_tool_call = MagicMock(return_value=MagicMock(action=TOOL_AUTO_APPROVE))
 
@@ -370,9 +378,10 @@ class TestAutoApproveRespectsHookDeny:
         step = Step(index=1, title="Read", description="d")
         run.tasks = [step]
 
-        with patch("kiro_crew.task_executor.self_review", return_value=True), patch(
-            "kiro_crew.task_executor.sel"
-        ) as mock_sel:
+        with (
+            patch("kiro_crew.task_executor.self_review", return_value=True),
+            patch("kiro_crew.task_executor.sel") as mock_sel,
+        ):
             await runner._execute_single_task(run, step)
 
         provider.approve_tool.assert_awaited_once_with("req-1")
@@ -417,7 +426,9 @@ class TestForceApprovalGateUnaffected:
         assert step.status == StepStatus.PASSED
 
     @pytest.mark.asyncio
-    async def test_force_approval_denied_pauses_even_when_auto_approve(self, tmp_path: Path) -> None:
+    async def test_force_approval_denied_pauses_even_when_auto_approve(
+        self, tmp_path: Path
+    ) -> None:
         sessions = _mock_sessions()
         runner = TaskRunner(
             sessions=sessions,
@@ -451,7 +462,9 @@ class TestAutoApproveProvenanceGating:
     human-at-the-dashboard signal.
     """
 
-    async def _auto_approve_passed(self, tmp_path: Path, source: str, auto_approve: bool, request_app: str = ""):
+    async def _auto_approve_passed(
+        self, tmp_path: Path, source: str, auto_approve: bool, request_app: str = ""
+    ):
         runner = MagicMock()
         runner._work_dir = tmp_path
         runner.start_background = MagicMock(return_value="tid")
@@ -463,7 +476,9 @@ class TestAutoApproveProvenanceGating:
             "auto_approve": auto_approve,
         }
         req = make_mocked_request(
-            "POST", "/api/taskrunner", app=app,
+            "POST",
+            "/api/taskrunner",
+            app=app,
             payload=BodyStreamPayload(json.dumps(start_body).encode()),
         )
         req["app"] = request_app  # set by token_auth_middleware; "" == dashboard itself
@@ -476,7 +491,10 @@ class TestAutoApproveProvenanceGating:
     @pytest.mark.asyncio
     async def test_app_embedded_caller_ignored(self, tmp_path: Path) -> None:
         # Even with source="dashboard", an app/proxy-embedded caller cannot self-trust.
-        assert await self._auto_approve_passed(tmp_path, "dashboard", True, request_app="someapp") is False
+        assert (
+            await self._auto_approve_passed(tmp_path, "dashboard", True, request_app="someapp")
+            is False
+        )
 
     @pytest.mark.asyncio
     async def test_dashboard_source_allows_trust(self, tmp_path: Path) -> None:
@@ -498,8 +516,12 @@ class TestAutoApproveProvenanceGating:
         exec_body = {"auto_approve": auto_approve}
         raw = json.dumps(exec_body).encode()
         req = make_mocked_request(
-            "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
-            headers={"Content-Length": str(len(raw))}, payload=BodyStreamPayload(raw),
+            "POST",
+            "/api/taskrunner/t1/execute",
+            app=app,
+            match_info={"task_id": "t1"},
+            headers={"Content-Length": str(len(raw))},
+            payload=BodyStreamPayload(raw),
         )
         req["app"] = request_app
         await api_taskrunner_execute_plan(req)
@@ -531,13 +553,19 @@ class TestAutoApproveProvenanceGating:
         app["state"] = SimpleNamespace(task_runner=runner)
         raw = json.dumps({"auto_approve": True}).encode()
         req = make_mocked_request(
-            "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
-            headers={"Content-Length": str(len(raw))}, payload=BodyStreamPayload(raw),
+            "POST",
+            "/api/taskrunner/t1/execute",
+            app=app,
+            match_info={"task_id": "t1"},
+            headers={"Content-Length": str(len(raw))},
+            payload=BodyStreamPayload(raw),
         )
         req["app"] = ""  # dashboard context → requested trust is honored, so the gate audits
 
         boom = MagicMock()
-        boom.log_tool_invocation.side_effect = RuntimeError("sel backend down: SECRET-INTERNAL-DETAIL")
+        boom.log_tool_invocation.side_effect = RuntimeError(
+            "sel backend down: SECRET-INTERNAL-DETAIL"
+        )
         with patch("kiro_crew.dashboard.handlers.taskrunner._sel", return_value=boom):
             resp = await api_taskrunner_execute_plan(req)
 
@@ -576,7 +604,9 @@ class TestInlineSpecCleanup:
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
         req = make_mocked_request(
-            "POST", "/api/taskrunner", app=app,
+            "POST",
+            "/api/taskrunner",
+            app=app,
             payload=BodyStreamPayload(json.dumps(body).encode()),
         )
         req["app"] = ""

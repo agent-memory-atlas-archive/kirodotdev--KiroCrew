@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from body_stream_helpers import attach_body
 
+from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -110,8 +112,16 @@ class TestFindContradictionCandidates:
         query_text = "novel guidance"
         query_emb = [1.0] + [0.0] * 383
         lesson_words = [
-            "alpha", "bravo", "charlie", "delta", "echo",
-            "foxtrot", "golf", "hotel", "india", "juliett",
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "echo",
+            "foxtrot",
+            "golf",
+            "hotel",
+            "india",
+            "juliett",
         ]
         emb_map = {query_text: query_emb}
         for i, word in enumerate(lesson_words):
@@ -140,7 +150,9 @@ class TestFindContradictionCandidates:
         store.init()
         store.embed_fn = _discriminating_embed
         assert store.write_lesson("Use chronological order for release notes")
-        rows = store.db.execute("SELECT key FROM semantic_memory WHERE key LIKE 'lesson.%'").fetchall()
+        rows = store.db.execute(
+            "SELECT key FROM semantic_memory WHERE key LIKE 'lesson.%'"
+        ).fetchall()
         assert len(rows) == 1
         key = rows[0]["key"]
         # Overwrite the stored 384-float embedding with a 128-float one, as a
@@ -163,7 +175,9 @@ class TestFindContradictionCandidates:
         store.init()
         store.embed_fn = _discriminating_embed
         assert store.write_lesson("Always quote shell arguments in scripts")
-        rows = store.db.execute("SELECT key FROM semantic_memory WHERE key LIKE 'lesson.%'").fetchall()
+        rows = store.db.execute(
+            "SELECT key FROM semantic_memory WHERE key LIKE 'lesson.%'"
+        ).fetchall()
         key = rows[0]["key"]
         stale_blob = struct.pack("128f", *([0.5] * 128))
         store.db.execute(
@@ -287,6 +301,7 @@ class TestResolveContradictions:
 
             async def prompt(self, _prompt):  # noqa: ANN001 - test double
                 import asyncio
+
                 await asyncio.sleep(10)
                 yield SimpleNamespace(kind=EVENT_COMPLETE)  # pragma: no cover
 
@@ -302,16 +317,67 @@ class TestResolveContradictions:
 class TestResolveAndSupersede:
     """Tests for the backgrounded _resolve_and_supersede helper."""
 
+    @pytest.mark.parametrize("private_memory", [False, True], ids=["v1", "v2"])
+    async def test_private_rules_survive_without_requesting_a_model(
+        self, tmp_path, monkeypatch, private_memory
+    ):
+        """Only V1 may remove a persisted rule on an inferred contradiction."""
+        from kiro_crew import memory_stores
+        from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
+
+        root = tmp_path / "memory_stores"
+        monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
+        directory = root / "member-alice" if private_memory else tmp_path
+        if private_memory:
+            directory.mkdir(parents=True)
+            (directory / "member-memory.json").write_text(
+                json.dumps({"memory_version": 2, "owner_member": "alice"}),
+                encoding="utf-8",
+            )
+        vs = VectorMemoryStore(db_path=directory / "memory.db")
+        await asyncio.to_thread(vs.init)
+        try:
+            assert vs.algorithm_version == ("v2" if private_memory else "v1")
+            old_rule = {"rule": "Use X format", "category": "tool"}
+            new_rule = {"rule": "Do NOT use X format", "category": "tool"}
+            for key, value in (("lesson.old", old_rule), ("lesson.new", new_rule)):
+                await asyncio.to_thread(vs.set_semantic, key, value, 1.0, "user_explicit")
+            state = MagicMock()
+            session = _FakeBgSession("CONTRADICTORY")
+            state.sessions.get_bg_session = AsyncMock(return_value=session)
+            candidates = [{"key": "lesson.old", "rule": old_rule["rule"], "similarity": 0.6}]
+
+            with patch("kiro_crew.dashboard.handlers.cron._sel"):
+                await _resolve_and_supersede(
+                    state, "dashboard:ui", new_rule["rule"], candidates, vs
+                )
+
+            old_record = await asyncio.to_thread(vs.get_semantic, "lesson.old")
+            assert (old_record is not None) is private_memory
+            assert await asyncio.to_thread(vs.get_semantic, "lesson.new") is not None
+            if private_memory:
+                state.sessions.get_bg_session.assert_not_awaited()
+                session.set_model.assert_not_awaited()
+            else:
+                state.sessions.get_bg_session.assert_awaited_once()
+                session.set_model.assert_awaited_once_with("auto")
+                session.destroy.assert_awaited_once()
+        finally:
+            await asyncio.to_thread(vs.close)
+
     async def test_deletes_contradicted_keys(self):
         from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
         state = MagicMock()
         vs = MagicMock()
         candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
-        with patch(
-            "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-            new=AsyncMock(return_value=["lesson.old"]),
-        ), patch("kiro_crew.dashboard.handlers.cron._sel"):
+        with (
+            patch(
+                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                new=AsyncMock(return_value=["lesson.old"]),
+            ),
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+        ):
             await _resolve_and_supersede(state, "dashboard:ui", "Do NOT use X", candidates, vs)
         vs.delete_semantic.assert_called_once_with("lesson.old", "contradiction_superseded")
 
@@ -338,10 +404,13 @@ class TestResolveAndSupersede:
         vs = MagicMock()
         vs.delete_semantic.side_effect = [RuntimeError("already deleted"), None]
         candidates = [{"key": "lesson.a", "rule": "r", "similarity": 0.6}]
-        with patch(
-            "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-            new=AsyncMock(return_value=["lesson.a", "lesson.b"]),
-        ), patch("kiro_crew.dashboard.handlers.cron._sel"):
+        with (
+            patch(
+                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                new=AsyncMock(return_value=["lesson.a", "lesson.b"]),
+            ),
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+        ):
             await _resolve_and_supersede(state, "dashboard:ui", "new", candidates, vs)
         # Both keys attempted despite the first raising.
         assert vs.delete_semantic.call_count == 2
@@ -350,9 +419,10 @@ class TestResolveAndSupersede:
 @pytest.mark.asyncio
 class TestApiLessonsCreateSchedulesSweep:
     """The handler seam: api_lessons_create registers a background task iff
-    the contradiction scan finds candidates (locks the fire-and-forget wiring)."""
+    a V1 write lands and its contradiction scan finds candidates."""
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -360,12 +430,13 @@ class TestApiLessonsCreateSchedulesSweep:
         attach_body(request, body)
         return request
 
-    async def _run(self, candidates, wrote=True):
+    async def _run(self, candidates, wrote=True, algorithm_version="v1"):
         from kiro_crew.dashboard.handlers import cron
 
         state = MagicMock()
         state._background_tasks = set()
         vs = MagicMock()
+        vs.algorithm_version = algorithm_version
         vs.embed_lesson.return_value = [0.1] * 384
         vs.find_contradiction_candidates.return_value = candidates
         # A real result object, not a bare bool: the route reads the outcome to decide
@@ -377,10 +448,12 @@ class TestApiLessonsCreateSchedulesSweep:
             if wrote
             else LessonWriteResult(LessonWriteOutcome.REFUSED, "injection_blocked")
         )
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
-             patch.object(cron, "_is_restricted_session", return_value=False), \
-             patch.object(cron, "_sel"), \
-             patch.object(cron, "_resolve_and_supersede", new=AsyncMock()):
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)),
+            patch.object(cron, "_is_restricted_session", return_value=False),
+            patch.object(cron, "_sel"),
+            patch.object(cron, "_resolve_and_supersede", new=AsyncMock()),
+        ):
             resp = await cron.api_lessons_create(self._request(state))
         assert resp.status == 200
         # Let any scheduled task settle so it doesn't leak a warning.
@@ -397,6 +470,15 @@ class TestApiLessonsCreateSchedulesSweep:
     async def test_no_task_when_no_candidates(self):
         tasks = await self._run([])
         assert tasks == []
+
+    async def test_private_write_does_not_scan_or_schedule_a_model_sweep(self):
+        tasks = await self._run(
+            [{"key": "lesson.old", "rule": "r", "similarity": 0.6}],
+            algorithm_version="v2",
+        )
+        assert tasks == []
+        self._vs.find_contradiction_candidates.assert_not_called()
+        self._vs.write_lesson.assert_called_once()
 
     async def test_refused_write_does_not_sweep(self):
         """A write that did not land must not supersede anything.
@@ -434,6 +516,7 @@ class TestApiLessonsCreateForwardsNegative:
     _NEGATIVE = "Do not use unittest directly"
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -448,10 +531,12 @@ class TestApiLessonsCreateForwardsNegative:
     async def _post(self, state, vector_store):
         from kiro_crew.dashboard.handlers import cron
 
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vector_store)), \
-             patch.object(cron, "_is_restricted_session", return_value=False), \
-             patch.object(cron, "_sel"), \
-             patch.object(cron, "_resolve_and_supersede", new=AsyncMock()):
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vector_store)),
+            patch.object(cron, "_is_restricted_session", return_value=False),
+            patch.object(cron, "_sel"),
+            patch.object(cron, "_resolve_and_supersede", new=AsyncMock()),
+        ):
             resp = await cron.api_lessons_create(self._request(state))
         for t in list(state._background_tasks):
             await t
@@ -519,15 +604,18 @@ class TestApiLessonsDeleteOffloadsRemove:
 
         state = MagicMock()
         state.lessons = _RecordingStore()
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
         body = {"rule": "pin the port"}
         attach_body(request, body)
 
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
-             patch.object(cron, "_is_restricted_session", return_value=False), \
-             patch.object(cron, "_sel"):
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
+            patch.object(cron, "_is_restricted_session", return_value=False),
+            patch.object(cron, "_sel"),
+        ):
             resp = await cron.api_lessons_delete(request)
 
         assert resp.status == 200
@@ -556,9 +644,7 @@ class TestWriteLessonRejectionPreflight:
             # set_semantic then refuses the value.
             existing = "Pin the dashboard port"
             assert store.write_lesson(existing).wrote is True
-            before = {
-                r["key"]: json.loads(r["value_json"]) for r in store.get_lessons()
-            }
+            before = {r["key"]: json.loads(r["value_json"]) for r in store.get_lessons()}
             assert len(before) == 1
 
             # Superset rule (so the old row is slated for deletion) whose negative
@@ -571,9 +657,7 @@ class TestWriteLessonRejectionPreflight:
                 is False
             )
 
-            after = {
-                r["key"]: json.loads(r["value_json"]) for r in store.get_lessons()
-            }
+            after = {r["key"]: json.loads(r["value_json"]) for r in store.get_lessons()}
             # The original survives untouched -- nothing was traded for a write
             # that never landed.
             assert after == before
@@ -615,12 +699,14 @@ class TestSplitStored:
 
     def test_bare_rule_same_case(self):
         assert _split_stored("Pin the port", "pin the port", self._key("Pin the port")) == (
-            "Pin the port", False
+            "Pin the port",
+            False,
         )
 
     def test_bare_rule_case_variant(self):
         assert _split_stored("PIN THE PORT", "pin the port", self._key("PIN THE PORT")) == (
-            "PIN THE PORT", False
+            "PIN THE PORT",
+            False,
         )
 
     def test_rule_with_clause(self):
@@ -674,12 +760,16 @@ class TestSplitStored:
         "Masse" onto the stored "Maße". lower() keeps them apart."""
         assert _split_stored("Ma\u00dfe", "masse", self._key("Ma\u00dfe")) == (None, False)
         # and the same rule still matches itself
-        assert _split_stored("Ma\u00dfe", "ma\u00dfe", self._key("Ma\u00dfe")) == ("Ma\u00dfe", False)
+        assert _split_stored("Ma\u00dfe", "ma\u00dfe", self._key("Ma\u00dfe")) == (
+            "Ma\u00dfe",
+            False,
+        )
 
     def test_an_ascii_case_variant_still_matches(self):
         """The trade only costs the ß case: ordinary case variation is unaffected."""
         assert _split_stored("PIN THE PORT", "pin the port", self._key("PIN THE PORT")) == (
-            "PIN THE PORT", False
+            "PIN THE PORT",
+            False,
         )
 
     def test_case_folding_that_changes_length_is_not_sliced_by_normalised_length(self):
@@ -725,9 +815,7 @@ class TestWriteLessonAttachesNegativeToStoredRule:
         would be a dict repr; the renderer joins rule and clause with the same
         separator the string form used, keeping every text assertion meaningful.
         """
-        return [
-            _lesson_display_text(json.loads(row["value_json"])) for row in store.get_lessons()
-        ]
+        return [_lesson_display_text(json.loads(row["value_json"])) for row in store.get_lessons()]
 
     def test_attaches_a_clause_to_a_stored_rule(self, tmp_path):
         store = self._store(tmp_path)
@@ -795,7 +883,7 @@ class TestWriteLessonAttachesNegativeToStoredRule:
             store.close()
 
     def test_distinct_words_differing_only_by_sharp_s_are_not_conflated(self, tmp_path):
-        """"Maße" and "Masse" are different words. Under casefold() the whole-value branch
+        """ "Maße" and "Masse" are different words. Under casefold() the whole-value branch
         matched them and the tail recomposed the clause onto the STORED "Maße" spelling,
         so the intended "Masse" lesson never landed. The key confirmation does not save
         this -- it guards only the prefix branch.
@@ -813,8 +901,7 @@ class TestWriteLessonAttachesNegativeToStoredRule:
             values = self._values(store)
             assert any(v == "Ma\u00dfe" for v in values), f"the stored rule was rewritten: {values}"
             assert any(
-                v.startswith("Masse") and v.endswith("Do not confuse with volume")
-                for v in values
+                v.startswith("Masse") and v.endswith("Do not confuse with volume") for v in values
             ), f"the clause landed on the wrong rule: {values}"
         finally:
             store.close()
@@ -867,7 +954,8 @@ class TestWriteLessonAttachesNegativeToStoredRule:
             assert store.write_lesson("Pin the port", "tool", "Do not autopick").wrote is True
 
             texts = [
-                t for t in (
+                t
+                for t in (
                     _lesson_display_text(json.loads(r["value_json"])) for r in store.get_lessons()
                 )
                 if t
@@ -886,12 +974,15 @@ class TestWriteLessonAttachesNegativeToStoredRule:
             # Store the exact rule AND a superset that contains it. The superset is
             # written first so it exists as a competing row.
             assert store.write_lesson("Pin the port in every environment", "tool").wrote is True
-            assert store.set_semantic(
-                f"lesson.{hashlib.md5(b'Pin the port', usedforsecurity=False).hexdigest()[:12]}",
-                "Pin the port",
-                1.0,
-                "user_explicit",
-            ) is None
+            assert (
+                store.set_semantic(
+                    f"lesson.{hashlib.md5(b'Pin the port', usedforsecurity=False).hexdigest()[:12]}",
+                    "Pin the port",
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
 
             assert store.write_lesson("Pin the port", "tool", "Do not autopick").wrote is True
 
@@ -1042,6 +1133,7 @@ class TestApiLessonsSanitizesStoredFields:
     and the rule prose is redacted like every other agent-derived string."""
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -1054,8 +1146,10 @@ class TestApiLessonsSanitizesStoredFields:
         state = MagicMock()
         vs = MagicMock()
         vs.get_lessons.return_value = rows
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
-             patch.object(cron, "_blocks_reads_session", return_value=False):
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)),
+            patch.object(cron, "_blocks_reads_session", return_value=False),
+        ):
             resp = await cron.api_lessons(self._request(state))
         assert resp.status == 200
         return json.loads(resp.text)["lessons"]
@@ -1124,9 +1218,11 @@ class TestApiLessonsSanitizesStoredFields:
         bad.category = "knowledge"
         bad.ts = "t"
         state.lessons.load_all.return_value = [bad]
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
-             patch.object(cron, "_get_active_workspace", return_value="default"), \
-             patch.object(cron, "_blocks_reads_session", return_value=False):
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
+            patch.object(cron, "_get_active_workspace", return_value="default"),
+            patch.object(cron, "_blocks_reads_session", return_value=False),
+        ):
             resp = await cron.api_lessons(self._request(state))
         assert resp.status == 200
         lessons = json.loads(resp.text)["lessons"]
@@ -1201,7 +1297,11 @@ class TestLessonStorageShape:
         try:
             key = f"lesson.{_lesson_slug('a rule')}"
             # Oversized category: envelope far over the cap, content tiny.
-            huge_cat = {"rule": "a rule", "category": "X" * (_MAX_VALUE_BYTES * 2), "negative": None}
+            huge_cat = {
+                "rule": "a rule",
+                "category": "X" * (_MAX_VALUE_BYTES * 2),
+                "negative": None,
+            }
             err = store.validate_semantic(key, huge_cat, 1.0, "user_explicit")
             assert err is not None and "too large" in err[1].lower()
             # Extra key smuggling oversized bytes alongside a valid shape.
@@ -1307,12 +1407,15 @@ class TestLessonStorageShape:
         store = self._store(tmp_path)
         try:
             key = f"lesson.{hashlib.sha256(b'Prefer dark mode').hexdigest()[:16]}"
-            assert store.set_semantic_if_absent(
-                key,
-                {"rule": "Prefer dark mode", "category": "preference", "negative": None},
-                1.0,
-                "import",
-            ) == "imported"
+            assert (
+                store.set_semantic_if_absent(
+                    key,
+                    {"rule": "Prefer dark mode", "category": "preference", "negative": None},
+                    1.0,
+                    "import",
+                )
+                == "imported"
+            )
 
             assert store.write_lesson("Prefer dark mode", "tool", "Never force light").wrote is True
             rows = store.get_lessons()
@@ -1367,12 +1470,15 @@ class TestLessonStorageShape:
         store = self._store(tmp_path)
         try:
             squatted = f"lesson.{_lesson_slug('Pin the port')}"
-            assert store.set_semantic(
-                squatted,
-                {"rule": "Something else", "category": "tool", "negative": None},
-                1.0,
-                "migration",
-            ) is None
+            assert (
+                store.set_semantic(
+                    squatted,
+                    {"rule": "Something else", "category": "tool", "negative": None},
+                    1.0,
+                    "migration",
+                )
+                is None
+            )
 
             assert store.write_lesson("Pin the port", "tool", "Do not autopick").wrote is True
 

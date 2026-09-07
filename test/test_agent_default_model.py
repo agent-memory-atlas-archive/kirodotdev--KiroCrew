@@ -29,6 +29,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
     resolve_effective_model,
 )
+from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.session import _session_model
 
 
@@ -48,7 +49,7 @@ def _load_from_dict(data: object) -> KiroCrewConfig:
 
 
 class TestNormalizeAgentModel:
-    """"auto" and "" are the same "inherit" state and must store identically."""
+    """ "auto" and "" are the same "inherit" state and must store identically."""
 
     @pytest.mark.parametrize(
         ("raw", "want"),
@@ -100,6 +101,7 @@ class TestNonStringModelInConfig:
                 "default_agent": "oncall",
             }
         )
+        provision_member_memory(cfg, "oncall")
         assert resolve_agent_bindings(cfg, "oncall").model == ""
         # Must not raise; falls through to the tiers below.
         assert isinstance(resolve_effective_model(cfg, "oncall"), str)
@@ -183,16 +185,18 @@ class TestPerAgentModelStorage:
                 "default_agent": "oncall",
             }
         )
+        provision_member_memory(cfg, "oncall")
         assert resolve_agent_bindings(cfg, "oncall").model == "claude-opus-5"
 
     def test_bindings_normalize_an_auto_pin(self) -> None:
-        """"auto" stored by an older write must still read as inherit."""
+        """ "auto" stored by an older write must still read as inherit."""
         cfg = _load_from_dict(
             {
                 "agents": {"oncall": {"kiro_agent": "kirocrew", "model": "auto"}},
                 "default_agent": "oncall",
             }
         )
+        provision_member_memory(cfg, "oncall")
         assert resolve_agent_bindings(cfg, "oncall").model == ""
 
     def test_two_agents_on_one_template_hold_distinct_models(self) -> None:
@@ -206,6 +210,8 @@ class TestPerAgentModelStorage:
                 "default_agent": "a",
             }
         )
+        provision_member_memory(cfg, "a")
+        provision_member_memory(cfg, "b")
         assert resolve_agent_bindings(cfg, "a").model == "claude-opus-5"
         assert resolve_agent_bindings(cfg, "b").model == "claude-sonnet-4.6"
 
@@ -236,7 +242,9 @@ class TestEffectiveModelPrecedence:
     """One resolver owns the chain, so display and execution cannot diverge."""
 
     def test_agent_model_outranks_the_global(self, specs_dir: Path) -> None:
-        cfg = _cfg({"crew": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "claude-haiku-4.5")
+        cfg = _cfg(
+            {"crew": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "claude-haiku-4.5"
+        )
         assert resolve_effective_model(cfg, "crew") == "claude-opus-5"
 
     def test_agent_model_outranks_a_template_pin(self, specs_dir: Path) -> None:
@@ -258,7 +266,7 @@ class TestEffectiveModelPrecedence:
         assert resolve_effective_model(cfg, "crew") == "claude-haiku-4.5"
 
     def test_auto_global_is_never_returned_verbatim(self, specs_dir: Path) -> None:
-        """"auto" is the inherit spelling; returning it would pin the chip to a
+        """ "auto" is the inherit spelling; returning it would pin the chip to a
         value no tier actually chose."""
         cfg = _cfg({"crew": {"kiro_agent": "kirocrew", "model": ""}}, "auto")
         assert resolve_effective_model(cfg, "crew") != "auto"
@@ -287,7 +295,9 @@ class TestSessionModelCoversEverySurface:
     """
 
     def test_crew_name_resolves_its_own_model(self, specs_dir: Path) -> None:
-        cfg = _cfg({"oncall": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "claude-haiku-4.5")
+        cfg = _cfg(
+            {"oncall": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "claude-haiku-4.5"
+        )
         assert _session_model(cfg, "oncall") == "claude-opus-5"
 
     def test_crew_pin_outranks_the_bound_template_pin(self, specs_dir: Path) -> None:
@@ -313,16 +323,16 @@ class TestSessionModelCoversEverySurface:
         assert _session_model(cfg, "pinned") is None
 
     def test_unknown_name_falls_back_to_the_global(self, specs_dir: Path) -> None:
-        cfg = _cfg({"oncall": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "claude-haiku-4.5")
+        cfg = _cfg(
+            {"oncall": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "claude-haiku-4.5"
+        )
         assert _session_model(cfg, "no-such-thing") == "claude-haiku-4.5"
 
     def test_auto_global_yields_none_so_kiro_resolves(self, specs_dir: Path) -> None:
         cfg = _cfg({"oncall": {"kiro_agent": "unpinned", "model": ""}}, "auto")
         assert _session_model(cfg, "oncall") is None
 
-    def test_non_string_crew_model_does_not_crash_the_session_path(
-        self, specs_dir: Path
-    ) -> None:
+    def test_non_string_crew_model_does_not_crash_the_session_path(self, specs_dir: Path) -> None:
         cfg = _load_from_dict(
             {
                 "agents": {"oncall": {"kiro_agent": "unpinned", "model": 123}},

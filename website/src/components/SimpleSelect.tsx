@@ -27,9 +27,8 @@ import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
  * call site. The choice is made HERE instead, on purpose: this wrapper is
  * already the single choke point every dropdown in Settings goes through, and
  * ~30 call sites each having to remember the touch case is ~30 chances to
- * reintroduce the bug. Nothing routed through here needs styled option rows,
- * which is the one thing the native list cannot do; a caller that ever does can
- * be given an opt-out then rather than now.
+ * reintroduce the bug. Optional identity icons decorate desktop rows; on touch,
+ * the selected icon sits beside the native control, whose options stay text.
  */
 
 const EMPTY_VALUE_SENTINEL = '\u0000simple-select-empty'
@@ -39,6 +38,9 @@ export interface SimpleSelectProps {
   options: string[]
   /** Optional display labels for each option (same order as options). Falls back to the option value. */
   optionLabels?: string[]
+  /** Decorative identity icons in option order. Text labels remain the accessible
+   * names and typeahead values. Touch keeps the native list plus the selected icon. */
+  optionIcons?: React.ReactNode[]
   value: string
   onChange: (value: string) => void
   /** Optional action at top of dropdown (e.g. "+ New workspace…"). Fires onSelect instead of onChange. */
@@ -61,7 +63,7 @@ export interface SimpleSelectProps {
   'aria-label'?: string
 }
 
-export default function SimpleSelect({ options, optionLabels, value, onChange, action, clearLabel, triggerFallback, disabled, style, id, className, 'aria-label': ariaLabel }: SimpleSelectProps) {
+export default function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, disabled, style, id, className, 'aria-label': ariaLabel }: SimpleSelectProps) {
   const isTouch = useIsTouchDevice()
   const toRadix = (v: string) => (v === '' ? EMPTY_VALUE_SENTINEL : v)
   const fromRadix = (v: string) => (v === EMPTY_VALUE_SENTINEL ? '' : v)
@@ -71,6 +73,7 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
   const selectable = (v: string) => options.includes(v) || (v === '' && emptySelectable)
   const label = (opt: string, i: number) =>
     opt === '' ? (clearLabel ?? optionLabels?.[i] ?? '—') : (optionLabels?.[i] ?? opt)
+  const selectedIcon = optionIcons?.[options.indexOf(value)]
 
   if (isTouch) {
     // A value with no matching option (a legacy or provider-dropped setting) has
@@ -78,7 +81,7 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
     // the browser would silently display the FIRST option and the row would read
     // as if that were the saved setting.
     const unmatched = !selectable(value)
-    return (
+    const control = (
       <NativeSelect
         id={id}
         aria-label={ariaLabel}
@@ -86,7 +89,7 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
         // `style` lands on the WRAPPER on both paths. It is layout intent (a flex
         // basis, a min-width), and on this path the `<select>` is `w-full` inside
         // the wrapper — a flex rule placed on it is simply inert.
-        wrapperStyle={style}
+        wrapperStyle={selectedIcon ? { flex: '1 1 0', minWidth: 0 } : style}
         className={className}
         value={toRadix(value)}
         onChange={e => {
@@ -116,6 +119,7 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
         ))}
       </NativeSelect>
     )
+    return selectedIcon ? <div style={style} className="flex min-w-0 items-center gap-2"><span aria-hidden="true" className="shrink-0">{selectedIcon}</span>{control}</div> : control
   }
 
   return (
@@ -141,8 +145,8 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
             <SelectItem value={EMPTY_VALUE_SENTINEL}>{clearLabel}</SelectItem>
           )}
           {options.map((opt, i) => (
-            <SelectItem key={opt} value={toRadix(opt)}>
-              {label(opt, i)}
+            <SelectItem key={opt} value={toRadix(opt)} textValue={label(opt, i)}>
+              {optionIcons?.[i] ? <span className="flex min-w-0 items-center gap-2"><span aria-hidden="true" className="shrink-0">{optionIcons[i]}</span><span className="min-w-0 truncate">{label(opt, i)}</span></span> : label(opt, i)}
             </SelectItem>
           ))}
         </SelectContent>

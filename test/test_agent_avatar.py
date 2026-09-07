@@ -200,6 +200,9 @@ class TestAvatarEndpoints:
     @pytest.fixture(autouse=True)
     def _owner_caller(self, monkeypatch):
         monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.private_memory_execution_supported", lambda **kwargs: True
+        )
+        monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
             lambda request: True,
         )
@@ -931,11 +934,11 @@ class TestUploadedAvatarEndpoints:
                 return real_unlink(self, *a, **kw)
 
             monkeypatch.setattr(handlers_agents.Path, "unlink", spy_unlink)
-            real_save = handlers_agents.KiroCrewConfig.save
+            real_save = handlers_agents.persist_member_config
             monkeypatch.setattr(
-                handlers_agents.KiroCrewConfig,
-                "save",
-                lambda self_cfg: (_ for _ in ()).throw(OSError("disk full")),
+                handlers_agents,
+                "persist_member_config",
+                lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
             )
             resp = await client.put(
                 f"/api/agents/{seeded_agent}",
@@ -945,7 +948,7 @@ class TestUploadedAvatarEndpoints:
             # The committed path was never unlinked, and the orphaned
             # install was removed by the rollback.
             assert unlinked == []
-            monkeypatch.setattr(handlers_agents.KiroCrewConfig, "save", real_save)
+            monkeypatch.setattr(handlers_agents, "persist_member_config", real_save)
             got = await client.get(f"/api/agents/{seeded_agent}/avatar")
             assert got.status == 200
             assert await got.read() == _PNG
@@ -1454,6 +1457,9 @@ class TestPackAvatarThroughTheEndpoints:
 
     @pytest.fixture(autouse=True)
     def _owner_caller(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.private_memory_execution_supported", lambda **kwargs: True
+        )
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
             lambda request: True,

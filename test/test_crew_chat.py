@@ -43,6 +43,7 @@ def _slot(key: str = "s1", agent: str = "kirocrew") -> MagicMock:
     # auto-created attribute is truthy — so leaving them unset made a test slot
     # look app-owned and handed `spawn(cwd=)` a mock's repr.
     slot.project = ""
+    slot.memory_store = ""
     slot._app = ""
     return slot
 
@@ -63,6 +64,69 @@ def _orch(state: MagicMock | None = None, subagents: MagicMock | None = None) ->
     subagents = subagents or MagicMock()
     sessions = MagicMock()
     return CrewOrchestrator(state=state, sessions=sessions, subagents=subagents)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_at", ["continue_agent", "respawn_agent", "respawn_store", "missing_run"]
+)
+async def test_legacy_topic_binding_failure_reopens_for_retry(failure_at: str) -> None:
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    orch = _orch()
+    slot = _slot()
+    st = orch._store("s1")
+    entry = st.add_msg("continue my task")
+    topic = st.add_topic("topic1", "run1", "Existing topic", entry["msg_id"])
+    topic["status"] = "idle"
+    secret = "ghp_" + "A" * 36
+    private_path = "/home/alice/memory.db"
+    failure = UnknownMemoryStore(
+        f"memory_unavailable: initialize this member's memory at {private_path}; {secret}"
+    )
+    orch._subagents.continue_conversation.return_value = _spawn_info(
+        "gone", done=True, error="conversation_gone"
+    )
+    orch._subagents.spawn.return_value = _spawn_info("recovered")
+    orch._subagents._inherited_memory_store.return_value = "member-store"
+    agent_results = [failure] if failure_at == "continue_agent" else ["kirocrew", "kirocrew"]
+    if failure_at == "respawn_agent":
+        agent_results[1] = failure
+    if failure_at == "respawn_store":
+        orch._subagents._inherited_memory_store.side_effect = failure
+    if failure_at == "missing_run":
+        orch._subagents._inherited_memory_store.return_value = ""
+    with (
+        patch.object(orch, "_dispatch_agent", new=AsyncMock(side_effect=agent_results)),
+        patch.object(orch, "_post") as post,
+    ):
+        with pytest.raises(UnknownMemoryStore, match="memory_unavailable"):
+            await orch._dispatch_continue(slot, st, topic, entry)
+    post.assert_called_once()
+    feedback = post.call_args.args[1]
+    assert "Couldn't start this member task: memory_unavailable" in feedback
+    assert secret not in feedback
+    assert private_path not in feedback
+    assert post.call_args.kwargs["kind"] == "crew_ask"
+    orch._subagents.spawn.assert_not_called()
+    if failure_at == "continue_agent":
+        orch._subagents.continue_conversation.assert_not_called()
+    assert entry["state"] == "pending"
+    assert "dispatch_id" not in entry
+    # The decision pass's trailing save must persist a retryable request,
+    # rather than turn the failed resolution into an unmatched durable claim.
+    st.save()
+    await st.wait_writes()
+    persisted = next(row for row in _durable_queue() if row["msg_id"] == entry["msg_id"])
+    assert persisted["state"] == "pending"
+    assert "dispatch_id" not in persisted
+    orch._subagents._inherited_memory_store.side_effect = None
+    orch._subagents._inherited_memory_store.return_value = "member-store"
+    with patch.object(orch, "_dispatch_agent", new=AsyncMock(return_value="kirocrew")):
+        await orch._dispatch_continue(slot, st, topic, entry)
+    assert entry["state"] == "accepted"
+    assert entry["run_id"] == "recovered"
+    orch._subagents.spawn.assert_called_once()
 
 
 def _slot_save(side_effect: BaseException | None = None):
@@ -557,6 +621,73 @@ class TestExecutor:
         assert "<<<SUMMARY" in subagents.spawn.call_args.args[0]
 
     @pytest.mark.asyncio
+    async def test_spawn_binding_failure_is_redacted_and_reopened_for_retry(self) -> None:
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
+        secret = "ghp_" + "A" * 36
+        private_path = r"C:\Users\alice\memory.db"
+        failure = UnknownMemoryStore(
+            f"memory_unavailable: initialize this member's memory at {private_path}; "
+            f"token={secret}. Global Memory V1 was not used."
+        )
+        orch = _orch()
+        slot = _slot()
+        st = orch._store("s1")
+        entry = st.add_msg("build X")
+        with (
+            patch.object(orch, "_dispatch_agent", new=AsyncMock(side_effect=failure)),
+            patch.object(orch, "_post") as post,
+        ):
+            with pytest.raises(UnknownMemoryStore, match="memory_unavailable"):
+                await orch._apply(
+                    slot,
+                    st,
+                    {"do": "spawn", "msg_id": entry["msg_id"], "title": "build X"},
+                )
+
+        post.assert_called_once()
+        feedback = post.call_args.args[1]
+        assert "memory_unavailable" in feedback
+        assert "Global Memory V1 was not used" in feedback
+        assert secret not in feedback and private_path not in feedback
+        assert post.call_args.kwargs["kind"] == "crew_ask"
+        assert entry["state"] == "pending"
+        assert "dispatch_id" not in entry
+        orch._subagents.spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returned_spawn_memory_refusal_is_redacted(self) -> None:
+        secret = "ghp_" + "B" * 36
+        private_path = "/Users/alice/memory.db"
+        subagents = MagicMock()
+        subagents.spawn.return_value = _spawn_info(
+            "refused",
+            done=True,
+            error=(
+                f"memory_unavailable: initialize this member's memory at {private_path}; "
+                f"token={secret}. Global Memory V1 was not used."
+            ),
+        )
+        orch = _orch(subagents=subagents)
+        slot = _slot()
+        st = orch._store("s1")
+        entry = st.add_msg("build X")
+        with patch.object(orch, "_post") as post:
+            await orch._apply(
+                slot,
+                st,
+                {"do": "spawn", "msg_id": entry["msg_id"], "title": "build X"},
+            )
+
+        post.assert_called_once()
+        feedback = post.call_args.args[1]
+        assert "memory_unavailable" in feedback
+        assert "Global Memory V1 was not used" in feedback
+        assert secret not in feedback and private_path not in feedback
+        assert post.call_args.kwargs["kind"] == "crew_ask"
+        assert entry["state"] == "pending"
+
+    @pytest.mark.asyncio
     async def test_unknown_msg_id_rejected(self) -> None:
         orch = _orch()
         st = orch._store("s1")
@@ -896,6 +1027,40 @@ class TestGptRoundThirteen:
             with pytest.raises(RuntimeError):
                 await orch.on_subagent_done(_spawn_info("r1", done=True, result="done"))
         disp.assert_awaited(), "the held follow-up was stranded behind an idle topic"
+
+    @pytest.mark.asyncio
+    async def test_held_binding_failure_persists_reopened_request_before_returning(self) -> None:
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
+        orch = _orch()
+        slot = _slot()
+        orch._state.get_slot.return_value = slot
+        st = orch._store("s1")
+        original = st.add_msg("first task")
+        original.update(state="accepted", run_id="run1")
+        held = st.add_msg("follow up")
+        held["state"] = "held"
+        topic = st.add_topic("topic1", "run1", "Existing topic", original["msg_id"])
+        topic.update(status="running", held=[held["msg_id"]])
+        orch._owned["run1"] = "s1"
+        failure = UnknownMemoryStore("memory_unavailable: initialize member memory")
+        with (
+            patch.object(orch, "_queue_forward", new=AsyncMock()),
+            patch.object(orch, "_dispatch_agent", new=AsyncMock(side_effect=failure)),
+        ):
+            with pytest.raises(UnknownMemoryStore, match="memory_unavailable"):
+                await orch.on_subagent_done(_spawn_info("run1", done=True, result="done"))
+        orch._subagents.continue_conversation.assert_not_called()
+        # No test-side save or wait: the completion callback owes durability.
+        persisted = next(row for row in _durable_queue() if row["msg_id"] == held["msg_id"])
+        assert persisted["state"] == "pending"
+        assert "dispatch_id" not in persisted
+        saved_topic = next(
+            row for row in _durable_store_file("s1", "topics.json")
+            if row["topic_id"] == "topic1"
+        )
+        assert saved_topic["status"] == "idle"
+        assert saved_topic["held"] == []
 
     @pytest.mark.asyncio
     async def test_forward_cleared_only_after_the_transcript_row_is_durable(self) -> None:
@@ -2659,17 +2824,22 @@ class TestGatewayCrewInit:
         GatewayOrchestrator._init_crew(g)  # must not raise
 
     def test_startup_sequence_orders_crew_after_dashboard(self) -> None:
-        # Static guard: in the gateway start sequence, _init_crew() must be
-        # invoked after _init_dashboard() (the original defect called the
-        # attach logic from _init_subagents, which runs earlier).
+        # Static guard: the post-memory dashboard worker hook must be invoked
+        # after dashboard construction and the shared preparation wait. The
+        # hook owns _init_crew(), so persisted Crew work cannot enter a private
+        # store during recovery.
         import inspect
 
-        import kiro_crew.slack.gateway as gw
+        from kiro_crew.slack.gateway import GatewayOrchestrator
 
-        src = inspect.getsource(gw)
+        src = inspect.getsource(GatewayOrchestrator.run)
         dash = src.index("await self._init_dashboard()")
-        crew = src.index("self._init_crew()")
-        assert crew > dash
+        prepared = src.index("await self._wait_for_memory_preparation()")
+        workers = src.index("self._start_dashboard_workers_after_memory_ready()")
+        assert dash < prepared < workers
+        assert "self._init_crew()" in inspect.getsource(
+            GatewayOrchestrator._start_dashboard_workers_after_memory_ready
+        )
 
     @pytest.mark.asyncio
     async def test_completion_settles_store_when_slot_closed(self) -> None:
@@ -2940,10 +3110,7 @@ class TestCrewNameResolvesToTemplate:
         assert subagents.spawn.call_args.kwargs["agent"] == "kirocrew"
 
     @pytest.mark.asyncio
-    async def test_resolution_failure_falls_back_to_the_crew_name(self) -> None:
-        # A broken config must degrade to the previous behaviour, not lose the
-        # dispatch: the crew name still resolves for the 40 crews where name ==
-        # template.
+    async def test_resolution_failure_refuses_dispatch_with_an_explanation(self) -> None:
         subagents = MagicMock()
         subagents.spawn = MagicMock(return_value=_spawn_info("r1"))
         orch = _orch(subagents=subagents)
@@ -2951,10 +3118,12 @@ class TestCrewNameResolvesToTemplate:
         e = st.add_msg("build X")
         boom = patch.object(crew_mod.KiroCrewConfig, "load", staticmethod(
             MagicMock(side_effect=RuntimeError("unreadable config"))))
-        with boom, patch.object(orch, "_post"):
-            await orch._apply(_slot(agent="cr-analyst"), st,
-                              {"do": "spawn", "msg_id": e["msg_id"], "title": "X"})
-        assert subagents.spawn.call_args.kwargs["agent"] == "cr-analyst"
+        with boom, patch.object(orch, "_post") as post:
+            with pytest.raises(RuntimeError, match="unreadable config"):
+                await orch._apply(_slot(agent="cr-analyst"), st,
+                                  {"do": "spawn", "msg_id": e["msg_id"], "title": "X"})
+        subagents.spawn.assert_not_called()
+        assert "unreadable config" in post.call_args.args[1]
 
     @pytest.mark.asyncio
     async def test_warm_still_runs_before_resolution(self) -> None:

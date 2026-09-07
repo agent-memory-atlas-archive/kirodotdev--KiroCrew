@@ -572,7 +572,11 @@ class TestTurnEntryWiring:
         monkeypatch.setattr(
             transport_dispatch, "maybe_route_linked_thread", _no_linked_thread
         )
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", MagicMock())
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", MagicMock())
         _stub_non_turn_paths(monkeypatch, transport_dispatch)
 
@@ -624,7 +628,11 @@ class TestTurnEntryWiring:
         monkeypatch.setattr(
             transport_dispatch, "maybe_route_linked_thread", _no_linked_thread
         )
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", MagicMock())
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", MagicMock())
 
         slack = _slack()
@@ -713,7 +721,11 @@ class TestTurnEntryWiring:
         monkeypatch.setattr(
             transport_dispatch, "maybe_route_linked_thread", _no_linked_thread
         )
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", MagicMock())
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", MagicMock())
         _stub_non_turn_paths(monkeypatch, transport_dispatch)
 
@@ -2153,9 +2165,9 @@ class TestControlPostedAfterTheWindowIsSpent:
             assert at < expiry, (
                 f"{local} returns without a turn, so it must sit ABOVE the expiry"
             )
-        assert expiry < src.find("_acquired = False"), (
-            "the expiry must still run before the turn is acquired"
-        )
+        acquisition = src.find("await state.sessions.get_or_create(")
+        assert acquisition != -1, "the dashboard turn must still acquire its provider"
+        assert expiry < acquisition, "the expiry must still run before the turn is acquired"
 
     @pytest.mark.asyncio
     async def test_linking_an_existing_thread_retires_its_prior_control(self, tmp_path):

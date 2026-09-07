@@ -8,6 +8,18 @@ One command is the whole offline browser gate. It boots a real gateway wired to 
 packaged fake model backend, then shells the in-tree Playwright suite at it. No
 model, no credentials, no network, no cost.
 
+The member-creation scenarios require a supported OS sandbox even with the fake
+model backend. The Linux CI job enables unprivileged user namespaces and requires
+`unshare --mount --map-root-user true` to succeed before the suite. A failed
+precondition fails the job; the browser fixtures do not bypass private-memory
+admission or skip these scenarios.
+For the disposable gateway only (`KIROCREW_E2E_EPHEMERAL=1`), authenticated browser
+setup enables `agent.sandbox=auto` through the owner API and reapplies the same
+`agent.acp_backend` value. That field's existing refresh rebuilds the provider
+factory that captured the minimal fixture's sandbox-off setting at startup.
+Both writes must succeed before scenarios run; the model backend remains the
+packaged fake executable and the shared minimal seed is unchanged.
+
 `setup.py::E2eTestCommand` is the entry point (registered under `cmdclass` as
 `test_e2e`). It runs exactly two pytest files:
 
@@ -205,6 +217,29 @@ and frame hashes, viewport and browser version. Playwright owns retries and
 timeouts; each attempt writes its own output directory, including partial
 evidence if a later assertion fails.
 
+`website/playwright/member-memory.spec.ts` also captures the real dashboard
+with synthetic member and memory data. The `member-memory-ui-evidence` artifact
+retains its PNGs and focused-spec WebM recordings on successful and failed attempts: desktop/mobile records,
+copy selection, record details, proposals, restore confirmation and pending
+restore, legacy member refusal and explicit initialization, plus V1/V2 bulk
+selection and edit/forget previews. These are screenshots
+of the test's interaction states, not evidence of a live provider response or a
+Crew delegation. The artifact belongs to its GitHub Actions run and checkout;
+partial screenshots from a failed attempt are not a completed scenario. The
+upload includes only the named media and `member-memory-evidence.json`, never
+the browser authentication state. Each attempt's directory contains
+`member-memory-walkthrough.webm` and that JSON manifest with test title, status,
+retry, exact CI checkout SHA, run ID and run attempt. Recording is enabled only
+inside this memory spec, including successful tests; the global video setting
+and authentication setup are unchanged. The first walkthrough shows the member
+header/avatar, copy selection, correction preview/save, current toolbar, a
+separate empty member and forgetting. The recovery walkthrough shows backup,
+restore confirmation, pending recovery across reload and cancellation while the
+active records stay unchanged. It does not activate a restore by restarting the
+gateway. Only a completed CI run can supply these recordings; source authoring
+alone is not rendered evidence.
+Its retention is seven days, and it does not fail when setup produced no images.
+
 When the job fails, a final `if: failure()` step uploads
 `website/test-results/` and `website/playwright-report/` as the
 `e2e-playwright-failures` artifact (7-day retention). `test-results/` holds one
@@ -226,3 +261,11 @@ turn that into a second, misleading failure.
 Related: [i18n-gates.md](i18n-gates.md) for the render-time gate that shares this
 job, and [ci-and-reviews.md](ci-and-reviews.md) for where `e2e` sits among the
 other PR gates.
+
+The private member memory specs use the real gateway and database. They cover
+explicit V1-to-member copying with provenance, correction/reload/forgetting,
+cross-member isolation, persisted/cancellable backup staging, and the empty
+member's exact conversation binding across reload. Desktop and
+390px captures accompany the first flow. Their write guard requires
+`KIROCREW_E2E_EPHEMERAL=1`, which the isolated gateway harness sets; it must never
+be set for an operator gateway. The strict reporter enforces the executed-test floor and refuses skips or flaky retries. The current run must pass the preceding i18n render gate before these browser scenarios count as executed evidence.

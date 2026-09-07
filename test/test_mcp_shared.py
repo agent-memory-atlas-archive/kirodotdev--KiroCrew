@@ -491,9 +491,7 @@ class TestRespondStdoutFdSnapshot:
     def test_run_loop_releases_fd_on_exit(self):
         """``run_mcp_stdio_loop`` must not leak the dup across invocations."""
         with patch.object(mcp_shared, "_read_message", lambda _stdin: None):
-            mcp_shared.run_mcp_stdio_loop(
-                "test-server", "0.1.0", lambda: [], lambda _n, _a: "ok"
-            )
+            mcp_shared.run_mcp_stdio_loop("test-server", "0.1.0", lambda: [], lambda _n, _a: "ok")
         assert mcp_shared._stdout_fd is None
 
 
@@ -769,9 +767,7 @@ class TestStdioLoopBusyQueue:
                 for call in harness.sel_mock.log_tool_invocation.call_args_list
             )
             release.set()
-            assert harness.wait_for(
-                lambda: {401, 402} <= {r[0] for r in harness.responses}
-            )
+            assert harness.wait_for(lambda: {401, 402} <= {r[0] for r in harness.responses})
         finally:
             release.set()
             harness.close()
@@ -821,20 +817,83 @@ class TestStdioLoopCallerIdentity:
     def setup_method(self):
         mcp_shared._use_content_length = False
 
+    def test_tool_policy_uses_only_the_current_request_proof(self, monkeypatch):
+        from kiro_crew.mcp_caller import CallerContext, build_caller_meta
+
+        seen = []
+        harness = _LoopHarness(monkeypatch, lambda _name, _args: "ok")
+
+        def policy(session="", *, member_memory_proof=""):
+            seen.append((session, member_memory_proof))
+            return set()
+
+        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", policy)
+        try:
+            for req_id, method, session, proof in (
+                (1, "tools/list", "dashboard:alice", "alice.list-proof"),
+                (2, "tools/call", "dashboard:bob", "bob.call-proof"),
+                (3, "tools/list", "dashboard:global", ""),
+            ):
+                msg = _tools_call(req_id, "echo")
+                msg["method"] = method
+                msg["params"]["_meta"] = build_caller_meta(
+                    CallerContext(session_key=session, from_gateway=True, member_memory_proof=proof)
+                )
+                harness.send(msg)
+                assert harness.wait_for(lambda: len(harness.responses) >= req_id)
+            assert seen == [
+                ("dashboard:alice", "alice.list-proof"),
+                ("dashboard:bob", "bob.call-proof"),
+                ("dashboard:global", ""),
+            ]
+        finally:
+            harness.close()
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="select interleave uses a POSIX pipe")
+    def test_listing_while_busy_does_not_borrow_the_running_members_proof(self, monkeypatch):
+        from kiro_crew.mcp_caller import CallerContext, build_caller_meta
+
+        call, started, release = _slow_then_echo()
+        seen = []
+        harness = _LoopHarness(monkeypatch, call)
+
+        def policy(session="", *, member_memory_proof=""):
+            seen.append((session, member_memory_proof))
+            return set()
+
+        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", policy)
+        try:
+            for req_id, method, session, proof in (
+                (1, "tools/call", "dashboard:alice", "alice.current-proof"),
+                (2, "tools/list", "dashboard:bob", "bob.current-proof"),
+            ):
+                msg = _tools_call(req_id, "slow")
+                msg["method"] = method
+                msg["params"]["_meta"] = build_caller_meta(
+                    CallerContext(session_key=session, from_gateway=True, member_memory_proof=proof)
+                )
+                harness.send(msg)
+                if req_id == 1:
+                    assert started.wait(timeout=5)
+            assert harness.wait_for(lambda: any(row[0] == 2 for row in harness.responses))
+            assert seen == [
+                ("dashboard:alice", "alice.current-proof"),
+                ("dashboard:bob", "bob.current-proof"),
+            ]
+        finally:
+            release.set()
+            harness.close()
+
     def test_initialize_advertises_capability_when_opted_in(self, monkeypatch):
         # GPT 5.6 round 18 HIGH: without the advertisement gatewayd treats
         # the backend as single-session and never injects the caller block,
         # so the whole per-call identity path would be dead code.
-        harness = _LoopHarness(
-            monkeypatch, lambda n, a: "ok", {"advertise_caller_identity": True}
-        )
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok", {"advertise_caller_identity": True})
         try:
             harness.send(_initialize(1))
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
             caps = harness.responses[0][1]["capabilities"]
-            assert caps["experimental"] == {
-                "kirocrew.caller-identity": {"schemaVersion": 1}
-            }
+            assert caps["experimental"] == {"kirocrew.caller-identity": {"schemaVersion": 1}}
         finally:
             harness.close()
 
@@ -925,14 +984,10 @@ class TestStdioLoopCallerIdentity:
         # rejection audits to "mcp" or the wrong session — the parsed caller
         # identity must win when present.
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
-        monkeypatch.setattr(
-            mcp_shared, "_resolve_excluded_tools", lambda *a: {"blocked"}
-        )
+        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", lambda *a: {"blocked"})
         try:
             harness.send(_tools_call_with_caller(21, "blocked", "dashboard:chat-9"))
-            assert harness.wait_for(
-                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
-            )
+            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
             kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
             assert kw["outcome"] == "rejected_excluded"
             assert kw["session_key"] == "dashboard:chat-9"
@@ -947,9 +1002,7 @@ class TestStdioLoopCallerIdentity:
         try:
             harness.send(_tools_call_with_caller(31, "echo", "dashboard:chat-5"))
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
-            assert harness.wait_for(
-                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
-            )
+            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
             kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
             assert kw["outcome"] == "failed"
             assert kw["session_key"] == "dashboard:chat-5"
@@ -977,6 +1030,39 @@ class TestPerSessionToolPolicy:
     def teardown_method(self):
         self._reset()
 
+    @pytest.mark.parametrize("proof", ["signed.current-proof", "", "bad\r\nheader"])
+    def test_policy_http_forwards_current_proof_without_retaining_it(self, monkeypatch, proof):
+        from types import SimpleNamespace
+
+        requests = []
+
+        def policy(req, timeout=0):
+            requests.append(dict(req.header_items()))
+            return io.BytesIO(b'{"exclude":["blocked"]}')
+
+        monkeypatch.setattr(mcp_shared, "loopback_urlopen", policy)
+        monkeypatch.setattr(mcp_shared, "read_local_secret", lambda _port: "internal")
+        monkeypatch.setattr(
+            mcp_shared.KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda _cls: SimpleNamespace(dashboard=SimpleNamespace(url="http://localhost:5476"))
+            ),
+        )
+        assert mcp_shared._resolve_excluded_tools("dashboard:alice", member_memory_proof=proof) == {
+            "blocked"
+        }
+        assert mcp_shared._resolve_excluded_tools("dashboard:global") == {"blocked"}
+        assert requests[0]["X-session-key"] == "dashboard:alice"
+        assert requests[0].get("X-member-session-proof") == (
+            proof if proof == "signed.current-proof" else None
+        )
+        assert "X-member-session-proof" not in requests[1]
+        assert mcp_shared._excluded_tools_by_session == {
+            "dashboard:alice": {"blocked"},
+            "dashboard:global": {"blocked"},
+        }
+
     def test_cache_is_keyed_per_session(self, monkeypatch):
         calls: list = []
 
@@ -1003,7 +1089,11 @@ class TestPerSessionToolPolicy:
         monkeypatch.setattr(
             mcp_shared.KiroCrewConfig,
             "load",
-            classmethod(lambda cls: type("C", (), {"dashboard": type("D", (), {"url": "http://localhost:5476"})()})()),
+            classmethod(
+                lambda cls: type(
+                    "C", (), {"dashboard": type("D", (), {"url": "http://localhost:5476"})()}
+                )()
+            ),
         )
         monkeypatch.setattr(mcp_shared, "_read_internal_secret", lambda: "s3cr3t", raising=False)
 

@@ -52,7 +52,8 @@ _WEBSITE = "website"
 #
 # RAISE this when you add specs. Only LOWER it with a written reason in the
 # commit body: a drop means specs stopped running.
-MIN_EXECUTED_SPECS = 223
+# The offline browser floor includes all eight member memory scenarios.
+MIN_EXECUTED_SPECS = 231
 
 # Skips are silent passes. A spec should seed its preconditions rather than skip
 # when they are absent, so the intended steady state is zero. Specs excluded by
@@ -185,6 +186,23 @@ def test_dashboard_playwright_suite() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "playwright-results.json"
             with spawn_feature_gateway(fixture="minimal", approval="reads") as gw:
+                from kiro_crew.config.loader import update_config_locked
+
+                # A new-member API request already provisions private memory, so
+                # it cannot represent an existing install's uninitialized alias.
+                # Seed only this gateway's disposable config before the browser
+                # starts. Each CI retry gets a fresh legacy identity; initialization
+                # must never be undone just to reset a test.
+                legacy_members = [f"memory-e2e-legacy-{attempt}" for attempt in range(3)]
+
+                def _seed_legacy_members(data: dict) -> dict:
+                    agents = data.setdefault("agents", {})
+                    for name in legacy_members:
+                        assert name not in agents
+                        agents[name] = {"kiro_agent": "kirocrew", "memory_store": "default"}
+                    return data
+
+                update_config_locked(gw.home / "config.json", mutate=_seed_legacy_members)
                 env = dict(os.environ)
                 env.update(
                     {
@@ -200,6 +218,7 @@ def test_dashboard_playwright_suite() -> None:
                         # isolated tmp KIROCREW_HOME (spawn_feature_gateway --test-mode),
                         # so its slots are disposable.
                         "KIROCREW_E2E_EPHEMERAL": "1",
+                        "KIROCREW_E2E_LEGACY_MEMBERS": json.dumps(legacy_members),
                         # CI mode: serial workers + retries:2 (absorbs gateway-load
                         # timeout flakes) + html reporter, per playwright.config.ts.
                         "CI": "1",

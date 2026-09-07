@@ -83,12 +83,19 @@ class TestGatewayUpdateCheckIsBackgrounded:
 
     def test_signal_handlers_installed_before_update_check(self) -> None:
         src = inspect.getsource(GatewayOrchestrator.run)
-        handlers_at = src.index("loop.add_signal_handler(sig, _on_signal)")
+        handlers_at = src.index("self._install_shutdown_signal_handlers()")
+        preparation_at = src.index("await self._wait_for_memory_preparation()")
         check_at = src.index("asyncio.create_task(self._check_for_updates())")
+        assert (
+            handlers_at < preparation_at
+        ), "SIGINT/SIGTERM handlers must be installed before waiting for memory preparation"
         assert handlers_at < check_at, (
             "SIGINT/SIGTERM handlers must be installed before the update check "
             "starts, or an early Ctrl-C is ignored"
         )
+        handlers_src = inspect.getsource(GatewayOrchestrator._install_shutdown_signal_handlers)
+        assert "for sig in (signal.SIGINT, signal.SIGTERM):" in handlers_src
+        assert "loop.add_signal_handler(sig, _on_signal)" in handlers_src
 
     def test_update_check_task_is_tracked_and_cancelled(self) -> None:
         run_src = inspect.getsource(GatewayOrchestrator.run)
@@ -118,9 +125,9 @@ class TestOtelSdkImportIsDeferred:
             "    'available': p._OTEL_AVAILABLE,\n"
             "}))\n"
         )
-        assert result["sdk"] is False, (
-            "importing metrics.provider must not import the OTel metrics SDK"
-        )
+        assert (
+            result["sdk"] is False
+        ), "importing metrics.provider must not import the OTel metrics SDK"
         # The availability probe must still work — it is what keeps a partial
         # install degrading to the no-op recorder instead of crashing.
         assert result["available"] is True
@@ -136,9 +143,7 @@ class TestOtelSdkImportIsDeferred:
             "}))\n"
         )
         assert result["enabled"] is False  # default-off consent gate
-        assert result["sdk"] is False, (
-            "a disabled recorder must not pay for the OTel SDK import"
-        )
+        assert result["sdk"] is False, "a disabled recorder must not pay for the OTel SDK import"
 
     def test_enabled_recorder_still_loads_the_sdk(self, tmp_path: Path) -> None:
         """The deferral must not break the opt-in path."""
@@ -263,9 +268,7 @@ class TestDashboardImportIsLeaf:
             "    )),\n"
             "}))\n"
         )
-        assert result["server"] is False, (
-            "dashboard/__init__ must not eagerly import server"
-        )
+        assert result["server"] is False, "dashboard/__init__ must not eagerly import server"
         assert result["handlers"] is False
         assert result["aiohttp"] is False, (
             "origin's aiohttp import must stay under TYPE_CHECKING — the CSRF "
@@ -276,9 +279,9 @@ class TestDashboardImportIsLeaf:
             f"dashboard.origin pulled {result['modules']} modules; it was 1124 "
             "before the split and must stay a leaf"
         )
-        assert result["reexports_ok"] is True, (
-            "origin must keep re-exporting every name it used to define"
-        )
+        assert (
+            result["reexports_ok"] is True
+        ), "origin must keep re-exporting every name it used to define"
 
     def test_lazy_package_attributes_still_resolve(self) -> None:
         result = _probe(
@@ -337,9 +340,7 @@ class TestFolderWatcherScanQueryCount:
     once per discovered file — up to 10,000 on-loop sqlite ops per scan."""
 
     @pytest.mark.asyncio
-    async def test_pause_check_and_last_seen_are_not_per_file(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_pause_check_and_last_seen_are_not_per_file(self, tmp_path: Path) -> None:
         from kiro_crew.knowledge.folder_watcher import (
             _PAUSE_RECHECK_FILES,
             FolderWatcher,
@@ -395,12 +396,12 @@ class TestFolderWatcherScanQueryCount:
             f"{counting.select_sources} sources queries for {n_files} files — "
             "the pause check must not run per file"
         )
-        assert counting.last_seen_execute == 0, (
-            "last_seen touches must be batched, not issued one per file"
-        )
-        assert batch_sizes == [n_files], (
-            "all unchanged-file last_seen touches must land in one worker batch"
-        )
+        assert (
+            counting.last_seen_execute == 0
+        ), "last_seen touches must be batched, not issued one per file"
+        assert batch_sizes == [
+            n_files
+        ], "all unchanged-file last_seen touches must land in one worker batch"
 
     @pytest.mark.asyncio
     async def test_last_seen_is_still_written(self, tmp_path: Path) -> None:
@@ -508,9 +509,7 @@ class TestChangelogReadIsCached:
         assert reads["n"] == 1, f"CHANGELOG.md was read {reads['n']} times, expected 1"
 
     @pytest.mark.asyncio
-    async def test_edit_is_picked_up(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_edit_is_picked_up(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The cache is keyed on the stat signature, so a dev-install edit must
         still be visible without a restart."""
         proj = tmp_path / "proj"
@@ -520,17 +519,16 @@ class TestChangelogReadIsCached:
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
         monkeypatch.setattr(updates, "_changelog_cache", None, raising=False)
 
-        assert json.loads((await updates.api_changelog(MagicMock())).body)[
-            "content"
-        ] == "first\n"
+        assert json.loads((await updates.api_changelog(MagicMock())).body)["content"] == "first\n"
 
         changelog.write_text("second edition\n", encoding="utf-8")
         st = changelog.stat()
         os.utime(changelog, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
 
-        assert json.loads((await updates.api_changelog(MagicMock())).body)[
-            "content"
-        ] == "second edition\n"
+        assert (
+            json.loads((await updates.api_changelog(MagicMock())).body)["content"]
+            == "second edition\n"
+        )
 
 
 class TestChannelPresetsReadIsCached:
@@ -564,9 +562,7 @@ class TestChannelPresetsReadIsCached:
         assert reads["n"] == 1, f"config.json was read {reads['n']} times, expected 1"
 
     @pytest.mark.asyncio
-    async def test_edit_is_picked_up(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_edit_is_picked_up(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({"channel_presets": [{"id": "a"}]}), encoding="utf-8")
         monkeypatch.setattr(handlers_channel, "config_path", lambda: cfg)

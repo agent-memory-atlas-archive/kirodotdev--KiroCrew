@@ -6691,11 +6691,10 @@
     },
     "kiroCrewAgentsPage": {
       "add_crew_member": "Add crew member",
-      "additional_stores_coming_with_memory_v2": "Only the default store is available today — support for more memory stores is coming soon.",
       "agents": "Agents",
       "also_used_by_these_crews": "Also used by {{crews}}. Agents that share a store can read each other’s files and memory.",
-      "bindings_preview_info": "Preview. Isolated memory per agent is still being built. An agent has its own workspace folder, but semantic memory, recall of past conversations, and global lessons reach every agent, so changing this does not separate what an agent remembers yet.",
-      "bindings_preview_notice": "Preview. An agent already reads and writes its own workspace folder, but what it remembers is not separated yet: semantic memory, recall of past conversations, and global lessons reach every agent. Isolated memory per agent is on the way.",
+      "bindings_preview_info": "Private memory follows the member through private chats, Crew delegation, scheduled work and restart. Create private memory for an existing member before starting work; existing data is not copied automatically.",
+      "bindings_preview_notice": "Every named member has its own private Memory V2. Only the default assistant uses Global Memory V1.",
       "cancel": "Cancel",
       "chat_with_this_crew": "Chat with this agent",
       "copy_from_optional": "Copy from (optional)",
@@ -6740,7 +6739,6 @@
       "manage_agent_workspace_memory_store_bindings": "Separate assistants for separate jobs. Each agent keeps its own files.",
       "member_already_exists": "A member named '{{name}}' already exists. Choose another name.",
       "memory_store": "Memory Store",
-      "memory_store_hint_member": "Which memory store this member is bound to. The binding is recorded, but it does not give the member a memory of its own yet.",
       "model": "Model",
       "name": "Name",
       "new_crew": "New agent",
@@ -6775,7 +6773,6 @@
       "view_cards_tooltip": "Roomy cards showing what each agent uses",
       "view_list": "List",
       "view_list_tooltip": "Compact table, one row per agent",
-      "which_store_its_lessons_and_history_are_written": "Which memory store this agent is bound to. The binding is recorded, but it does not give the agent a memory of its own yet.",
       "workspace": "workspace",
       "workspace_2": "Workspace",
       "workspace_hint_member": "The folder this member reads and writes. Switch it and new chats start fresh in the new folder; the old one is kept.",
@@ -6975,8 +6972,6 @@
       "member_count_other": "{{count}} members",
       "member_gone": "Showing {{shown}} — “{{name}}” is no longer on the roster.",
       "member_gone_roster": "“{{name}}” is no longer on the roster.",
-      "memory_dedicated_note": "Preferences and project notes come from the {{store}} store rather than the shared default. Conversation memory and lessons are not separated yet: what you tell this member is still known to every member.",
-      "memory_shared_note": "Members currently share one memory. What you tell one member is known to all of them.",
       "memory_store": "Memory store",
       "model": "Model",
       "opening_thread": "Opening the conversation…",
@@ -7501,6 +7496,47 @@
         "this_range": "Total for these dates",
         "unreachable_body": "The service or your API key could not be reached. Your data was not lost, try again shortly.",
         "unreachable_title": "WakaTime is unreachable"
+      },
+      "memoryBackupsCard": {
+        "a_restored_database_is_read_from_the_next_time_t": "A restored database is read from the next time the gateway starts. Until then this store keeps serving the file that was replaced.",
+        "actions": "Actions",
+        "back_up_now": "Back up now",
+        "backups": "Backups",
+        "cancel": "Cancel",
+        "confirm_restore": "Confirm restore",
+        "copies_taken": "Copies taken: {{value}}",
+        "failed": "Failed: {{value}}",
+        "no_backups_yet": "No backups yet",
+        "restore": "Restore backup",
+        "restored_the_database_it_replaced_was_kept_besid": "Restored. The database it replaced was kept beside the store's own file rather than overwritten, under this name: <name/>",
+        "size": "Size",
+        "taken": "Taken"
+      },
+      "memoryCarveCard": {
+        "clear_filter": "Clear filter",
+        "count_by": "Count by",
+        "memory": "Memory",
+        "not_recorded": "not recorded"
+      },
+      "memoryRetiredCard": {
+        "actions": "Actions",
+        "memory": "Memory",
+        "not_recorded": "not recorded",
+        "restore": "Restore",
+        "unknown": "unknown"
+      },
+      "memoryStoreCard": {
+        "backups": "Backups: <v/>",
+        "crew_silo": "Agent store",
+        "lessons": "Lessons: <v/>",
+        "memory_store": "Memory store",
+        "newest_backup": "Newest backup: <v/>",
+        "only_the_signed_in_dashboard_owner_can_address_a": "Only the signed-in dashboard owner can select a memory store here. Without a selection, memory documents read the global store.",
+        "shared_default_store": "Shared default store",
+        "this_install_does_not_declare_a_memory_store_by": "This install does not declare a memory store by that name any more. Pick another store from the list above.",
+        "this_store_has_no_database_file_that_can_be_read": "This store has no database file that can be read yet. It is created the first time something is remembered in it, so there is nothing to list until then. Any backup it already has is still restorable below.",
+        "this_store_is_declared_but_its_database_could_no": "This store is declared, but its database could not be opened. Nothing is shown rather than another store's memory under this name.",
+        "unknown": "unknown"
       }
     },
     "overviewPage": {

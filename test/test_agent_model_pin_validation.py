@@ -25,6 +25,9 @@ def _owner_caller(monkeypatch):
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
     )
+    monkeypatch.setattr(
+        "kiro_crew.member_memory_auth.private_memory_execution_supported", lambda **kwargs: True
+    )
 
 
 class TestAcpIdCorrection:

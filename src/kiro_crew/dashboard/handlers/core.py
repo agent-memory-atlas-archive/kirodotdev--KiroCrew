@@ -60,6 +60,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
     pip_extra_install_command,
+    private_owner_surface_refusal,
 )
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
@@ -496,11 +497,14 @@ async def api_ready(request: web.Request) -> web.Response:
 
     * **Startup** — before the socket binds, connection failure is the external
       not-ready signal. After bind, ``DashboardState.ready`` remains false and
-      the probe returns 503 while session restoration, channel relaunch, tunnel
-      setup, and other startup work finish.
+      the probe returns 503 while session restoration, tunnel setup, and other
+      pre-ready wiring finishes.
     * **Serving** — the server publishes ``DashboardState.ready = True`` at the
       same final boundary used by the boot-to-ready metric; readiness is then
-      200 while required state is wired and shutdown has not been requested.
+      200 while required control state is wired and shutdown has not been
+      requested. The separately tracked memory preparation task starts at this
+      boundary: memory content routes remain fail-closed and agent turns wait
+      at admission until it settles.
     * **Shutdown requested** — when SIGTERM/SIGINT or ``POST /api/shutdown``
       sets the process-wide ``shutdown_event``, readiness changes to 503 while
       ``/api/live`` remains 200 until the HTTP server exits. Supervisors that
@@ -2537,6 +2541,24 @@ async def api_token_local(request: web.Request) -> web.Response:
             resources="invalid-secret",
         )
         return web.json_response({"error": "invalid secret"}, status=403)
+    from kiro_crew.member_memory_auth import local_owner_bootstrap_allowed
+
+    if not await asyncio.to_thread(local_owner_bootstrap_allowed, request):
+        _sel().log_api_access(
+            caller="local-process",
+            operation="token.local",
+            outcome="denied",
+            source="local-bootstrap",
+            resources="unverified-owner-process",
+        )
+        return web.json_response(
+            {
+                "error": "The gateway could not verify this process as the local owner. "
+                "Open the dashboard using its CLI login link on the gateway host.",
+                "code": "member_owner_token_refused",
+            },
+            status=403,
+        )
     ttl = MAX_SESSION_TTL_SECS
     ttl_param = request.query.get("ttl", "")
     if ttl_param:
@@ -2607,6 +2629,9 @@ def _invalid_session_path_id(session_id: str, agent_id: str | None = None) -> we
 
 async def api_session_agents_list(request: web.Request) -> web.Response:
     """GET /api/sessions/{id}/agents — list sub-agent results for a session."""
+    refusal = await private_owner_surface_refusal(request, "session.agents.list")
+    if refusal is not None:
+        return refusal
     session_id = request.match_info["id"]
     if (_e := _invalid_session_path_id(session_id)) is not None:
         return _e
@@ -2625,6 +2650,9 @@ async def api_session_agents_list(request: web.Request) -> web.Response:
 
 async def api_session_agent_result(request: web.Request) -> web.Response:
     """GET /api/sessions/{id}/agents/{agent_id} — read sub-agent result."""
+    refusal = await private_owner_surface_refusal(request, "session.agent.result")
+    if refusal is not None:
+        return refusal
     session_id = request.match_info["id"]
     agent_id = request.match_info["agent_id"]
     if (_e := _invalid_session_path_id(session_id, agent_id)) is not None:
@@ -2650,6 +2678,9 @@ async def api_session_agent_result(request: web.Request) -> web.Response:
 
 async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     """GET /api/sessions/{id}/agents/{agent_id}/stream — SSE stream of result file."""
+    refusal = await private_owner_surface_refusal(request, "session.agent.stream")
+    if refusal is not None:
+        return refusal
     session_id = request.match_info["id"]
     agent_id = request.match_info["agent_id"]
     # Before the ok-record below as well as before prepare(): a refused request

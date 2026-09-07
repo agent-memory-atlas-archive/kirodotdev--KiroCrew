@@ -25,6 +25,7 @@ import errno
 import io
 import logging
 import os
+import struct
 import subprocess
 import sys
 import types
@@ -460,9 +461,7 @@ def _bsdinfo(ppid: int = 0, sec: int = 0, usec: int = 0) -> bytes:
     buf = bytearray(pc._DARWIN_BSDINFO_SIZE)
     buf[16:20] = ppid.to_bytes(4, "little")
     buf[pc._DARWIN_OFF_START_TVSEC : pc._DARWIN_OFF_START_TVSEC + 8] = sec.to_bytes(8, "little")
-    buf[pc._DARWIN_OFF_START_TVUSEC : pc._DARWIN_OFF_START_TVUSEC + 8] = usec.to_bytes(
-        8, "little"
-    )
+    buf[pc._DARWIN_OFF_START_TVUSEC : pc._DARWIN_OFF_START_TVUSEC + 8] = usec.to_bytes(8, "little")
     return bytes(buf)
 
 
@@ -582,8 +581,17 @@ class TestGetProcessStartId:
         _fake_libproc(monkeypatch, payload=None, ret=-1)
         assert pc.get_process_start_id(5) is None
 
-    def test_windows_is_unknown_rather_than_a_mismatch(self, monkeypatch):
+    def test_windows_uses_query_only_creation_identity(self, monkeypatch):
         monkeypatch.setattr(pc.sys, "platform", "win32")
+        monkeypatch.setattr(
+            pc, "process_start_time", lambda pid: "133000123456789" if pid == 5 else None
+        )
+        assert pc.get_process_start_id(5) == "133000123456789"
+        assert pc.get_process_start_id(6) is None
+
+    def test_windows_unreadable_identity_is_unknown(self, monkeypatch):
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        monkeypatch.setattr(pc, "process_start_time", lambda pid: None)
         assert pc.get_process_start_id(5) is None
 
     def test_identity_never_contains_a_colon(self, monkeypatch):
@@ -591,6 +599,43 @@ class TestGetProcessStartId:
         _fake_libproc(monkeypatch, payload=_bsdinfo(sec=17, usec=1), ret=136)
         value = pc.get_process_start_id(5)
         assert value is not None and ":" not in value
+
+
+@pytest.mark.parametrize(
+    "scenario", ["unique", "duplicate", "closed", "truncated", "denied", "oversize"]
+)
+def test_windows_tcp_peer_table_refuses_uncertain_identity(monkeypatch, scenario):
+    monkeypatch.setattr(pc, "IS_WINDOWS", True)
+    row = struct.pack(
+        "<I4sI4sII",
+        1 if scenario == "closed" else 5,
+        b"\x7f\x00\x00\x01",
+        0xD007,
+        b"\x7f\x00\x00\x01",
+        0xE803,
+        2468,
+    )
+    count = 2 if scenario in {"duplicate", "truncated"} else 1
+    raw = struct.pack("<I", count) + row * (2 if scenario == "duplicate" else 1)
+
+    def query(buffer, size_pointer, *_args):
+        size = ctypes.cast(size_pointer, ctypes.POINTER(pc.wintypes.DWORD))
+        if scenario == "denied":
+            return 5
+        size.contents.value = 16 * 1024 * 1024 if scenario == "oversize" else len(raw)
+        if buffer is None:
+            return 122
+        ctypes.memmove(buffer, raw, len(raw))
+        return 0
+
+    monkeypatch.setattr(
+        pc.ctypes,
+        "WinDLL",
+        lambda *a, **kw: types.SimpleNamespace(GetExtendedTcpTable=_Fn(query)),
+        raising=False,
+    )
+    result = pc.get_tcp_peer_pid(("127.0.0.1", 1000), ("127.0.0.1", 2000))
+    assert result == (2468 if scenario == "unique" else None)
 
 
 # ---------------------------------------------------------------------------
@@ -1650,9 +1695,7 @@ class TestRestrictToOwner:
             seen["sids"] = tuple(sids)
 
         monkeypatch.setattr(pc, "IS_POSIX", False)
-        monkeypatch.setattr(
-            pc, "current_user_sid", lambda: pc._OWNER_RIGHTS_SID.removeprefix("*")
-        )
+        monkeypatch.setattr(pc, "current_user_sid", lambda: pc._OWNER_RIGHTS_SID.removeprefix("*"))
         monkeypatch.setattr(pc.windows_acl, "apply_owner_only", _apply)
         pc.restrict_to_owner(tmp_path / "token.key")
         assert seen["sids"].count("S-1-3-4") == 1, seen
@@ -1730,9 +1773,7 @@ class TestExecutableDiscovery:
         hook.write_text("")
         assert pc.is_executable_file(hook, platform_name="win32") is False
 
-    def test_posix_target_accepts_any_regular_file_from_a_windows_host(
-        self, monkeypatch, tmp_path
-    ):
+    def test_posix_target_accepts_any_regular_file_from_a_windows_host(self, monkeypatch, tmp_path):
         hook = tmp_path / "pre.sh"
         hook.write_text("")
         monkeypatch.setattr(pc, "IS_POSIX", False)
@@ -2695,9 +2736,7 @@ class TestWindowsLineageLifetimes:
             101: (101, 15, 40),  # an immediate launcher that has already exited
             102: (102, 20, None),
         }
-        assert (
-            pc._windows_lineage_matches_lifetimes(102, self.ROOT, parent_map, identities) is True
-        )
+        assert pc._windows_lineage_matches_lifetimes(102, self.ROOT, parent_map, identities) is True
 
     def test_the_root_is_trivially_its_own_lineage(self):
         assert pc._windows_lineage_matches_lifetimes(self.ROOT, self.ROOT, {}, {}) is True
@@ -2782,9 +2821,7 @@ class TestDescendantHandleScanCleanup:
 
     def test_refuses_a_root_handle_that_names_another_process(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(
-            pc, "_windows_process_handle_identity", lambda _h: (999, 1, None)
-        )
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (999, 1, None))
         with pytest.raises(ValueError, match="root handle identity mismatch"):
             pc.descendant_termination_handles(100, {}, 8001)
 
@@ -2820,9 +2857,7 @@ class TestDescendantHandleScanCleanup:
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: {101: 100})
         monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: None)
-        monkeypatch.setattr(
-            pc, "_windows_process_handle_identity", lambda _h: (100, 10, None)
-        )
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
         assert pc.descendant_termination_handles(100, {}, 8001) == {}
 
 
@@ -2859,9 +2894,7 @@ class TestDuplicateAsyncioHandleFailure:
 
         _fake_windows(
             monkeypatch,
-            kernel32=types.SimpleNamespace(
-                GetCurrentProcess=_const(1), DuplicateHandle=_Fn(_boom)
-            ),
+            kernel32=types.SimpleNamespace(GetCurrentProcess=_const(1), DuplicateHandle=_Fn(_boom)),
         )
         assert pc.duplicate_asyncio_process_handle(process) is None
 

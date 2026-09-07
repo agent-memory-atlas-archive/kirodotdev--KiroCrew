@@ -145,6 +145,9 @@ _BOUNDED_CONTROL_FIELDS = (
     "body is a fixed set of control fields (an identifier, a flag, a number, a "
     "short name), so the shared 64 KB ceiling is right and is applied"
 )
+_BOUNDED_MEMORY_CORRECTION = (
+    "one episode correction with text and metadata, bounded by the shared 64 KB ceiling"
+)
 
 _CAP_REASONS = {
     _UNBOUNDED_USER_CONTENT,
@@ -152,6 +155,7 @@ _CAP_REASONS = {
     _BOUNDED_BY_DEFAULT,
     _BOUNDED_EXPLICIT,
     _BOUNDED_CONTROL_FIELDS,
+    _BOUNDED_MEMORY_CORRECTION,
 }
 
 #: ``module::handler`` -> (declared cap, why). Declared cap is ``"None"`` for an
@@ -219,6 +223,20 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "None",
         _CONTROL_FIELDS_CAP_PENDING,
     ),
+    # Member memory control routes retain the shared bound. Corrections and
+    # selected record batches use their explicit limits for user-authored text.
+    "handlers/memory_admin.py::api_memory_store_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_admin.py::api_memory_retired_restore": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_admin.py::api_memory_restore_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_admin.py::api_memory_backup": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_admin.py::api_memory_restore": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_edit.py::_bulk": ("512 * 1024", _BOUNDED_EXPLICIT),
+    "handlers/memory_edit.py::api_memory_records_refresh": ("512 * 1024", _BOUNDED_EXPLICIT),
+    "handlers/memory_member.py::api_memory_episodic_correct": (
+        "<default>",
+        _BOUNDED_MEMORY_CORRECTION,
+    ),
+    "handlers/memory_member.py::api_memory_seed": ("16384", _BOUNDED_EXPLICIT),
     # knowledge.py -- the 9 sites that moved off the deleted duplicate helper.
     "handlers/knowledge.py::update_item": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/knowledge.py::add_source": ("None", _UNBOUNDED_USER_CONTENT),
@@ -314,6 +332,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # default in multibyte UTF-8 -- so they take a per-route ceiling sized to
     # the field bound; everything else is ids and flags.
     "handlers/cron.py::api_crons_create": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/cron.py::api_cron_tools": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
     "handlers/cron.py::api_cron_batch_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron.py::api_cron_update": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
     "handlers/cron.py::api_cron_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),

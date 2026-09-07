@@ -1206,6 +1206,27 @@ class TestLessonDedupPaths:
         assert len(texts) == 1
         assert "never merge upward" in texts[0]
 
+    def test_a_terse_lesson_does_not_supersede_a_detailed_one(self, tmp_path: Path) -> None:
+        """The overlap ratio is measured against the LARGER keyword set.
+
+        Against the smaller one it reads "how much of the shorter rule the longer one
+        covers", which is ~1.0 for any terse near-truism — so a three-word rule scored
+        past the 50% threshold and DELETED eighteen words of real guidance, reporting
+        success. Neither rule here is a substring of the other and the store has no
+        embedder, so the topic-overlap branch is the only one that can fire.
+        """
+        detailed = (
+            "Shell arguments must always be quoted when you interpolate them into a "
+            "bash command, because unquoted globbing silently rewrites every "
+            "filesystem path"
+        )
+        store = _store(tmp_path)
+        assert store.write_lesson(detailed)
+        assert store.write_lesson("Quote shell arguments")
+        texts = _lesson_texts(store)
+        assert detailed in texts
+        assert "Quote shell arguments" in texts
+
     def test_a_negative_example_is_stored_as_its_own_field(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         assert store.write_lesson("Quote shell arguments", negative="bare interpolation")

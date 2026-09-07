@@ -59,6 +59,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
+    _pin_private_agent_assignment,
     _rehydrate_slot_title,
     _validate_autocompact_pct,
     get_reasoning_effort_values,
@@ -322,6 +323,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     status=409,
                 )
 
+    created_in_send = slot_name is None or _normalize_slot_key(slot_name) not in state._slots
     try:
         slot = state.get_or_create_slot(
             slot_name,
@@ -424,8 +426,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # than after the message is composed into an unreachable thread.
         # Same rare-send IO budget as the registry check above.
         if slot.key.startswith(members_mod.DM_SLOT_KEY_PREFIX):
-            _member_slug = slot.key[len(members_mod.DM_SLOT_KEY_PREFIX) :]
-            _send_binding = await asyncio.to_thread(members_mod.read_dm_binding, _member_slug)
+            _send_binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, slot.key)
             if _send_binding is None or _send_binding.get("member", "") != slot.agent:
                 sel().log_api_access(
                     caller=request.remote or "",
@@ -470,6 +471,14 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # blip is not triaged as an agent-naming problem.
             same_binding = False
             resolution_failed = False
+            compared_binding = (
+                slot.agent,
+                slot.project,
+                slot.memory_store,
+                effective_session_key(slot),
+                slot.workspace,
+                slot._app,
+            )
             try:
                 # Config load is file IO (stat + read + jsonschema validate on a
                 # cache miss), so it rides a thread like the member-slot load
@@ -480,12 +489,21 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # exists only inside slot.project, so resolving without it would
                 # fall back to default bindings and falsely equate a
                 # project-agent slot with a request naming the default alias.
-                # Warm the cache off-loop first so the on-loop lookup is a hit.
+                # Keep both lookups on one captured selection and off-loop:
+                # private store validation reads ownership files even on cache hits.
                 await warm_project_agent_names(
-                    slot.project or None, operation="api_chat", source="dashboard"
+                    compared_binding[1] or None, operation="api_chat", source="dashboard"
                 )
-                _stored = resolve_agent_bindings(_cfg, slot.agent, slot.project or None)
-                _requested = resolve_agent_bindings(_cfg, agent, slot.project or None)
+
+                def _compare_bindings():
+                    return (
+                        resolve_agent_bindings(
+                            _cfg, compared_binding[0], compared_binding[1] or None
+                        ),
+                        resolve_agent_bindings(_cfg, agent, compared_binding[1] or None),
+                    )
+
+                _stored, _requested = await asyncio.to_thread(_compare_bindings)
                 # Identity itself lives on ResolvedBindings, next to the field
                 # set, so a new dispatch-relevant field cannot silently widen
                 # this bypass. requested_resolved stays a separate caller-side
@@ -499,6 +517,18 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 logger.warning(
                     "agent-conflict binding resolution failed; using strict name comparison",
                     exc_info=True,
+                )
+            if state._slots.get(slot.key) is not slot or compared_binding != (
+                slot.agent,
+                slot.project,
+                slot.memory_store,
+                effective_session_key(slot),
+                slot.workspace,
+                slot._app,
+            ):
+                return web.json_response(
+                    {"error": "slot changed during agent resolution", "code": "session_rebound"},
+                    status=409,
                 )
             if not same_binding:
                 _emit_agent_assignment(
@@ -804,6 +834,56 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # `chat_done` refresh rebuilds the transcript from disk. Without it, the
     # message-pin control (keyed on `meta.mid`) stays withheld for the whole
     # turn.
+    if created_in_send and not slot.is_remote:
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        if is_owner_dashboard_request(request):
+            async with slot._lock:
+                assignment = (
+                    slot.agent,
+                    slot.project,
+                    slot.workspace,
+                    effective_session_key(slot),
+                    len(slot.messages),
+                )
+                try:
+                    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                    assigned_store = await asyncio.to_thread(
+                        _pin_private_agent_assignment,
+                        assignment[3],
+                        assignment[0],
+                        cfg,
+                        conversation_log=state.conversation_log,
+                        native_context=(
+                            state.sessions.get_provider(assignment[3]) is not None
+                            or bool(state.sessions.resumable_sid(assignment[3]))
+                        ),
+                    )
+                except Exception as exc:
+                    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+                    return _store_unavailable_response(slot.memory_store, exc)
+                if (
+                    state._slots.get(slot.key) is not slot
+                    or slot.running
+                    or assignment
+                    != (
+                        slot.agent,
+                        slot.project,
+                        slot.workspace,
+                        effective_session_key(slot),
+                        len(slot.messages),
+                    )
+                ):
+                    return web.json_response(
+                        {
+                            "error": "slot changed during member assignment",
+                            "code": "session_rebound",
+                        },
+                        status=409,
+                    )
+                if assigned_store:
+                    slot.memory_store = assigned_store
     _user_row = slot.append(
         "user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None
     )
@@ -2534,8 +2614,22 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # bindings, so a peer agent name would resolve to a local workspace (or to
     # nothing, logging a false "does not resolve"). The peer resolves its own.
     if cfg is not None and agent and not instance_id:
+        resolving_key = _normalize_slot_key(str(name)) if name else ""
+        resolving_slot = state._slots.get(resolving_key) if resolving_key else None
+        resolving_fields = (
+            (
+                resolving_slot.agent,
+                resolving_slot.project,
+                resolving_slot.workspace,
+                resolving_slot.memory_store,
+                resolving_slot._app,
+                effective_session_key(resolving_slot),
+            )
+            if resolving_slot is not None
+            else None
+        )
         try:
-            bindings = resolve_agent_bindings(cfg, agent)
+            bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, agent)
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             if not bindings.requested_resolved:
                 # Log only — the requested binding is the user's intent and is
@@ -2553,6 +2647,25 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 )
         except Exception:
             logger.warning("Failed to resolve bindings for slot create", exc_info=True)
+        if resolving_key and (
+            state._slots.get(resolving_key) is not resolving_slot
+            or (
+                resolving_slot is not None
+                and resolving_fields
+                != (
+                    resolving_slot.agent,
+                    resolving_slot.project,
+                    resolving_slot.workspace,
+                    resolving_slot.memory_store,
+                    resolving_slot._app,
+                    effective_session_key(resolving_slot),
+                )
+            )
+        ):
+            return web.json_response(
+                {"error": "slot changed during agent resolution", "code": "session_rebound"},
+                status=409,
+            )
 
     # Whether this request will MINT a genuinely new slot, decided before
     # get_or_create_slot runs. `name` can address an already-open slot (the
@@ -2756,6 +2869,42 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             else:
                 cfg_proj = ""
             slot.project = cfg_proj or default_project_dir(workspace)
+        if is_new_slot and cfg is not None and not instance_id:
+            from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+            if is_owner_dashboard_request(request):
+                assignment_key = effective_session_key(slot)
+                assignment_agent = slot.agent
+                try:
+                    assigned_store = await asyncio.to_thread(
+                        _pin_private_agent_assignment,
+                        assignment_key,
+                        agent,
+                        cfg,
+                        conversation_log=state.conversation_log,
+                        native_context=(
+                            state.sessions.get_provider(assignment_key) is not None
+                            or bool(state.sessions.resumable_sid(assignment_key))
+                        ),
+                    )
+                except Exception as exc:
+                    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+                    return _store_unavailable_response(slot.memory_store, exc)
+                if assigned_store:
+                    if (
+                        state._slots.get(slot.key) is not slot
+                        or effective_session_key(slot) != assignment_key
+                        or slot.agent != assignment_agent
+                    ):
+                        return web.json_response(
+                            {
+                                "error": "slot changed during member assignment",
+                                "code": "session_rebound",
+                            },
+                            status=409,
+                        )
+                    slot.memory_store = assigned_store
         _sync_dashboard_slots(state)
         # Persist INSIDE the suspension, ahead of the coalesced broadcast, the
         # same ordering `session_control.py`'s create span uses ("the whole
@@ -5538,8 +5687,9 @@ class _CommitToken(str):
     """A ``str`` whose per-request IDENTITY marks commit ownership.
 
     ``api_chat_slot_agent`` commits ``slot.agent`` (and the derived
-    ``slot.workspace`` / ``slot.project``) before its awaits and may have to
-    roll those commits back (session rebound, busy decline). Every one of
+    ``slot.workspace`` / ``slot.project`` / ``slot.memory_store``) before its
+    awaits and may have to roll those commits back (session rebound, busy
+    decline). Every one of
     those fields has unlocked writers (openai_compat, members, the in-turn
     /agent and set_project directives), so the rollback must not fire when
     one of them wrote during the awaits — including a write of the SAME text,
@@ -5677,6 +5827,31 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_agent", session_key)
         if denied is not None:
             return denied
+        if agent_name != slot.agent:
+            from kiro_crew.member_memory_auth import read_private_session_store
+
+            try:
+                private_store = await asyncio.to_thread(read_private_session_store, session_key)
+            except (OSError, ValueError):
+                return web.json_response(
+                    {
+                        "error": "This conversation's memory binding could not be read. "
+                        "Start a new conversation to choose a different member.",
+                        "code": "private_memory_binding_unavailable",
+                    },
+                    status=503,
+                )
+            if private_store is not None:
+                # Resetting the provider keeps this key's permanent ownership.
+                # Refuse before changing the agent, its derived fields or history.
+                return web.json_response(
+                    {
+                        "error": "This conversation belongs to its original member. "
+                        "Start a new conversation to choose a different member.",
+                        "code": "private_memory_session_pinned",
+                    },
+                    status=409,
+                )
         # Never reset under an in-flight turn (the model handler's policy,
         # and the _cancel_target subtlety): a RUNNING turn owns a captured
         # identity because ``linked_session_key`` is mutable, so the key
@@ -5702,6 +5877,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # the same reasoning in api_chat_slot_create.
         new_workspace = slot.workspace
         new_project = slot.project
+        new_memory_store = slot.memory_store
         # Compare-and-set baseline, captured BEFORE the first await in this
         # section: the resolution warm-up and the session reset both yield
         # the event loop, and the project/workspace endpoints do not take
@@ -5710,6 +5886,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # silently erase an action that happened after the agent pick).
         pre_await_workspace = slot.workspace
         pre_await_project = slot.project
+        pre_await_memory_store = slot.memory_store
 
         # Commit the agent BEFORE any await in this section: a message send
         # landing while the resolution warm-up or the reset await is in
@@ -5750,6 +5927,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # (the websocket rebroadcast corrects it only when the socket is up,
         # which is exactly when the optimistic write is load-bearing).
         workspace = slot.workspace or "default"
+        assignment_resolved = False
         try:
             cfg = KiroCrewConfig.load()
             if agent_name:
@@ -5762,15 +5940,19 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 # the slot records the alias's workspace. A materialized agent
                 # matches no alias at all, which leaves the slot on the PREVIOUS
                 # agent's project.
-                # Resolve WITH the slot's project scope (warmed off-loop first) so a
+                # Resolve WITH the captured project scope (warmed off-loop first) so a
                 # project agent counts as resolved rather than falling back.
                 await warm_project_agent_names(
-                    slot.project or None, operation="api_chat_slot_agent", source="dashboard"
+                    pre_await_project or None, operation="api_chat_slot_agent", source="dashboard"
                 )
-                bindings = resolve_agent_bindings(cfg, agent_name, slot.project or None)
+                bindings = await asyncio.to_thread(
+                    resolve_agent_bindings, cfg, agent_name, pre_await_project or None
+                )
+                assignment_resolved = bindings.requested_resolved
                 ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
                 new_workspace = ws_name
                 workspace = ws_name
+                new_memory_store = bindings.memory_store_name
                 # A project-scope agent exists only inside slot.project: kiro-cli
                 # resolves --agent against $PWD/.kiro/agents, so resetting the
                 # project here would make the very agent just selected unresolvable
@@ -5798,12 +5980,23 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # very project this handler derived).
         committed_workspace: str | None = None
         committed_project: str | None = None
+        committed_memory_store: str | None = None
         if slot.workspace == pre_await_workspace:
             slot.workspace = _CommitToken(new_workspace)
             committed_workspace = slot.workspace
         if slot.project == pre_await_project:
             slot.project = _CommitToken(new_project)
             committed_project = slot.project
+        # The store is the THIRD field of that binding, and leaving it behind
+        # splits the slot in half: the turn resolves its store fresh from the new
+        # agent's bindings while the consolidator writes to the store recorded at
+        # birth, so a switched slot READS the new agent's memory and WRITES the old
+        # agent's. No error on either side. Same commit-token CAS as the two
+        # above, so the rollback below unwinds the store with the binding it
+        # belongs to rather than leaving the slot half-switched.
+        if slot.memory_store == pre_await_memory_store:
+            slot.memory_store = _CommitToken(new_memory_store)
+            committed_memory_store = slot.memory_store
 
         # Reset session so the next message uses the new agent.
         logger.info(
@@ -5830,11 +6023,24 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
                 slot.project = pre_await_project
+            if committed_memory_store is not None and slot.memory_store is committed_memory_store:
+                slot.memory_store = pre_await_memory_store
             # Re-mark unconditionally: the periodic flush writes a slot's
             # metadata line only while _dirty is set, so without this a
             # rollback that follows a persisted provisional binding leaves
             # the rejected values on disk across a restart.
             slot._dirty = True
+
+        if (
+            state._slots.get(slot.key) is not slot
+            or effective_session_key(slot) != session_key
+            or slot.agent is not committed_agent
+        ):
+            _rollback_switch()
+            return web.json_response(
+                {"error": "slot changed during agent resolution", "code": "session_rebound"},
+                status=409,
+            )
 
         # Last-instant re-probe in a NO-AWAIT window before the teardown (the
         # model template's rule at its own reset site): the pre-commit check
@@ -6003,6 +6209,18 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
             )
+
+        # Only an explicit owner choice can admit an unbound restored member.
+        # Keep this after the final await and rollback checks: transcript agent
+        # metadata and internal callers are not private-memory authority.
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        if (
+            slot.agent is committed_agent
+            and assignment_resolved
+            and is_owner_dashboard_request(request)
+        ):
+            slot._memory_assignment_from_history = False
 
         # Snapshot the response's workspace LAST, immediately before leaving
         # the lock: the metadata await above yields the event loop, so a
@@ -8545,8 +8763,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # validated lowercase) -> the guard 409s. Fail-closed, and the
         # constructor's own casefolded reservation is never reached with an
         # uncaught ValueError.
-        _early_slug = name[len(members_mod.DM_SLOT_KEY_PREFIX) :]
-        _early_binding = await asyncio.to_thread(members_mod.read_dm_binding, _early_slug)
+        _early_binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, name)
         if _early_binding is None or history_key != _history_key_for(name):
             sel().log_api_access(
                 caller=request.remote or "",
@@ -8773,8 +8990,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     _member_binding: dict | None = None
     if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX):
         # Same casefold-to-match / original-bytes-slice as the early guard.
-        _slug = name[len(members_mod.DM_SLOT_KEY_PREFIX) :]
-        _member_binding = await asyncio.to_thread(members_mod.read_dm_binding, _slug)
+        _member_binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, name)
         # Re-check the LIVE slot after this await: it is the one suspension
         # point between the earlier ownership re-checks and the publish
         # below. A concurrent resume that published during it would otherwise
@@ -8906,6 +9122,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # treats the slot as never-hydrated and skips the delete-won comparison.
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
     slot._disk_meta_observed = bool(meta)
+    slot._memory_assignment_from_history = True
     # On a member key the pin came from the BINDING at slot creation above and
     # metadata may not override it (same tamperable file the guard refused to
     # trust). On an ordinary key, mode="member" may not ride in either — the

@@ -86,9 +86,13 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "knowledge_list_sources",
             "description": (
-                "List the knowledge library's sources as 'name — id (N items)' "
-                "lines. Use it to discover a valid source_id before scoping "
-                "local_knowledge_search to a single source."
+                "Read-only counts for the user's knowledge library: how many "
+                "sources, documents and items it holds in total, then one "
+                "'name — id (N items)' line per source. Use it to answer 'how "
+                "much is in my knowledge base', and to discover a valid "
+                "source_id before scoping local_knowledge_search to a single "
+                "source. It only counts -- it never rebuilds, repairs or "
+                "flushes anything."
             ),
             "inputSchema": {
                 "type": "object",
@@ -426,18 +430,36 @@ def knowledge_list_sources(name: str, args: dict[str, Any]) -> str:
         "  OR i.id IN (SELECT sl.item_id FROM source_locations sl WHERE sl.source_id = s.id)"
         ") GROUP BY s.id, s.name ORDER BY s.name"
     ).fetchall()
+    stats = store.aggregate_stats()
     mcp_core.sel().log_tool_invocation(
         session_key=mcp_core._resolve_session_key(),
         source="mcp",
         tool_name="knowledge_list_sources",
         outcome="success",
-        metadata={"source_count": len(rows)},
+        metadata={
+            "source_count": len(rows),
+            "documents": stats.documents,
+            "items": stats.items,
+        },
+    )
+    totals = (
+        f"Knowledge library: {stats.sources} source(s), "
+        f"{stats.documents} document(s), {stats.items} item(s)."
     )
     if not rows:
-        return "The knowledge library has no sources yet."
-    lines = [f"Knowledge sources ({len(rows)}):"]
+        return f"{totals}\nThe knowledge library has no sources yet."
+    lines = [totals, f"Sources ({len(rows)}):"]
     for row in rows:
         lines.append(f"- {row['name']} — id: {row['id']} ({row['item_count']} item(s))")
+    # A per-source count is scope membership (ownership OR location), so an item
+    # located under one source but owned by another is counted twice and the lines
+    # can sum above the total. Say so only when this library is actually in that
+    # state, rather than spending the caveat on every call.
+    if sum(int(row["item_count"]) for row in rows) > stats.items:
+        lines.append(
+            "Per-source counts sum above the total because an item surviving a "
+            "cross-source dedup collapse stays in both sources' search scope."
+        )
     output = "\n".join(lines)
     output, _ = redact_exfiltration_urls(output)
     output, _ = redact_credentials(output)

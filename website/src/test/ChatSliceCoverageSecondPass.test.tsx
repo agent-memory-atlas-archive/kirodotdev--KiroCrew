@@ -30,6 +30,7 @@ import chatReducer, {
   appendQueuedMessage,
   clearFocusToolCallId,
   clearPendingPermissions,
+  clearUndeletableHistory,
   createSlot,
   deleteHistorySession,
   deleteSlot,
@@ -1555,6 +1556,43 @@ describe('chatSlice thunks', () => {
     await store.dispatch(deleteHistorySession('h1'))
     expect(apiMock.deleteSession).toHaveBeenCalledWith('h1')
     expect(chat(store).history.map(h => h.key)).toEqual(['h2'])
+  })
+
+  // A refused delete: the gateway answers 409 with a machine-readable `code`
+  // (cron ownership could not be determined), `api.deleteSession` throws an
+  // ApiError-shaped rejection, and the thunk must carry the facts across the
+  // boundary via rejectWithValue -- a rethrow would serialize the status and
+  // body away. The row stays: nothing was deleted, so the sidebar must not
+  // pretend otherwise.
+  it('keeps a refused row in history and records the refusal by code', async () => {
+    apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1', title: 'Nightly digest' }, { key: 'h2' }], has_more: false })
+    apiMock.deleteSession.mockRejectedValue(Object.assign(new Error('conflict'), {
+      status: 409,
+      body: JSON.stringify({ ok: false, error: 'owned by nobody', code: 'cron_ownership_unknown' }),
+    }))
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+    await store.dispatch(deleteHistorySession('h1'))
+    expect(chat(store).history.map(h => h.key)).toEqual(['h1', 'h2'])
+    expect(chat(store).undeletableHistory).toEqual({ key: 'h1', title: 'Nightly digest', code: 'cron_ownership_unknown' })
+    store.dispatch(clearUndeletableHistory())
+    expect(chat(store).undeletableHistory).toBeNull()
+  })
+
+  // No parsable body (a dropped connection, a 5xx with prose) still narrates:
+  // the code is empty and the render site falls back to the generic sentence.
+  // A following successful attempt clears the stale notice on `pending`.
+  it('records an empty code for a bodyless rejection and clears it on the next attempt', async () => {
+    apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1' }], has_more: false })
+    apiMock.deleteSession.mockRejectedValueOnce(new Error('network down'))
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+    await store.dispatch(deleteHistorySession('h1'))
+    expect(chat(store).undeletableHistory).toEqual({ key: 'h1', title: '', code: '' })
+    apiMock.deleteSession.mockResolvedValueOnce({})
+    await store.dispatch(deleteHistorySession('h1'))
+    expect(chat(store).undeletableHistory).toBeNull()
+    expect(chat(store).history).toEqual([])
   })
 
   // The older-page REQUEST is exercised at the reducer boundary rather than

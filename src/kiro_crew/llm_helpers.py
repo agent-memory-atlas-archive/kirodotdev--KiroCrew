@@ -101,14 +101,14 @@ _TRANSIENT_MARKERS = (
     "dispatch failure",  # AWS SDK connector-level I/O failure (conn/DNS/TLS drop)
     "dispatchfailure",  # Rust DispatchFailure variant (unspaced)
     # Model-unavailable capacity/rollout, matched against _format_acp_error's
-    # wording. Two phrasings are listed: the current "on the backend" text
-    # (#1550) and the pre-2026-08 "on Bedrock" one, so a transcript or log line
+    # wording. Two phrasings are listed: the "on the backend" text this gateway
+    # emits and the older "on Bedrock" one, so a transcript or log line
     # written by an older gateway still classifies. Any future rewording of
     # that branch must add its marker here.
     #
     # Deliberately does NOT cover the sibling unentitled-model branch: that one
     # is terminal by design (_model_is_unentitled), so a marker matching it
-    # would resurrect the pointless retry loop #1550 removed.
+    # would resurrect a pointless retry loop.
     "is unavailable on the backend",
     "is unavailable on bedrock",
     # kiro-cli >= 2.16 nameless capacity wording ("The model you've selected
@@ -1341,7 +1341,7 @@ def _attempt_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
         # predating the converter) fall through to the credits-only constructor,
         # which is byte-identical for the kiro seam. The converter's failure is
         # contained so a faulty to_turn_usage degrades to the credits read
-        # rather than silently zeroing a turn that previously billed.
+        # rather than silently zeroing a billable turn.
         to_usage = getattr(stats, "to_turn_usage", None)
         if callable(to_usage):
             try:
@@ -1360,11 +1360,10 @@ def _attempt_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
 def usage_has_billing(usage: TurnUsage) -> bool:
     """True when *usage* carries any billing dimension worth a row.
 
-    The single predicate behind every persist gate. Three hand-maintained
-    copies of ``credits or input_tokens or output_tokens`` is how the claude
-    seam's ``cost_usd`` (and a cost-free cache-only turn) got dropped in the
-    first place (#6758); a gate that reads this cannot drift from its siblings
-    when the next billing dimension is added.
+    The single predicate behind every persist gate. Hand-maintained copies of
+    ``credits or input_tokens or output_tokens`` drop the claude seam's
+    ``cost_usd`` (and a cost-free cache-only turn); a gate that reads this
+    cannot drift from its siblings when the next billing dimension is added.
     """
     return bool(
         usage.credits
@@ -1720,8 +1719,8 @@ async def stream_and_collect(
     )
     _fb_state = FallbackState(_fb_chain) if _fb_chain else None
     # Cross-attempt tool-activity flag for the fallback chain ONLY. Case 2's
-    # same-model retry keys off ``result_text`` alone (pre-existing behavior,
-    # pinned byte-for-byte by the empty-chain regression tests), but the chain
+    # same-model retry keys off ``result_text`` alone (pinned byte-for-byte by
+    # the empty-chain regression tests), but the chain
     # replays the ORIGINAL prompt up to FALLBACK_CANDIDATE_ATTEMPTS × len(chain)
     # more times — a tool that completed an external mutation before any text
     # streamed would be re-run on every one of them. Same activity predicate as
@@ -1846,7 +1845,7 @@ async def stream_and_collect(
             msg = str(exc)
             # Prompt-busy is matched STRUCTURALLY first, with the substring kept
             # as a fallback. _format_acp_error rewrites the backend's "prompt
-            # already in progress" into friendly prose that no longer carries
+            # already in progress" into friendly prose that does not carry
             # the marker, so a string-only check silently loses BOTH arms below
             # (cancel+retry and PromptBusyExhaustedError) for any producer that
             # formats before raising — which the shared-runtime AcpSessionHandle
@@ -2245,9 +2244,8 @@ async def _resolve_permission(
     def _scan_off_loop() -> tuple[str, str, str, str] | None:
         # One worker hop for the title and the whole tool_input loop. Both are
         # regex-heavy over agent-supplied text; on the event loop a ~9 KB shell
-        # title held the loop past the 25 s stall watchdog and took the gateway
-        # down (the title tier used to run inline here while only the tool_input
-        # tier was offloaded, so that crash path survived the first offload).
+        # title holds the loop past the 25 s stall watchdog and takes the gateway
+        # down.
         # ``re`` HOLDS the GIL for one match call, so the hop does not keep the
         # loop live inside a single scan -- the linear patterns and the size
         # ceiling do that; what the hop buys is the realpath I/O inside
@@ -2418,7 +2416,7 @@ def _extract_json_of_type(
             # error must not escape. Fail the WHOLE scan closed: a truncated
             # scan cannot certify a preferred match as unambiguous, so keeping
             # candidates collected before the bomb would let a worked example
-            # launder past the ambiguity refusal (GPT review, #4974 round 4).
+            # launder past the ambiguity refusal.
             # Callers already have recovery paths for None (schema retry loop,
             # the spine's forcing re-emit); salvaging a prefix of a reply that
             # contains a nesting bomb is not worth defeating them.
@@ -2561,7 +2559,7 @@ async def save_conversation_turn_off_loop(
     The whole turn is written under one :meth:`~kiro_crew.history.ConversationLog.atomic_appends`
     hold. ``append`` locks per ROW, so without it two concurrent turns for the
     same session could interleave into ``user_A, user_B, assistant_A,
-    assistant_B`` -- turns that no longer pair up, which no timestamp ordering can
+    assistant_B`` -- turns that do not pair up, which no timestamp ordering can
     repair because each row's ``ts`` is individually correct. On the loop that was
     impossible (a synchronous caller never yields between its two appends), so the
     hazard is introduced BY offloading and has to be closed here rather than

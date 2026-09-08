@@ -567,7 +567,7 @@ def _diagnostic_port(gw_kwargs: dict) -> int | None:
         # Deferred import: ``dashboard.urls`` is a stdlib-only leaf, but
         # importing it executes ``dashboard/__init__`` — keep it out of
         # cli.py's module scope so non-gateway commands and the MCP stdio
-        # servers never touch the dashboard package (see issue #3504).
+        # servers never touch the dashboard package.
         from kiro_crew.dashboard.urls import parse_dashboard_url
 
         return parse_dashboard_url(KiroCrewConfig.load().dashboard.url)[1]
@@ -878,8 +878,8 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
 
     - the console echo is skipped entirely;
     - the file handler attaches to the ROOT logger instead, so third-party
-      WARNINGs that previously reached the file only through the stderr
-      redirect still land, now formatted and PID-stamped;
+      WARNINGs reach the file formatted and PID-stamped rather than only as
+      raw stderr;
     - after the boot rotation, fds 1/2 are re-pointed at the live log so raw
       writes (uncaught tracebacks, child stderr) do not land in ``.prev``.
 
@@ -963,8 +963,8 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     )
     if detached:
         # Root attach: kiro_crew records arrive once via propagation, and
-        # third-party WARNINGs land formatted — replacing what the accidental
-        # stderr echo used to provide unformatted.
+        # third-party WARNINGs land formatted rather than as an unformatted
+        # stderr echo.
         target_logger = logging.getLogger()
     else:
         target_logger = logging.getLogger("kiro_crew")
@@ -1023,7 +1023,7 @@ def _builtin_mcp_server_available(name: str) -> bool:
     that actually ship an ``mcp_server`` module). Gating the verb on this
     predicate keeps the two decoupled — a builtin without the module is simply
     not registered, instead of advertising a command that dies with a raw
-    ``ModuleNotFoundError`` traceback (#5901).
+    ``ModuleNotFoundError`` traceback.
 
     Resolution deliberately uses ``PathFinder`` rather than
     ``importlib.util.find_spec``: ``find_spec`` IMPORTS the parent package as a
@@ -1610,9 +1610,9 @@ Examples:
     sel_parser = sec_sub.add_parser("events", help="Show recent security event log entries")
     sel_parser.add_argument("-n", "--limit", type=int, default=20, help="Number of entries")
     # A count alone cannot express "what happened around 14:05" — on a busy log
-    # 6000 entries reached only 15 minutes back, so answering a question about a
-    # two-hour-old event meant pulling ~90k entries and filtering by hand
-    # (issue #4843). Reading the file directly is correctly refused by the
+    # 6000 entries reach only 15 minutes back, so answering a question about a
+    # two-hour-old event means pulling ~90k entries and filtering by hand.
+    # Reading the file directly is correctly refused by the
     # credential-path gate, so the time selector has to live here.
     _time_help = (
         "a relative age (30m, 2h, 7d) or an ISO 8601 instant " "(2026-08-21, 2026-08-21T04:00:00Z)"
@@ -2226,8 +2226,8 @@ Examples:
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
     # ``_BUILTIN_NAMES`` is load-bearing for HTTP route registration and lists
-    # every builtin, so registering unconditionally advertised commands that
-    # crashed with a raw ModuleNotFoundError traceback (#5901). A builtin that
+    # every builtin, so registering unconditionally would advertise commands
+    # that crash with a raw ModuleNotFoundError traceback. A builtin that
     # gains an ``mcp_server.py`` gains its verb automatically.
     #
     # The probe only runs when the invocation actually names an ``mcp-*``
@@ -2736,7 +2736,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # The asyncio loop handler is installed later inside run().
         _install_crash_guard()
         gw_kwargs = _resolve_gateway_args(args)
-        # Deferred imports (issue #3504): ``dashboard.state`` pulls
+        # Deferred imports: ``dashboard.state`` pulls
         # vector_memory → numpy (~56 MB) and ``cli_server`` pulls
         # slack.gateway (~549 ms) — only the gateway command needs either,
         # so no other subcommand (and no MCP stdio server) pays for them.
@@ -2832,7 +2832,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # builtin's mcp_server and run it or refuse cleanly" — the same helper
         # the `kirocrew app mcp <name>` manifest path uses (clean stderr line +
         # exit 1 on ImportError or a missing run_mcp_server entrypoint), so an
-        # unresolvable module cannot reach a raw traceback here (#5901).
+        # unresolvable module cannot reach a raw traceback here.
         from kiro_crew.cli_commands import _run_app_mcp_server
 
         _run_app_mcp_server(args.command[4:])
@@ -2870,7 +2870,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # Dispatch through the module-level `importlib` rather than a
         # function-local `from kiro_crew.cli_commands import …`: the latter trips
         # the `top-level-imports` lint, while a module-scope import of
-        # `cli_commands` is deliberately avoided (issue #3504 — it costs ~556 ms
+        # `cli_commands` is deliberately avoided (it costs ~556 ms
         # on every CLI start). `importlib.import_module` keeps the load lazy AND
         # satisfies the linter.
         importlib.import_module("kiro_crew.cli_commands")._handle_secrets(args)
@@ -2969,7 +2969,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 # ── Config ──
 
 
-# NOTE (issue #3504): ``cli_commands`` and ``cli_server`` are deliberately NOT
+# NOTE: ``cli_commands`` and ``cli_server`` are deliberately NOT
 # imported at module scope. ``cli_commands`` costs ~556 ms and ``cli_server``
 # ~549 ms (it pulls ``slack.gateway``), and the MCP stdio servers
 # (``kirocrew mcp-core`` / ``mcp-cron`` / ``mcp-computer``) — which dispatch

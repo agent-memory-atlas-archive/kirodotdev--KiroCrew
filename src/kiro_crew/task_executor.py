@@ -835,8 +835,8 @@ async def check_context(session_key: str, sessions: "SessionManager") -> None:
     path gateway compaction uses — so the task runner inherits concurrent-
     trigger dedup, the failure/ineffective cooldown, turn-semaphore exclusion,
     the still-critical post-compaction reset, and skills-index reinjection,
-    instead of bypassing them all with a direct ``provider.compact()``
-    (#4686). A ``"busy"`` decline (a turn holds the semaphore) is final for
+    instead of bypassing them all with a direct ``provider.compact()``.
+    A ``"busy"`` decline (a turn holds the semaphore) is final for
     this check: never fall back to a direct compact — the next check retries
     once the turn drains.
     """

@@ -364,12 +364,12 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
     return linux
 
 
-# The Linux arm of the missing-ffmpeg fix, a module constant so the test can hold
-# it against the resolver's real search set. An earlier version told the user to
-# drop a static build into ``~/.local/bin``, which ``transcribe._find_ffmpeg``
-# deliberately never searches (``_ffmpeg_candidate_dirs`` documents removing it:
-# a generic user-writable PATH dir would let agent-written code run as the
-# gateway), so a user who followed the advice still ended at "not found" (#8897).
+# The Linux arm of the missing-ffmpeg remedy, a module constant so the test can hold
+# it against the resolver's real search set. It must not name ``~/.local/bin``, which
+# ``transcribe._find_ffmpeg`` deliberately never searches (``_ffmpeg_candidate_dirs``
+# documents leaving it out: a generic user-writable PATH dir would let agent-written
+# code run as the gateway), because a user who follows that advice still ends at
+# "not found".
 # Name only remedies that actually resolve: the dashboard's decoder download
 # installs into the digest-verified store ``_find_ffmpeg`` checks last and needs
 # no PATH reasoning (the working fix on distros with no packaged ffmpeg, e.g.
@@ -519,7 +519,7 @@ def _spec_gate_closed(name: str) -> bool:
     HEALTHY state, not a broken install. Doctor's static checks must consult
     the same predicate or the two sides drift apart, producing the unfixable
     "missing from mcpServers (re-run `kirocrew setup`)" loop on every host
-    where the gate is closed (#6548). Resolving the gate through the registry
+    where the gate is closed. Resolving the gate through the registry
     keeps them pinned together: a future server gaining a gate needs no edit
     here, and a server without one reports open, exactly as emission treats it.
 
@@ -856,9 +856,9 @@ def _doctor_mcp_governance(
     # Same hardened reader as this file's other spec reads: the agents dir is
     # user-writable, so an oversized or sensitively-symlinked spec is refused
     # (and audited) rather than parsed. No try/except: the reader's contract is
-    # return-``None``-never-raise, which the five sibling sites migrated
-    # alongside this one also rely on bare. ``None`` degrades to no declared
-    # servers, exactly as the blanket ``except`` here used to.
+    # return-``None``-never-raise, which the sibling sites also rely on bare.
+    # ``None`` degrades to no declared servers, which is what a blanket
+    # ``except`` here would do.
     spec = _read_agent_spec(agent_path, operation="doctor", source="cli")
     servers = (spec or {}).get("mcpServers") or {}
     if not isinstance(servers, dict):
@@ -875,8 +875,8 @@ def _doctor_mcp_governance(
     # exact failure this section exists to catch. One exception, same rule as
     # the MCP Tools section above: an always-on server whose spec gate is
     # closed is deliberately absent from every emitted spec, so demanding a
-    # registry marker for it would re-create the unfixable "re-run setup" loop
-    # (#6548). A STALE entry still counts while it exists — kiro-cli drops an
+    # registry marker for it would re-create the unfixable "re-run setup" loop.
+    # A STALE entry still counts while it exists — kiro-cli drops an
     # unmarked entry at session assembly, so the marker matters for exactly as
     # long as the entry does.
     if gated_off is None:
@@ -1020,9 +1020,7 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
     The packaged-to-installed hop is content-verified, ``scripts/`` included. The
     installed-to-``crons/`` hop is a hand-run ``cp`` documented in the owning
     skill, and nothing compares its two sides -- so a deploy can run superseded
-    code indefinitely while looking healthy, which is how the shipped PR watch
-    came to re-emit its wake footer once per observation long after the package
-    had split that out.
+    code indefinitely while looking healthy.
 
     Divergence is reported WITHOUT a direction. A cron script body is
     LLM-writeable by design, so the two sides disagreeing can mean a stale deploy
@@ -1332,18 +1330,17 @@ def _process_apparmor_confinement() -> str:
 
 def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     """True when the installed profile is ATTACHED to the launcher script this
-    host currently resolves (#3463).
+    host currently resolves.
 
-    Before #3463 this asked a different question — whether the systemd unit
-    carried an ``AppArmorProfile=<name>`` directive — because that directive
-    was the mechanism that confined the service. It no longer is: the profile
-    is now attached BY PATH to ``kirocrew_bin()`` (the same path ``ExecStart``
-    uses), and installing the directive alongside a path attachment was found
-    to make the directive silently win, defeating the attachment. So
-    ``kirocrew service install`` no longer writes it, and this check follows —
-    it reads the profile's own attachment clause and compares it against the
-    CURRENTLY resolved launcher path, the same comparison
-    ``apparmor.launcher_status()`` already makes for the AppImage case.
+    The confining mechanism is a path attachment, not a systemd
+    ``AppArmorProfile=<name>`` directive: the profile is attached BY PATH to
+    ``kirocrew_bin()`` (the same path ``ExecStart`` uses), and installing the
+    directive alongside a path attachment makes the directive silently win,
+    defeating the attachment. ``kirocrew service install`` therefore does not
+    write it, and this check reads the profile's own attachment clause and
+    compares it against the CURRENTLY resolved launcher path, the same
+    comparison ``apparmor.launcher_status()`` already makes for the AppImage
+    case.
 
     A moved or reinstalled launcher (a venv rebuilt at a new path, a symlink
     re-pointed) makes this False until ``kirocrew service install`` re-renders
@@ -1360,11 +1357,11 @@ def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     if attached != current:
         return False
     # A unit that still carries ``AppArmorProfile=`` — a hand-edited unit, a
-    # systemd drop-in, an install older than #3463 — silently WINS over the
-    # kernel's path attachment (the finding that retired the directive), so an
-    # attachment that matches is not enough: the service would run under the
-    # directive's semantics, i.e. the very bug #3463 fixed, while a shell
-    # launch through the same path probes green. Best-effort read — an
+    # systemd drop-in, an older install — silently WINS over the kernel's path
+    # attachment, which is why the directive is not used, so an attachment that
+    # matches is not enough: the service would run under the directive's
+    # semantics, leaving its own probe unconfined, while a shell launch through
+    # the same path probes green. Best-effort read — an
     # unreadable unit (or none installed) proves nothing and must not flip a
     # verified attachment to "broken".
     try:
@@ -1387,10 +1384,10 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
 
     * profile absent → broken, with the install command;
     * profile installed but not ATTACHED to the launcher script this host
-      currently resolves (#3463 — this used to check the systemd unit for an
-      ``AppArmorProfile=`` directive; that directive is retired, and checking
-      it now would silently fail closed against a correctly-installed,
-      correctly-attached profile), or the probe failed even though THIS
+      currently resolves (checking the systemd unit for an
+      ``AppArmorProfile=`` directive instead would silently fail closed
+      against a correctly-installed, correctly-attached profile), or the
+      probe failed even though THIS
       process is confined by the profile → broken, with the repair command;
     * profile installed and attached to the resolved launcher script, and this
       process is unconfined → the probe's failure says nothing about the
@@ -1449,10 +1446,10 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     # The recipe execs the ATTACHED LAUNCHER PATH: a path-attached profile is
     # applied by the kernel at execve() of that exact file, and the sandbox
     # probe (a fork with no subsequent exec) inherits the confinement — the
-    # same chain the service's ExecStart uses. The retired
-    # ``systemd-run --property=AppArmorProfile=`` form must NOT come back here:
+    # same chain the service's ExecStart uses. The
+    # ``systemd-run --property=AppArmorProfile=`` form must NOT be used here:
     # the directive labels only the unit's own top-level process, so a probe
-    # under it stayed unconfined — the very bug this mechanism replaced (#3463).
+    # under it stays unconfined.
     # The path is quoted for the shell: the recipe is meant to be pasted, so an
     # install path containing spaces or shell metacharacters must arrive as one
     # argument, not execute.
@@ -1859,16 +1856,15 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
 #
 # On Windows the running executable cannot be replaced, so the downloaded
 # installer can never be applied while a Crew ACP child holds the binary — and
-# the "update pending" state is not cleared after an upgrade either
-# (kirodotdev/Kiro#9825). Nothing in that loop is self-limiting: one installer is
-# left behind per process start. A reporting user cleared ~80 GB of them.
+# the "update pending" state is not cleared after an upgrade either. Nothing in
+# that loop is self-limiting: one installer is left behind per process start, and
+# the residue reaches tens of gigabytes.
 #
 # Crew cannot fix the updater, and must NOT disable updates on the user's behalf:
 # ``app.disableAutoupdates`` is a per-user setting shared with their own
 # interactive CLI, so setting it silently would suppress their security updates.
 # What Crew can do is stop the residue being invisible, since it is Crew's
 # per-session spawning that turns a stale flag into tens of gigabytes.
-# Upstream fix requested in kirodotdev/Kiro#10970.
 _CLI_INSTALLER_GLOB = "kiro-installer*"
 
 # One file can be a download still in flight; two or more is residue, because a
@@ -3049,10 +3045,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # necessarily what a new session gets.
     _doctor_effective_model(cfg, proj, issues)
 
-    # ── Stored defaults a release has since changed (#5244) ──
+    # ── Stored defaults a release has since changed ──
     render_doctor_section(issues)
 
-    # ── Installed services must carry the launch-class marker (#6651) ──
+    # ── Installed services must carry the launch-class marker ──
     _doctor_managed_service_policy(issues)
 
     # ── Data Home (+ leftover legacy home) ──

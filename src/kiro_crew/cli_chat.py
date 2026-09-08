@@ -890,8 +890,8 @@ async def _answer_permission(
         # provider is torn down with the session, so the unanswered request dies
         # with it.
         #
-        # The AUDIT is a different matter, and an earlier version of this comment
-        # wrongly generalised the transport rule to cover it. It is not a
+        # The AUDIT is a different matter, and the transport rule above does NOT
+        # cover it. It is not a
         # transport: it is local SEL I/O with a bounded caller, and running it
         # synchronously here blocks the loop -- which still owns the ACP reader
         # and stderr-drain tasks -- for as long as the audit store takes. Cold

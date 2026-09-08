@@ -214,8 +214,8 @@ def _atomic_json_write(path: Path, data: dict) -> None:
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 KIRO_AGENTS_DIR: Path | None = None
 
 
@@ -691,8 +691,8 @@ _MCP_REGISTRY_TYPE = "registry"
 # servers are stdio-only, a leftover ``url`` would shadow the command, and older
 # builds left both behind -- so they are dropped by the rule below rather than by
 # name. ``timeout`` is the one addition: not in that table, but emitted by base
-# and one of the customizations #3594 is about, so dropping it would re-introduce
-# the very bug this fixes.
+# and one of the customizations this rule preserves, so dropping it would
+# re-introduce the very bug this filter exists to prevent.
 #
 # ``type`` is here, and only the ``registry`` VALUE is ours. A transport hint the
 # user wrote (``"type": "stdio"``) is theirs and kiro-cli tolerates it, which
@@ -746,12 +746,12 @@ _MANAGED_MCP_ENTRY_ITEM_TYPES: dict[str, type] = {
 # already applies for the probe: PREFIX-matched, case-insensitively, over
 # Kiro Crew's whole reserved namespace plus the loader/interpreter channels.
 #
-# Delegating rather than restating is the point. This function exists because
-# two hand-synced copies of the ownership rules drifted (#3594); a local
-# frozenset of reserved NAMES would be a third copy of a rule env.py already
-# owns, and a name list fails open for the next KIROCREW_ variable somebody
-# adds -- the reachable case GPT found on this PR was KIROCREW_CLI, which
-# mcp_cron._caller_is_cli() reads as "skip per-session ownership entirely".
+# Delegating rather than restating is the point. This function exists so the
+# ownership rules live in one place: hand-synced copies drift, a local frozenset
+# of reserved NAMES would be a third copy of a rule env.py already owns, and a
+# name list fails open for the next KIROCREW_ variable somebody adds -- one
+# reachable case is KIROCREW_CLI, which mcp_cron._caller_is_cli() reads as
+# "skip per-session ownership entirely".
 # env.py states the reviewable property instead: a config cannot author our
 # namespace. KIROCREW_HOME is stripped by that same namespace rule and then
 # re-pinned below to the gateway's actual override, so ours is the only value
@@ -1731,7 +1731,7 @@ _INTERNAL_HOOK_KEYS = frozenset(
 # known schema) and any event key present in bundled defaults. Used for generated
 # specs and user-input validation; startup repair is ownership-scoped and removes
 # only legacy keys Kiro Crew serialized. A new event added to defaults.json is
-# automatically accepted without a matching allowlist update (#3362).
+# automatically accepted without a matching allowlist update.
 _VALID_HOOK_EVENTS = frozenset(
     {"preToolUse", "postToolUse", "userPromptSubmit", "agentSpawn", "stop"}
 ) | frozenset(
@@ -1759,8 +1759,8 @@ def _kiro_hooks_only(hooks: dict) -> dict:
 def _strip_legacy_denied_commands(config: dict) -> None:
     """Remove the retired ``deniedCommands`` / ``autoAllowReadonly`` injection.
 
-    Denied commands are now enforced solely at KiroCrew's hooks.py PreToolUse
-    gate; they are no longer injected into the kiro agent spec. But an install
+    Denied commands are enforced solely at Kiro Crew's hooks.py PreToolUse
+    gate; they are not injected into the kiro agent spec. But an install
     UPGRADED from a build that DID inject them keeps a stale
     ``toolsSettings.execute_bash/shell.deniedCommands`` (and ``autoAllowReadonly``)
     in its ``kirocrew.json``. kiro-cli would keep enforcing those stale rules
@@ -2337,11 +2337,10 @@ def _enforce_managed_mcp_ownership(
 
     Applied identically by the fresh-build path (``build_agent_config``) and
     the existing-config refresh path (``_refresh_dynamic_fields``) so the two
-    can no longer hand-drift: that silent divergence between two copies of
-    this same ownership logic is what let a clean rebuild discard a user's
-    timeout/env in the first place (#3594), and would just as easily reopen a
-    security-relevant strip (e.g. the reserved-env-key scrub below) if only
-    one of the two loops picked it up.
+    cannot hand-drift: a silent divergence between two copies of this same
+    ownership logic lets a clean rebuild discard a user's timeout/env, and
+    would just as easily reopen a security-relevant strip (e.g. the
+    reserved-env-key scrub below) if only one of the two loops picked it up.
 
     ``entry["command"]``/``entry["args"]`` are set by the caller beforehand —
     both loops resolve those slightly differently (build vs. refresh), so
@@ -2374,10 +2373,9 @@ def _enforce_managed_mcp_ownership(
     # they are still dropped -- now as instances of a rule rather than as two
     # names.
     #
-    # This became reachable HERE with the fix: the fresh-build path used to
-    # rebuild the entry from scratch and so discarded every unknown key with the
-    # rest, and preserving the user's timeout/env is exactly what put them back
-    # in reach.
+    # Stray keys reach HERE because the fresh-build path preserves the user's
+    # timeout/env instead of rebuilding the entry from scratch and discarding
+    # every unknown key along with the rest.
     for stray_key in [k for k in entry if k not in _MANAGED_MCP_ENTRY_KEYS]:
         entry.pop(stray_key, None)
         logger.warning(
@@ -2506,15 +2504,15 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
 
     Security-critical ``hooks`` always use the bundled config as their base,
     even when a project-dir override is present, so dev overrides cannot
-    silently drop the PreToolUse security gate. ``deniedCommands`` are NO
-    LONGER injected here — command denial is enforced at KiroCrew's own
+    silently drop the PreToolUse security gate. ``deniedCommands`` are NOT
+    injected here — command denial is enforced at Kiro Crew's own
     hooks.py PreToolUse gate, not via the kiro agent spec. User-defined
     ``kiro_hooks`` from ``~/.kiro/crew/config.json`` are then additively merged;
     bundled hooks always run first and cannot be removed.
 
     The assembled ``allowedTools`` list is ceiling-filtered before return (see
     :func:`_apply_allowed_tools_ceiling`), so every spec derived from this
-    template starts governed — an installer no longer has to remember the
+    template starts governed — an installer does not have to remember the
     filter to avoid shipping a blanket auto-approve for a floor-gated builtin.
 
     Args:
@@ -2533,7 +2531,7 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
         raise RuntimeError("Cannot build agent config: hooks missing from bundled defaults")
     # Strip Kiro Crew-internal keys (auto_approve_tools etc.) that kiro-cli  # brand-ok
     # rejects. _VALID_HOOK_EVENTS already unions in every non-internal bundled
-    # event key, so this never drops a new event added to bundled defaults (#3362).
+    # event key, so this never drops a new event added to bundled defaults.
     config["hooks"] = _kiro_hooks_only(bundled_hooks)
 
     # Strip the retired deniedCommands/autoAllowReadonly injection so a config
@@ -2603,7 +2601,7 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     # Governance ceiling over the assembled ``allowedTools`` — HERE, at the one
     # constructor every derived-spec installer starts from, so the invariant is
     # held by the predicate rather than by each installer's author remembering
-    # it (#7401). ``rebuild_agent_config`` keeps its own final pass because its
+    # it. ``rebuild_agent_config`` keeps its own final pass because its
     # ``_load_existing_config`` path takes entries from an on-disk spec that
     # never comes through here; for that caller this filter is idempotent (the
     # predicate is pure, so filtering twice equals filtering once). A caller
@@ -2690,7 +2688,7 @@ def _refresh_dynamic_fields(config: dict, *, gated_off: "frozenset[str] | None" 
         # Strip any stale remote-transport fields from older builds, re-pin the
         # registry marker and data-home env, and seed autoApprove only for a
         # genuinely new entry — all via the same helper the fresh-build loop
-        # uses, so the two ownership rules can no longer hand-drift.
+        # uses, so the two ownership rules cannot hand-drift.
         _enforce_managed_mcp_ownership(
             entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
         )
@@ -2942,11 +2940,11 @@ def _apply_connection_tool_aliases(
       re-deriving ``<slug>_<tool>`` claims a hand-written ``notion_search`` for a
       provider that declares nothing. So the pass records exactly what it emitted
       and, on the next run, strips only pairs that record claims (whole triple,
-      so a user-edited generated alias no longer matches and survives). Merging
-      onto the previous output instead is what made "user-authored wins" preserve
+      so a user-edited generated alias does not match and survives). Merging
+      onto the previous output instead would make "user-authored wins" preserve
       the LAST rebuild's generated refs: the merge is idempotent, so a rename
-      survived the mount that justified it going away. Every pair the record does
-      not claim is by definition the user's and still wins over the registry
+      would survive the mount that justified it going away. Every pair the record
+      does not claim is by definition the user's and still wins over the registry
       default. See :mod:`kiro_crew.connections.alias_record` for the generation
       binding that stops the record ever describing a spec it does not match: this
       function OPENS the transaction, so an interrupted rebuild is recoverable from
@@ -2978,7 +2976,7 @@ def _apply_connection_tool_aliases(
         ``(fingerprint, emitted)`` for the generation this pass just wrote into
         *config* -- the fingerprint of the resulting ``toolAliases`` map and the
         ``(slug, tool, alias)`` triples it emitted, possibly EMPTY (an empty
-        emission is how the pass relinquishes pairs it no longer writes). The
+        emission is how the pass relinquishes pairs it does not write). The
         CALLER owns the transaction: it opens one before the spec write and commits
         it after. ``None`` means the pass did not run -- gate off, no server map, or
         an unreadable registry -- and it has not touched *config*.
@@ -3032,7 +3030,7 @@ def _apply_connection_tool_aliases(
     # Drop only the pairs the RECORD proves this pass wrote, and keep everything
     # else, whose authorship is unproven and therefore the user's. Then recompute;
     # see the staleness invariant above. The comparison is on the whole triple, so
-    # a generated alias the user has since edited no longer matches and stays. A
+    # a generated alias the user has since edited does not match and stays. A
     # non-string alias is dropped for the same reason a non-dict container is
     # replaced: kiro-cli rejects the entire spec over it, so preserving it would
     # protect a hand-edit by costing the user every tool.
@@ -3496,12 +3494,12 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     # whether — temp trees are reaped by the OS, by CI, and by the automation
     # that cloned them (a per-task scratch clone is created and deleted around a
     # single job). A spec stamped from one names a launcher venv, and possibly a
-    # pinned data home, that stop existing when the tree goes; #4781 documents
-    # both live failure modes (ENOENT-dead managed servers, and empty-credential
-    # ``internal_auth_mismatch`` when the pinned home is recreated empty). This
+    # pinned data home, that stop existing when the tree goes. Both failure modes
+    # are live: ENOENT-dead managed servers, and empty-credential
+    # ``internal_auth_mismatch`` when the pinned home is recreated empty. This
     # is checked on the CHECKOUT location (``__file__``), not the data home, so
     # the offline E2E harness — which runs the REPO checkout on a temp data
-    # home — is unaffected, exactly the regression the note above records.
+    # home — is unaffected, exactly the breakage the note above warns about.
     #
     # An AppImage's runtime mount is carved back OUT of that arm. It sits under
     # the temp root (``/tmp/.mount_<name>XXXXXX``) and the mount itself is indeed
@@ -3511,9 +3509,10 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     # every start, and because the runtime picks a NEW random mount each launch,
     # rewriting the spec per start is the only way its managed servers ever
     # resolve. Declining would freeze the spec on a previous launch's mount path
-    # and ENOENT every managed server — manufacturing #4781's own symptom on a
-    # shipped channel — and on a fresh install would leave no spec at all
-    # (``Mode 'kirocrew' not found``). ``_in_ephemeral_tree`` is the same
+    # and ENOENT every managed server — manufacturing on a shipped channel the
+    # very symptom this guard exists to prevent — and on a fresh install would
+    # leave no spec at all (``Mode 'kirocrew' not found``).
+    # ``_in_ephemeral_tree`` is the same
     # AppImage-precise predicate the launcher installer uses; the temp-root rule
     # it declines is the one being narrowed here, not adopted.
     #
@@ -3521,14 +3520,14 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     # guard's entire remedy is "use the specs that already worked" — the log line
     # below says exactly that — and with no spec present there are none, so
     # declining does not protect a shared resource, it just leaves the install
-    # dead (every turn fails with ``Mode 'kirocrew' not found``). #4781's harm is
-    # specifically an OVERWRITE of a working spec, which this still refuses: the
-    # spec is present in every reported instance of it. A spec that exists but is
+    # dead (every turn fails with ``Mode 'kirocrew' not found``). The harm this
+    # guard prevents is specifically an OVERWRITE of a working spec, which it
+    # still refuses. A spec that exists but is
     # already stale stays stale, same as under the worktree arm — repairing it is
     # the durable install's job on its next start, and it rewrites unconditionally.
-    # Deliberately scoped to this arm: the worktree and pod arms predate this fix
-    # and their populations were chosen on their own grounds, so widening them is
-    # a separate decision, not a side effect of adding a third signal.
+    # Deliberately scoped to this arm: the worktree and pod arms chose their
+    # populations on their own grounds, so widening them is a separate decision,
+    # not a side effect of this third signal.
     checkout = Path(__file__).resolve()
     temp_scratch = (
         _under_system_tmp(checkout)
@@ -3656,10 +3655,10 @@ def _apply_allowed_tools_ceiling(config: dict, *, source: str) -> None:
     ``allowedTools`` is the ONE path that never reaches the PreToolUse gate, so
     every entry on it must be approved by :func:`_may_auto_approve`. This runs
     inside :func:`build_agent_config` so every installer that derives a spec
-    from the template inherits the filter — ``_install_research_agent`` shipped
-    the template's ``fs_read``/``code``/``glob``/``grep`` grants verbatim
-    because the filter lived only in ``rebuild_agent_config``'s final pass,
-    which writes only ``kirocrew.json`` (#7401).
+    from the template inherits the filter. A filter living only in
+    ``rebuild_agent_config``'s final pass would cover only ``kirocrew.json``,
+    letting an installer such as ``_install_research_agent`` ship the
+    template's ``fs_read``/``code``/``glob``/``grep`` grants verbatim.
 
     A withheld ref stays MOUNTED (``tools`` is untouched — mounting a tool is
     not auto-approving it); its calls go through the gate, where the
@@ -3873,7 +3872,7 @@ def _reconcile_tool_aliases_from_disk(path: Path, config: dict) -> bool:
     alias map can be a stale generation by the time the write happens. Two
     overlapping rebuilds serialize their spec writes but not that read: the second
     would otherwise write its pre-lock snapshot back, resurrecting aliases the
-    first had removed, and would fingerprint a generation that is no longer there.
+    first had removed, and would fingerprint a generation that is gone.
 
     So the map is re-read here, inside the critical section that writes it, and
     that value is what the alias pass resolves against (alias_record invariant 7).
@@ -4182,7 +4181,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # config, whose slashed keys a previous pass rewrote to their alias
     # (``_normalize_mcp_server_keys``). Looking the store up by the raw key alone
     # would miss the owner of an aliased entry and fall through to "unmanaged",
-    # preserving the previously-rendered wire hints -- so an edit that cleared them
+    # preserving the wire hints already rendered -- so an edit that cleared them
     # would answer 200 and never take effect. Alias-keyed for that reason, and the
     # mapping skips a malformed value for the same reason the merge does.
     #
@@ -4486,11 +4485,11 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     #
     # ``kirocrew_mcp`` is in this chain for the same reason: it holds every entry
     # the user added through the dashboard, including Connections providers. It
-    # was omitted originally, and because ``tools`` is a CLOSED allowlist (no
-    # wildcard) the result was silent and total — kiro-cli mounted a connected
-    # provider and exposed none of its tools, so a fully consented Notion
-    # connection still answered "I don't have a Notion integration". The entry
-    # reached ``mcpServers`` (via the merges above) but never ``tools``.
+    # Omitting it fails silently and totally, because ``tools`` is a CLOSED
+    # allowlist (no wildcard): kiro-cli mounts a connected provider and exposes
+    # none of its tools, so a fully consented Notion connection answers "I don't
+    # have a Notion integration". The entry reaches ``mcpServers`` (via the merges
+    # above) but never ``tools``.
     _shared_added: list[str] = []
     _shared_removed: list[str] = []
     _shared_not_auto: list[str] = []
@@ -4761,7 +4760,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         servers_map = config.get("mcpServers")
         # Runs here, at the single funnel every write path goes through, and AFTER
         # the passes that mutate `allowedTools` (managed/shared MCP sync) — a policy
-        # seeded before them would describe a list that no longer exists.
+        # seeded before them would describe a list those passes then replace.
         _seed_kas_permissions(config)
         if isinstance(servers_map, dict):
             # LAST governance pass over the assembled server map. `autoApprove` can
@@ -4814,7 +4813,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         # `durable` is the generation really on disk, read once inside this section:
         # `config` carries a PRE-LOCK alias snapshot, so an overlapping rebuild would
         # otherwise write its stale copy back, resurrect aliases this one removed,
-        # and fingerprint a generation that is no longer there. It is also the
+        # and fingerprint a generation that is gone. It is also the
         # transaction's `previous` candidate, which is what makes a lost spec write
         # recoverable.
         durable_existed, durable_aliases = _durable_tool_aliases(path)
@@ -5339,13 +5338,13 @@ item, which you handle immediately.
 #:   what keeps it correctly private), and ``get_or_create_slot`` increments the
 #:   session-pulse counter on exactly that origin — so conductor-created sessions
 #:   count toward the feedback survey's "10 genuine user chats" window. That is a
-#:   pre-existing conflation in the counter, not something this grant introduces:
+#:   conflation in the counter itself, not something this grant introduces:
 #:   the counter uses the ownership tag as a proxy for "a person started a chat",
-#:   and it miscounts for every caller of the session-control create verb. Filed
-#:   as issue #6139 rather than point-fixed here, because the correct fix is a
-#:   fail-open/fail-closed decision about which call sites opt in, inside the
-#:   session-pulse surface. Consequence if it drifts: a survey prompt appears
-#:   earlier than the product intended. No workspace state is altered.
+#:   and it miscounts for every caller of the session-control create verb. Not
+#:   point-fixed here, because the correct fix is a fail-open/fail-closed
+#:   decision about which call sites opt in, inside the session-pulse surface.
+#:   Consequence if it drifts: a survey prompt appears earlier than the product
+#:   intended. No workspace state is altered.
 #: * ``session_read_message`` — read-only, and the verb the patrol loop actually
 #:   needs on a cycle with nobody at the keyboard. GRANTED.
 #: * ``chat_folder_move_session`` — WITHHELD. It writes another session's
@@ -5370,8 +5369,8 @@ item, which you handle immediately.
 #: ``tools``) — it just passes through ``hooks.on_tool_call`` like any ungranted
 #: tool. The cost is an approval when a round files a session, seeds a child, or
 #: stops one; all three happen right after a human approved the plan, while the
-#: unattended patrol cycle needs none of them. Issue #6118 (a ``folder`` argument
-#: on ``session_create``) would remove the filing call altogether.
+#: unattended patrol cycle needs none of them. A ``folder`` argument on
+#: ``session_create`` would remove the filing call altogether.
 _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/chat_folder_tree",
     "@kirocrew-dashboard/chat_folder_create",
@@ -6038,9 +6037,7 @@ instruction with `monitor_update` so every later cycle honors it.
 #: conductor ingests untrusted content (issue text, PR bodies) on unattended
 #: cycles, and a server-wide grant would let that content start persistent
 #: work (``task_run``, ``workflow_run``) or spawn arbitrary
-#: subagents with no human in the loop. (``cron_add`` used to be named here
-#: too; it registers on ``kirocrew-cron``, which neither conductor mounts, so
-#: it was never reachable through this grant either way.) What is granted is reads
+#: subagents with no human in the loop. What is granted is reads
 #: (``resource_status``, ``list_sessions``, skills), the conductor's OWN
 #: patrol-loop lifecycle (``monitor_*``, ``autonudge_stop``, ``wait``), its
 #: OWN durable ledger, and reporting to the owner (``send_message``,
@@ -6551,7 +6548,7 @@ def _install_heartbeat_agent() -> None:
     # filters so all read tools surface to the heartbeat agent — security is
     # enforced gateway-side against ``HEARTBEAT_SAFE_TOOLS`` via
     # ``_heartbeat_approval``, not by per-agent MCP filtering. Read through the
-    # capped reader (#6736): a refused main spec degrades as absent, but with an
+    # capped reader: a refused main spec degrades as absent, but with an
     # operator-visible signal, because the result is a heartbeat agent with no
     # MCP servers -- a worker that fails every task.
     main_path = kiro_agents_dir_path() / AGENT_FILENAME

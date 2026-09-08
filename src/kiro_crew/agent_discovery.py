@@ -211,13 +211,13 @@ def _read_agent_spec(
     *operation*/*source* label the SEL denial event emitted on a sensitive
     resolved target. Precisely BECAUSE this is the one reader for every surface,
     a fixed label would record a denial served for an unrelated request as an
-    agent-listing cache warm (#6722): the calling surface names itself here so
+    agent-listing cache warm: the calling surface names itself here so
     the security trail attributes the refusal to the request that triggered it.
     ``source`` is the interface channel (``SecurityEvent.source`` vocabulary:
     dashboard, cli, slack, cron, ...; ``"unknown"`` when the caller serves
     multiple channels) — every call site passes it explicitly, enforced by the
     call-site ratchet test. Both defaults exist ONLY so a bare call reproduces
-    the historical event byte-for-byte (a forgotten future call site degrades
+    the established event byte-for-byte (a forgotten future call site degrades
     to exactly today's trail); they are not for new call sites.
     ``caller`` stays fixed at ``"agent_discovery"``: the reader genuinely is the
     caller into SEL, and a fixed value keeps the trail greppable by module.
@@ -393,13 +393,13 @@ def project_agent_names(
     reads, not the count.
 
     *operation*/*source* label the SEL denial event emitted on a sensitive
-    project directory, exactly as on :func:`_read_agent_spec` (#6764 mirrors
-    #6722): the calling surface names itself so the security trail attributes
-    the refusal to the request that triggered it. ``source`` is the interface
+    project directory, exactly as on :func:`_read_agent_spec`: the calling
+    surface names itself so the security trail attributes the refusal to the
+    request that triggered it. ``source`` is the interface
     channel (``SecurityEvent.source`` vocabulary: dashboard, cli, slack, cron,
     ...; ``"unknown"`` when the caller serves multiple channels) — every call
     site passes it explicitly, enforced by the call-site ratchet test. Both
-    defaults exist ONLY so a bare call reproduces the historical event
+    defaults exist ONLY so a bare call reproduces the established event
     byte-for-byte (a forgotten future call site degrades to exactly today's
     trail); they are not for new call sites.
 
@@ -493,7 +493,7 @@ async def warm_project_agent_names(
 
     *operation*/*source* forward to :func:`project_agent_names` so a denial hit
     during the warm names the surface that requested it rather than echoing the
-    helper's own name (#6764). The defaults name this hop truthfully: the warm
+    helper's own name. The defaults name this hop truthfully: the warm
     itself is the operation, and the helper serves several channels (dashboard
     chat, spawn admission), so its channel is ``"unknown"`` unless the caller
     says otherwise.

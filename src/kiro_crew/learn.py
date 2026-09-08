@@ -137,10 +137,10 @@ class LessonStore:
         ``atomic_write`` renames a unique temp file over the target, so a reader sees
         either the whole old file or the whole new one -- never a half-written one.
         That is what makes the unlocked read in ``load_all`` safe, so no lock has to
-        be added there, and a crash mid-write can no longer truncate the store.
+        be added there, and a crash mid-write cannot truncate the store.
 
         Uses the repo's ``atomic_write`` rather than a hand-rolled temp + rename.
-        Hand-rolling it re-introduced three problems the shared helper already
+        Hand-rolling it re-introduces three problems the shared helper already
         solves: a temp name that two writers could collide on (it uses
         ``tempfile.mkstemp``), a bare ``os.replace`` that raises ``PermissionError``
         when Windows Search or AV holds a handle (it uses ``replace_with_retry``),
@@ -148,8 +148,8 @@ class LessonStore:
         (it applies ``mode`` via ``fchmod_safe``).
 
         The mode is read off the existing file so a restrictive store stays
-        restrictive -- ``write_text`` used to preserve it implicitly by reusing the
-        inode, and swapping the inode silently dropped it. A store being created for
+        restrictive -- ``write_text`` preserves it implicitly by reusing the inode,
+        and swapping the inode drops it. A store being created for
         the first time gets ``0o600``: lesson text is personal content, and nothing
         else needs to read it.
 
@@ -189,9 +189,9 @@ class LessonStore:
         For EXPLICIT refinement only -- see :meth:`save` for why automatic writers
         must not reach this.
 
-        Re-submitting a rule to attach a NOT-clause used to store nothing: the
-        duplicate check matched on the rule alone and returned before looking at
-        ``negative``, so the clause was dropped behind an HTTP 200.
+        Re-submitting a rule to attach a NOT-clause must not fall into the duplicate
+        check, which matches on the rule alone: returning before looking at
+        ``negative`` would drop the clause behind an HTTP 200.
         """
         return self._insert_or_enrich(lesson, enrich=True)
 
@@ -300,9 +300,9 @@ class LessonStore:
     def remove(self, rule_substring: str) -> bool:
         """Remove lessons whose rule contains *rule_substring*. Returns True if any removed.
 
-        Holds the lock. It previously did an unlocked read-modify-write, so a
-        concurrent ``save`` could be lost outright -- and without that lock the
-        atomicity :meth:`save_or_enrich` claims would not actually hold.
+        Holds the lock. An unlocked read-modify-write here would lose a concurrent
+        ``save`` outright -- and without that lock the atomicity
+        :meth:`save_or_enrich` claims would not actually hold.
         """
         with self._lock:
             lessons = self.load_all()

@@ -1322,8 +1322,8 @@ class SessionAllocationService:
                                 switch_model, advertised
                             ):
                                 # A literal miss can be a stale `<namespace>::`
-                                # qualifier on a model the backend fully serves
-                                # (#8521): resolve to the advertised spelling and
+                                # qualifier on a model the backend fully serves:
+                                # resolve to the advertised spelling and
                                 # send THAT — the same fold the cold-start spawn
                                 # and the display verdict use, so a warm claim
                                 # runs exactly what a cold start of the same pin

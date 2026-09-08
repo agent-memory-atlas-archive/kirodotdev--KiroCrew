@@ -318,7 +318,7 @@ class CrewStore:
                 tmp = self.dir / f".{name}.tmp"
                 tmp.write_text(payload, encoding="utf-8")
                 # `replace_with_retry`, not `tmp.replace()`: this is the write half
-                # of the window #4331 fixed on the read half. On Windows the rename
+                # of the window the read half also guards. On Windows the rename
                 # raises `PermissionError` while ANY other handle is open on either
                 # path -- an indexer, an AV scanner, or this store's own concurrent
                 # reader -- and the payload is lost even though the write itself was
@@ -326,10 +326,10 @@ class CrewStore:
                 # so a lost rename also leaves the sequence un-advanced and the next
                 # writer wins by default: the user's message is simply gone.
                 #
-                # `Path.replace` was also unreachable for the repo's own emulator on
+                # `Path.replace` is also unreachable for the repo's own emulator on
                 # Python 3.10, where pathlib holds a captured reference to
                 # `os.replace` rather than looking it up per call -- the same reason
-                # #4331 had to move the read off `Path.read_text`.
+                # the read side does not go through `Path.read_text`.
                 #
                 # This runs in `run_in_executor` (or inline with no loop), so the
                 # helper's off-the-event-loop gate leaves the retry enabled here.
@@ -911,9 +911,9 @@ class CrewOrchestrator:
                 continue
             # claimed/accepted may have already STARTED a run before the crash.
             # Adopt it by its stable dispatch id instead of blindly reopening to
-            # pending, which would re-execute a possibly-mutating task (GPT
-            # finding on 84dfff5b). ``_apply`` persists dispatch_id (== the run's
-            # preassigned id) BEFORE spawning, so this lookup is reliable.
+            # pending, which would re-execute a possibly-mutating task.
+            # ``_apply`` persists dispatch_id (== the run's preassigned id)
+            # BEFORE spawning, so this lookup is reliable.
             rid = e.get("run_id") or e.get("dispatch_id") or ""
             if self._run_alive(rid):
                 # Genuinely still executing — re-own it and make sure a topic
@@ -926,10 +926,10 @@ class CrewOrchestrator:
                 e.setdefault("topic_id", rid)
             elif self._run_started(rid, evidence):
                 # Started, but its process is gone: NO completion will ever
-                # arrive. Re-owning it (what this branch used to do for anything
-                # with a state.json) left the entry `accepted` forever, silent —
-                # and re-opening it would re-execute a task that may already have
-                # mutated something. Neither is acceptable, so settle it as
+                # arrive. Re-owning anything with a state.json would leave the
+                # entry `accepted` forever, silent — and re-opening it would
+                # re-execute a task that may already have mutated something.
+                # Neither is acceptable, so settle it as
                 # interrupted and TELL the user, who can then decide to resend.
                 e["state"] = "stopped"
                 e["run_id"] = rid
@@ -944,9 +944,9 @@ class CrewOrchestrator:
             else:
                 # DURABLE state has no record of this id, so the dispatch never
                 # took effect and re-opening cannot double-execute — for either
-                # state. `accepted` used to be left alone here, which stranded a
+                # state. Leaving `accepted` alone here would strand a
                 # capacity-queued spawn forever once the volatile queue died
-                # with the process (GPT finding on 20dd06514).
+                # with the process.
                 e["state"] = "pending"
         # Held msg_ids were just reopened to pending; drop them from every
         # topic's held list so a later completion cannot double-dispatch.
@@ -1145,7 +1145,7 @@ class CrewOrchestrator:
         try:
             # broadcast=False: the explicit chat_message frame below is the
             # single broadcast (append's implicit _on_message would duplicate
-            # it — GPT review finding on 120fd95e; persistence is unaffected).
+            # it; persistence is unaffected).
             # The answer kinds carry a marker class so the transcript can keep
             # them out of the "Worked through N steps" collapse: in crew mode
             # EVERY forward is a final answer for a different topic, so the
@@ -1171,8 +1171,8 @@ class CrewOrchestrator:
             # Ship the APPENDED row's meta on the frame, not the pre-append
             # dict: append mints ``meta.mid`` into a new dict, so the local
             # ``meta`` has no id and a mid-less frame defeats the client's
-            # redelivery guard (#5981 family) — the window rebuild would then
-            # render this forward a second time.
+            # redelivery guard — the window rebuild would then render this
+            # forward a second time.
             _frame_meta = _row.get("meta") if isinstance(_row.get("meta"), dict) else meta
             self._state.broadcast_ws(
                 "chat_message",
@@ -1213,23 +1213,23 @@ class CrewOrchestrator:
 
         Returns ``None`` when the message was accepted, or a short refusal CODE
         when it was not. The code exists so the HTTP caller can answer honestly:
-        this used to ``return`` on refusal while ``api_chat`` reported 200, so a
-        programmatic caller (an app) was told its message was accepted and then
-        nothing ever ran.
+        a bare ``return`` on refusal leaves ``api_chat`` reporting 200, telling a
+        programmatic caller (an app) that its message was accepted when nothing
+        will ever run.
 
         The append lives here rather than in the caller so that nothing is
-        VISIBLE before it is DURABLE: the caller used to append first and then
-        await this, and on a cold slot that await builds the store — a process
-        exit in that window left the user looking at their own message with no
-        queue entry behind it, a request that could never be resumed.
+        VISIBLE before it is DURABLE: appending in the caller and then awaiting
+        this builds the store on a cold slot, and a process exit in that window
+        leaves the user looking at their own message with no queue entry behind
+        it, a request that could never be resumed.
         """
         # App-governance boundary: Crew orchestration dispatches work through
         # spawn / continue_conversation, and continue_conversation carries no
         # ``app`` — so an app-owned slot entering Crew would run its subagents
         # (and their host-permitted tools) OUTSIDE the app's profile. Until the
         # whole dispatch path preserves ``slot._app``, refuse Crew for app-owned
-        # slots rather than silently drop the app identity (GPT finding on
-        # 84dfff5b). Dashboard-created Crew slots have no _app and are unaffected.
+        # slots rather than silently drop the app identity. Dashboard-created
+        # Crew slots have no _app and are unaffected.
         # isinstance guard (not truthiness): test doubles are MagicMock, whose
         # auto-created ._app attribute is truthy — only a real, non-empty str
         # marks an app-owned slot (mirrors the CrewOrchestrator isinstance
@@ -1316,9 +1316,9 @@ class CrewOrchestrator:
         # request is durable. That is a mirror, not the record: `queue.json`
         # already landed above, so a restart can both explain and finish this
         # work from the queue alone — the only casualty is a transcript that
-        # replays without its question line. Round 19 refused the whole ingress
-        # here and deleted the entry from disk, which traded that cosmetic gap
-        # for PERMANENT LOSS of a request the user had already been told was
+        # replays without its question line. Refusing the whole ingress here and
+        # deleting the entry from disk would trade that cosmetic gap for
+        # PERMANENT LOSS of a request the user has already been told was
         # accepted: `_post` broadcasts the echo and the ack BEFORE this await
         # (see the paragraph above), so by this point the promise is on screen.
         # Keep the entry and dispatch it; the failure is logged, loudly.
@@ -1478,8 +1478,8 @@ class CrewOrchestrator:
         if do == "spawn":
             # Persist a STABLE dispatch identity before spawning so a crash in
             # the window between spawn() starting the run and the accepted-state
-            # write is recoverable WITHOUT re-executing the task (GPT finding on
-            # 84dfff5b). ``_preassigned_id`` makes the subagent's id equal this
+            # write is recoverable WITHOUT re-executing the task.
+            # ``_preassigned_id`` makes the subagent's id equal this
             # token, so _reconcile can look it up and adopt the already-started
             # run instead of blindly reopening the entry to pending.
             dispatch_id = uuid.uuid4().hex[:8]
@@ -1612,9 +1612,9 @@ class CrewOrchestrator:
             if ok:
                 e["state"] = "steered"
                 return
-            # Steer failed — the run may have completed DURING the await
-            # (GPT finding on 85f8fbe2): holding now would strand the message
-            # forever since no future completion dispatches it. Recheck.
+            # Steer failed — the run may have completed DURING the await, and
+            # holding now would strand the message forever since no future
+            # completion dispatches it. Recheck.
             if t.get("status") == "running":
                 t.setdefault("held", []).append(e["msg_id"])
                 e["state"] = "held"
@@ -1831,13 +1831,13 @@ class CrewOrchestrator:
         t["digest"] = summary[:200]
         t["last_activity"] = _now()
         # Settle + persist BEFORE the slot check: a slot closed mid-run must
-        # not leave the topic wedged in "running" or the entry in "accepted"
-        # (GPT review finding on 7d6f4d7a). Delivery below is best-effort.
+        # not leave the topic wedged in "running" or the entry in "accepted".
+        # Delivery below is best-effort.
         st.save()
         body = f"↩ re: “{quote}”\n\n{summary}" if quote else summary
         slot = self._state.get_slot(slot_key)
         if slot is None:
-            # Tab closed mid-run (GPT finding on 9eb28ee4). Two obligations:
+            # Tab closed mid-run. Two obligations:
             # (1) the RESULT must stay reachable — persist it as a durable
             #     forward so _reconcile re-delivers it when the slot reopens;
             # (2) HELD follow-ups must not strand — with the topic now idle no

@@ -192,7 +192,7 @@ def parse_tasks(text: str) -> list[Task]:
             # The `_log_` spelling because this is a diagnostic path: it must not
             # raise, and on a process with no composed context it keeps the
             # baseline rather than blanking the snippet. It also subsumes the
-            # URL-before-credential ordering this site used to spell out by
+            # URL-before-credential ordering this site would otherwise spell out by
             # hand -- `security.redact` runs the exfil pass first for exactly
             # that reason (replacing a credential inside a URL would split it so
             # the URL redactor no longer matches).

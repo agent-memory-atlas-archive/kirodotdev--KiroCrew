@@ -332,7 +332,7 @@ def grant_epoch_ids() -> set[str]:
 #: the cross-process half of the guarantee is the flock in
 #: :func:`_grant_epochs_guard`. Both are needed: job-removal paths bump
 #: epochs and removals also run from the CLI (``kirocrew cron remove``), so
-#: the writer set is no longer one gateway process — a thread lock alone
+#: the writer set is not one gateway process — a thread lock alone
 #: would let a gateway revoke and a CLI removal read one epoch map and
 #: overwrite each other's bump, reviving a revoked pin.
 _GRANT_EPOCHS_LOCK = threading.Lock()
@@ -742,9 +742,9 @@ def _begin_spawn(job_id: str | None) -> bool:
     cancelled sees no flag and executes.
 
     Refusing the overlap makes the per-job cancellation contract well defined.
-    It also closes a pre-existing hazard: a second concurrent run used to
-    overwrite the ``_RUNNING_PROCS`` entry, orphaning the first child from
-    cancellation entirely.
+    It also closes a standing hazard: a second concurrent run would overwrite
+    the ``_RUNNING_PROCS`` entry, orphaning the first child from cancellation
+    entirely.
 
     An unidentified run (``job_id is None``) is never registered or cancellable,
     so it is always allowed and claims nothing.
@@ -1787,7 +1787,7 @@ def run_script_sandboxed(
         #
         # A refusal means this job is already spawning or running. Return WITHOUT
         # touching any spawn or cancellation state: that state belongs to the
-        # other run, and clearing it here is exactly how a rerun used to eat the
+        # other run, and clearing it here is exactly how a rerun eats the
         # cancel aimed at a run still in its backoff.
         #
         # Status is "skipped", NOT "error". This is a second overlap guard behind

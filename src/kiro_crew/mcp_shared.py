@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 # request helpers send no caller header at all rather than inventing an
 # identity. The header is ATTRIBUTION for the gateway's audit log (SEL
 # ``source`` — see ``chat_folders._audit_origin``), never authorization: the
-# ``X-Internal-Secret`` handshake alone authenticates the request (#3503).
+# ``X-Internal-Secret`` handshake alone authenticates the request.
 _internal_caller_name: str | None = None
 
 
@@ -622,12 +622,12 @@ def call_tool_with_logging(
     except ValidationError as e:
         # No ``tool_kind``: it is a CLASSIFICATION of the invocation -- callers
         # that write their own rows pass things like "authz" -- and this wrapper
-        # has no per-tool taxonomy to supply. It used to pass ``session_key``,
-        # which is both wrong and redundant, since ``caller_identity`` on the same
-        # record already carries it. The effect was that every row written through
-        # here, across all five MCP servers, held a high-cardinality session key
-        # where a kind belongs, which made the field useless to filter or
-        # aggregate on while still looking populated (#6448). The parameter
+        # has no per-tool taxonomy to supply. Passing ``session_key`` here would be
+        # both wrong and redundant, since ``caller_identity`` on the same
+        # record already carries it: every row written through
+        # here, across all five MCP servers, would hold a high-cardinality session
+        # key where a kind belongs, making the field useless to filter or
+        # aggregate on while still looking populated. The parameter
         # defaults to "", and an honestly empty kind beats a false one.
         sel().log_tool_invocation(
             session_key=session_key,
@@ -891,8 +891,8 @@ def _run_stdio_dispatch_loop(
         set_current_caller(caller_ctx)
         # And the connection's namespace separator, which is present even when
         # the caller is not: a tool that keys per-tenant state for a caller the
-        # gateway could not name reads it instead of a process-global fallback
-        # (#5322). Cleared in the same places as the caller.
+        # gateway could not name reads it instead of a process-global fallback.
+        # Cleared in the same places as the caller.
         set_current_tenant_nonce(tenant_nonce)
         try:
             result_text = call_tool_fn(tool_name, tool_args)
@@ -1137,7 +1137,7 @@ def _run_stdio_dispatch_loop(
             _caller_ctx = CallerContext.from_meta(params.get("_meta"))
             # The connection's namespace separator. Parsed separately because it
             # arrives WITHOUT an identity for a caller the gateway could not
-            # name — the case it exists for (#5322) — so it cannot be folded
+            # name — the case it exists for — so it cannot be folded
             # into ``_caller_ctx``, which is None exactly then.
             _tenant_nonce = tenant_nonce_from_meta(params.get("_meta"))
             # A queued request may have been cancelled while waiting -- emit

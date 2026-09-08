@@ -105,7 +105,7 @@ from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore, _less
 # Workspace dirs are confined to the data home: a workspace is agent-writable
 # working state, so letting --dir escape would let it be pointed at ~/.ssh or the
 # keystone policy files. The refusal is deliberate — say so, and say what to pass
-# instead, rather than the bare "invalid directory path" this used to print.
+# instead, rather than a bare "invalid directory path".
 _WS_DIR_OUTSIDE_HOME = (
     "Error: --dir must resolve inside the KiroCrew data home ({home}); got {given!r}. "
     "Pass a relative directory name (e.g. 'workspace-myproject')."
@@ -141,9 +141,9 @@ def _ws_dir_resolves_inside_home(ws_dir: str) -> bool:
 
     STRICT descendant, so the root itself is refused HERE. The separate
     "cannot use config root" checks at each call site compare
-    ``config_dir() / ws_dir`` WITHOUT expanding ``~``, so ``~/.kiro/crew`` used to
-    become ``<home>/~/.kiro/crew`` there — unequal to the root, hence accepted —
-    while the plain absolute form was refused. Deciding it in this one expanded
+    ``config_dir() / ws_dir`` WITHOUT expanding ``~``, so ``~/.kiro/crew`` becomes
+    ``<home>/~/.kiro/crew`` there — unequal to the root, hence accepted — while
+    the plain absolute form is refused. Deciding it in this one expanded
     place removes that split: a workspace pointed at the data-home root would put
     agent-writable memory/lessons on top of ``config.json`` / ``.env``.
 
@@ -233,9 +233,8 @@ def _spawn(args: argparse.Namespace) -> None:
             if a.get("done"):
                 status, note = "✅", ""
             elif a.get("awaiting_approval"):
-                # A run parked on its spawn-approval prompt used to render the
-                # same bare hourglass as one that is executing, so `spawn list`
-                # could not answer "is this working or waiting for me?" (#6484).
+                # A distinct icon from the executing hourglass, so `spawn list`
+                # answers "is this working or waiting for me?".
                 status, note = "🔐", "  — waiting for spawn approval"
             else:
                 status, note = "⏳", ""
@@ -299,7 +298,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         # raises its approval prompt unowned, so it appears only on the global
         # approvals surface -- not in any chat tab -- and this loop would
         # otherwise sit on "waiting for result..." indefinitely with nothing to
-        # act on (#6484). Announced once, not every 2s poll.
+        # act on. Announced once, not every 2s poll.
         if status.get("awaiting_approval") and not told_awaiting:
             told_awaiting = True
             print(
@@ -321,16 +320,16 @@ class _CliConflict(Exception):
     The CLI pre-checks its inputs against a config snapshot for fast, friendly
     errors, but the snapshot can be stale by the time the write runs. The
     mutate callbacks below re-decide every state-dependent precondition on the
-    document read INSIDE the sidecar flock (#4767) and raise this to refuse.
+    document read INSIDE the sidecar flock and raise this to refuse.
     """
 
 
 def _locked_config_write(mutate, *, cleanup_conflict=None, cleanup_failure=None) -> None:
     """Run one config delta under the sidecar flock; exit(1) on a conflict.
 
-    Replaces the load -> mutate dataclass -> ``cfg.save()`` shape, whose
-    whole-document rename silently discarded any change another process
-    landed between the load and the save (#4767).
+    A load -> mutate dataclass -> ``cfg.save()`` shape cannot be used here: its
+    whole-document rename silently discards any change another process
+    landed between the load and the save.
 
     Resolved through the loader MODULE, not this module's by-value imports,
     so it honors the same ``kiro_crew.config.loader.config_path`` patches the
@@ -444,9 +443,9 @@ def _handle_workspace(args: argparse.Namespace) -> None:
 
                 # Copy to a STAGING sibling, not the destination: the copy
                 # runs before the locked registration, so a losing same-name
-                # race must leave the winner's directory untouched (#4767
-                # round 8). The staged tree is installed inside the locked
-                # mutate below, only after the in-lock checks pass.
+                # race must leave the winner's directory untouched. The staged
+                # tree is installed inside the locked mutate below, only after
+                # the in-lock checks pass.
                 staging = dst_path.parent / f".{dst_path.name}.staging-{uuid.uuid4().hex[:8]}"
                 try:
                     shutil.copytree(
@@ -503,7 +502,7 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                 # destination must not exist AT ALL. publish_dir_noreplace,
                 # not check-then-rename: POSIX os.rename silently replaces an
                 # EMPTY destination, so a racer's directory created between
-                # the check and the rename would be destroyed (#4767 round 9).
+                # the check and the rename would be destroyed.
                 if dst_path.exists():
                     raise _CliConflict(
                         f"destination directory '{ws_dir}' already exists; "
@@ -771,16 +770,15 @@ def _warn_hooks_need_restart(app_name: str) -> bool:
     ``RouteRegistry.register_app_routes`` -> ``load_app_module``, reached by the
     HTTP enable route and by ``on_gateway_startup``). This CLI process has no
     handle on that one's ``sys.modules``, so it cannot load them directly --
-    but it no longer needs to: the gateway runs a hook reconciler
+    and it does not need to: the gateway runs a hook reconciler
     (``apps/hook_reconcile.py``) that notices an on-disk hook change this CLI
-    made and reloads it in-process within a poll interval (issue #7880). A
+    made and reloads it in-process within a poll interval. A
     stopped gateway loads the new code on its next start.
 
     Printing only "enabled <app>" reads as though the change were already live in
-    a running gateway, when in fact it lands a few seconds later; and pre-#7880
-    it never landed at all until a manual restart. This notice states the actual
-    timing so an operator does not verify a hook change against stale code and
-    draw the wrong conclusion.
+    a running gateway, when in fact it lands a few seconds later. This notice
+    states the actual timing so an operator does not verify a hook change against
+    stale code and draw the wrong conclusion.
 
     Deliberately NOT gated on a live-gateway probe. ``_marker_port`` is the only
     verified one available here, and it writes its own multi-gateway warning to
@@ -1717,7 +1715,7 @@ def _security(args: argparse.Namespace) -> None:
         # detailed=True: a segment dir that refused to pin (or was swapped
         # mid-verification) leaves the ROTATED segments unchecked, and the
         # command whose job is to surface tampering must not call that run
-        # "intact" over the live log alone (#5051 review).
+        # "intact" over the live log alone.
         result = sel().verify_integrity(detailed=True)
         if not result.history_verifiable:
             # The live-log clause is derived from the SAME pass's counts, so
@@ -1754,10 +1752,10 @@ def _print_denied_command_summary(*, ids: bool) -> None:
 
     The built-in rules are visible and configurable to the USER (Settings
     → Security renders them in category accordions, backed by
-    ``GET /api/security/denied-commands``) but were invisible to the AGENT --
-    ``policy show`` reported everything except them, so an agent planning a
-    multi-step task had no way to learn a class of work is hard-denied before
-    committing to a plan that turns out to be impossible. See issue #3454.
+    ``GET /api/security/denied-commands``) but are invisible to the AGENT --
+    ``policy show`` reports everything except them, so without this an agent
+    planning a multi-step task has no way to learn a class of work is hard-denied
+    before committing to a plan that turns out to be impossible.
 
     Deliberately just counts + ids, not the full 139 regex patterns: enough
     for planning ("this class of work is blocked") and for citing a rule id
@@ -2186,30 +2184,28 @@ def _learn(args: argparse.Namespace) -> None:
             rule = args.rule
             category = args.category
             negative = getattr(args, "negative", None)
-            # The reporting form, not the bool. This command used to read EVERY falsy
-            # return as "the vector store did not take it" and write a second record
-            # into lessons.jsonl. Most of those returns mean the opposite -- the
-            # lesson is already stored exactly as submitted -- so the fallback wrote a
-            # redundant record for a lesson that was fine, and printed "Saved:" when
-            # nothing needed saving.
+            # The reporting form, not the bool. Most falsy returns mean the lesson
+            # is already stored exactly as submitted, so reading one as "the vector
+            # store did not take it" and writing a second record into lessons.jsonl
+            # would leave a redundant record for a lesson that was fine, and print
+            # "Saved:" when nothing needed saving.
             #
             # The one return that really does mean "nothing was stored" is a REFUSAL,
-            # and routing that into the JSONL store was worse than redundant: that
-            # store validates no content at all, so a value this store rejected (an
-            # injection-pattern clause) landed there anyway, and the context builder
-            # reads lessons.jsonl whenever the vector store holds no lessons.
+            # and routing that into the JSONL store would be worse than redundant:
+            # that store validates no content at all, so a value this store rejected
+            # (an injection-pattern clause) would land there anyway, and the context
+            # builder reads lessons.jsonl whenever the vector store holds no lessons.
             #
-            # So the fallback is REMOVED, not narrowed. There is no "vector store
-            # unavailable" state to fall back from here: ``vs`` is constructed and
-            # ``init()``-ed unconditionally above, which means a falsy return was the
-            # only way into that branch.
+            # So there is no fallback here, not a narrowed one. There is no "vector
+            # store unavailable" state to fall back from: ``vs`` is constructed and
+            # ``init()``-ed unconditionally above.
             result = vs.write_lesson(rule, category, negative)
             neg = f" ({negative})" if negative else ""
             # What the save COST. The store's dedup rules tombstone a stored lesson
-            # the submitted rule contains or heavily overlaps, and this command
-            # printed "Saved:" and the dedup NOTE below without ever naming the rule
-            # it removed -- so adding a conditional rule retired the general rule
-            # inside it and the only trace was a row with is_deleted=1. Printed in
+            # the submitted rule contains or heavily overlaps, and printing "Saved:"
+            # plus the dedup NOTE below without ever naming the removed rule would
+            # hide that adding a conditional rule retires the general rule inside it,
+            # leaving a row with is_deleted=1 as the only trace. Printed in
             # full for every outcome that can carry it, because the row is a
             # tombstone: `learn list` cannot show it and this is the last readable
             # copy.
@@ -2225,19 +2221,18 @@ def _learn(args: argparse.Namespace) -> None:
                 # JOIN characters, never split a token, so running it first can only
                 # help the regex, never hide a credential from it.
                 #
-                # Both treatments are needed, and both were added in response to a
-                # real finding: an OSC payload stored in a rule would otherwise be
-                # interpreted by the terminal, and a credential in a lesson would
-                # otherwise be printed. This block prints a rule the user did NOT ask
+                # Both treatments are needed: an OSC payload stored in a rule
+                # would otherwise be interpreted by the terminal, and a credential
+                # in a lesson would otherwise be printed. This block prints a rule the user did NOT ask
                 # to see, on the one path guaranteed to surface it.
                 #
-                # Redacting at all (rather than control-stripping only) reversed an
-                # earlier decision here. `learn list` prints every stored lesson with
-                # control-stripping alone, and that looked like the convention to
+                # Redacting at all, rather than control-stripping only, is
+                # deliberate. `learn list` prints every stored lesson with
+                # control-stripping alone, and that looks like the convention to
                 # match -- but it is an EXPLICIT request to see the store, while this
                 # block surfaces a lesson the user is about to lose. The right
                 # comparison is the route, which delivers the SAME field and does
-                # redact, so controls-only made one feature's two delivery paths
+                # redact, so controls-only would make one feature's two delivery paths
                 # disagree about whether a superseded rule may carry a secret. A lesson
                 # written by history consolidation also holds model output the user
                 # never typed, so "their own store" is not "their own knowledge".
@@ -3045,7 +3040,7 @@ def _tailnet(args: argparse.Namespace) -> None:
 
     if not enabled:
         # Checked BEFORE publishing, and never written. Three reasons this is a
-        # check rather than the config write it used to be:
+        # check rather than a config write:
         #
         # 1. A read-modify-write of the shared config cannot be made atomic from a
         #    second process. Every construction tried here -- a caller-side
@@ -3054,9 +3049,9 @@ def _tailnet(args: argparse.Namespace) -> None:
         #    dashboard save landing mid-flight is replaced by our older snapshot, or
         #    (when the lock went into the shared writer) blocks the gateway's event
         #    loop. Closing it needs one primitive that ALL ~29 writers take, which is
-        #    #2147, not this feature.
+        #    its own change, not this feature.
         # 2. Failing here beats the alternative ordering. Writing after publishing
-        #    left a published-but-untrusted dashboard whenever the write failed --
+        #    leaves a published-but-untrusted dashboard whenever the write fails --
         #    reachable on the tailnet and answering 403, which is the confusing state
         #    this command exists to eliminate.
         # 3. The cost is paid once per machine, not per invocation. After the operator
@@ -3225,7 +3220,7 @@ def _telemetry(args: argparse.Namespace) -> None:
 
     # Verify the write actually took EFFECT before claiming success.
     # config.local.json deep-merges OVER config.json at load, so a host that
-    # previously set this key locally would keep sending while this command
+    # sets this key locally would keep sending while this command
     # printed "DISABLED" — a false promise on a privacy control is worse than an
     # error, so re-read the effective config and report the shadowing file.
     try:

@@ -562,12 +562,11 @@ def apply_owner_only(
     An empty *sids* is refused -- an ACL with no ACEs is not "owner-only", it
     denies everyone including the owner, and writing one would brick the file.
 
-    *require_local_volume* used to live here. It does not any more: a caller that
-    cannot afford an unbounded SMB round-trip has to know that BEFORE it starts
-    the write, so the decision belongs at the call site via
-    :func:`volume_is_local`, ahead of any other filesystem work. Asking here
-    would have been too late -- the caller would already have paid for whatever
-    it did to reach this call.
+    *require_local_volume* deliberately does NOT live here: a caller that cannot
+    afford an unbounded SMB round-trip has to know that BEFORE it starts the
+    write, so the decision belongs at the call site via :func:`volume_is_local`,
+    ahead of any other filesystem work. Asking here would be too late -- the
+    caller would already have paid for whatever it did to reach this call.
 
     Raises :class:`AclWriteFailed` on any failure, having written nothing: the
     descriptor is only handed to the kernel once fully built, so a failure part

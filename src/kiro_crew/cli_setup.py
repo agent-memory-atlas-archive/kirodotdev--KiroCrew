@@ -740,8 +740,8 @@ def _input_or_skip(prompt: str) -> str | None:
 
     Returns ``None`` when the user hit Enter with no input, which callers treat
     as "keep the default / skip this step". A closed/piped stdin is a different
-    condition and must not be silently coerced to ``""`` (that used to admit an
-    empty default and cascade the failure into the NEXT step's bare
+    condition and must not be silently coerced to ``""`` (coercing it admits an
+    empty default and cascades the failure into the NEXT step's bare
     ``input()``) — see ``_SetupAborted``. A non-UTF-8 locale (e.g. C/POSIX)
     makes ``input()`` raise ``UnicodeDecodeError`` the same way, so it is
     treated identically.

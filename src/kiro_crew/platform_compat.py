@@ -613,9 +613,9 @@ def file_lock(
     section unserialized, since proceeding lock-less is the exact fail-open that
     loses writes. The timeout is a safety ceiling against a stuck holder, not a
     normal wait (every in-tree critical section is a sub-second read + atomic
-    rename). ``required`` is retained for call-site intent but no longer changes
+    rename). ``required`` is kept for call-site intent and does not change
     the outcome (both paths refuse to proceed without the lock). On POSIX the
-    acquire blocks until the lock is free, as before.
+    acquire blocks until the lock is free.
 
     *wait* is for a caller whose work is OPTIONAL and retried later, and which
     may run on the event-loop thread: with ``wait=False`` the acquire is
@@ -653,11 +653,11 @@ def file_lock(
         # than enter the critical section unserialized. Entering anyway is the
         # exact fail-open that loses writes; a loud error in that rare case is
         # strictly safer, and callers already run under `with`, so the fd is
-        # cleaned up. `required` is retained for call-site intent but no longer
-        # changes the outcome — both paths now refuse to proceed lock-less.
+        # cleaned up. `required` is kept for call-site intent and does not
+        # change the outcome — both paths refuse to proceed lock-less.
         timeout = _WIN_LOCK_TIMEOUT_SECS if wait else 0.0
         # Called with no keyword on the waiting path, so the default-argument
-        # call shape existing tests stub out stays exactly as it was.
+        # call shape existing tests stub out is preserved.
         acquired = _win_acquire_blocking(fd) if wait else _win_acquire_blocking(fd, timeout=0.0)
         if not acquired:
             if not wait:
@@ -4544,23 +4544,21 @@ def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
     one function: an owner-only DACL that two call paths could drift apart on is
     the defect this consolidation exists to prevent.
 
-    This used to shell out to ``icacls /inheritance:r /grant:r ...``. It now
-    builds the same descriptor through ``advapi32`` directly, which is what
-    removed the "must not run on the event loop" constraint this helper used to
-    impose on every one of its callers: measured on a local NTFS volume, the
-    subprocess cost 313 ms per call and this costs 0.24 ms. Callers that already
-    offload it are still free to -- a filesystem call can block on a slow volume,
-    so offloading remains good practice -- but it is no longer mandatory, and a
-    caller on the loop is no longer parking the gateway for a third of a second
-    per secret written.
+    The descriptor is built through ``advapi32`` directly rather than by shelling
+    out to ``icacls /inheritance:r /grant:r ...``, so no "must not run on the
+    event loop" constraint falls on the callers: measured on a local NTFS
+    volume, the subprocess costs 313 ms per call and this costs 0.24 ms. Callers
+    that already offload it are still free to -- a filesystem call can block on
+    a slow volume, so offloading remains good practice -- but it is not
+    mandatory, and a caller on the loop does not park the gateway for a third of
+    a second per secret written.
 
     Resolve the invoking user's SID BEFORE writing anything, and resolve it
     WITHOUT the possibility of a spawn: :func:`current_user_sid` reads the
-    process's own access token and nothing else. The ``whoami``-fallback helper
-    this used while the lockdown was itself a subprocess is gone -- it would have
-    put a blocking spawn back on the event loop on any host where the token read
-    fails, defeating the whole point of removing the icacls call, and once this
-    was its last caller it was dead code.
+    process's own access token and nothing else. There is deliberately no
+    ``whoami`` fallback -- it would put a blocking spawn back on the event loop
+    on any host where the token read fails, defeating the whole point of not
+    shelling out.
 
     If the SID cannot be resolved we CANNOT safely apply the DACL: an
     Owner-Rights-only descriptor (S-1-3-4 alone) would lock the current user out
@@ -4570,7 +4568,7 @@ def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
     prevent). Fail loud with ``OSError``, the same shape callers already handle,
     so the security-warning path fires instead of silently re-introducing the
     ownership-lockout regression. Note the consequence of the token-only rule:
-    on a host whose token read fails we now refuse rather than spawning
+    on a host whose token read fails we refuse rather than spawning
     ``whoami``. That is the safe direction -- a caller that must not fail passes
     ``restrict_on_error="warn"`` and gets a warning instead of a stall.
     """
@@ -5112,10 +5110,10 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
 
 # --- /proc process-subtree sampling ----------------------------------------
 #
-# ONE walk for the two callers that used to carry their own copy of it:
-# ``mcp_gateway.pool`` and ``subagent`` each had a line-for-line BFS over
-# ``/proc/<pid>/task/<tid>/children`` and its own ``256`` ceiling, so a fix to
-# either policy reached only one surface. :func:`proc_subtree_sample` is now the
+# ONE walk for its two callers, ``mcp_gateway.pool`` and ``subagent``: a
+# per-caller BFS over ``/proc/<pid>/task/<tid>/children`` with its own ``256``
+# ceiling would let a fix to either policy reach only one surface.
+# :func:`proc_subtree_sample` is the
 # single entry point for BOTH, and the helpers below are the per-process reads it
 # is built from -- module-private, because no caller outside this module wants a
 # single read on its own. Pure stdlib: on a host without ``/proc`` every access

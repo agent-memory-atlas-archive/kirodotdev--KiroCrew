@@ -221,7 +221,7 @@ def resolve_stop_sentinel(slot_key: str, workspace: str = "default") -> str:
 # Wall-clock budget ceiling (7 days), the single authoritative bound. The
 # MONITOR_*_SCHEMA FieldSpecs mirror it for the MCP tools; enforcing it here
 # too covers the REST and workflow paths, which do not pass through those
-# schemas (GPT review on #2116: REST accepted 604801 unchanged).
+# schemas — without this bound REST accepts 604801 unchanged.
 MAX_RUNTIME_SECS_CEILING = 604800
 
 

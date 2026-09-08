@@ -519,7 +519,7 @@ class NudgeLoop:
     #: Whether this loop may be observation-gated. Defaults to FALSE, which is what
     #: a record stored before this field existed decodes to.
     #:
-    #: THE PRINCIPLE, stated once because four review rounds circled it: gating is
+    #: THE PRINCIPLE, stated once because it is easy to get backwards: gating is
     #: the state that can silently stop work -- a gated loop whose subject is merged
     #: or closed DEACTIVATES -- so every uncertainty resolves to UNGATED, and only an
     #: explicit boolean true gates. An absent key is a loop nobody chose to gate,
@@ -820,9 +820,9 @@ class AutoNudgeService:
                 # asked not to be. Normalise it here, at the boundary, rather than
                 # hardening each read site.
                 # PRESENT-AND-NOT-A-BOOL, which includes ``null``, normalised to
-                # FALSE. Round 8 normalised it to True on the grounds that reading
+                # FALSE. Normalising it to True instead -- on the grounds that reading
                 # corrupt data as an opt-out would ungate loops nobody chose to
-                # ungate. That had the asymmetry backwards: gating is the state that
+                # ungate -- has the asymmetry backwards: gating is the state that
                 # can silently STOP a loop, so an unreadable value must resolve to
                 # ungated -- costing a turn per interval, which is today's cost --
                 # rather than to gated, which can deactivate a recurring task whose
@@ -1152,7 +1152,7 @@ class AutoNudgeService:
         # the old complete file or the new complete file, never a partial one.
         # The rename goes through replace_with_retry because on Windows it can
         # fail with PermissionError while another handle is transiently open on
-        # the fresh temp file (indexer / AV), which loses the write (issue #1105).
+        # the fresh temp file (indexer / AV), which loses the write.
         # Blocking (fsync) — async callers offload this to an executor.
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
@@ -3744,8 +3744,8 @@ class AutoNudgeService:
                 loop.id,
                 ",".join(verdict.keys) or "unattributed",
             )
-            # SERIALIZED against ``update``. Round 13 removed this path's own second
-            # await; this closes the other side of the same race, which is
+            # SERIALIZED against ``update``. This path has no second await of its
+            # own; this closes the other side of the same race, which is
             # ``update``'s. That method takes the MAINTENANCE lock (not ``_lock``)
             # and awaits inside it, so a retarget could pass its precheck, yield,
             # let this branch settle the OLD subject with ``active = False``, and
@@ -3869,8 +3869,8 @@ class AutoNudgeService:
                     await self._write_monitor_snapshot_locked()
             except Exception:
                 # NOT rolled back -- and there is deliberately no saved copy to roll
-                # back TO. Round 31 restored the debt here to keep memory and disk in
-                # agreement, which is the right instinct almost everywhere and the
+                # back TO. Restoring the debt here to keep memory and disk in
+                # agreement is the right instinct almost everywhere and the
                 # wrong one here: a trustworthy live observation has just DISPROVED
                 # the debt, so restoring it lets the next delivered turn settle a
                 # terminal state that no longer holds and silently stop a watch whose
@@ -4039,7 +4039,8 @@ class AutoNudgeService:
             self._emit("expired", loop)
             return
         # Proved unable to act? Checked LAST, so a loop that is also out of
-        # cycles or budget still reports the bound it historically would have. This one is reactive by construction: it fires only on recorded
+        # cycles or budget still reports the bound it would otherwise report. This
+        # one is reactive by construction: it fires only on recorded
         # evidence that a cycle's approval went unanswered (see
         # ``notify_approval_stalled``), never on a reading of whether a grant
         # happens to be in force — a loop that only ever calls auto-approved
@@ -4338,8 +4339,8 @@ class AutoNudgeService:
                         if not await self._terminal_still_holds(loop, monitor):
                             # The subject came back while the turn was being delivered.
                             # Every earlier guard for a reopened subject lives on the
-                            # NEXT TICK -- the debt clearing added in round 31, the
-                            # forced re-observation added in round 34 -- and this
+                            # NEXT TICK -- the debt clearing and the forced
+                            # re-observation -- and this
                             # settlement runs before any tick can happen, so the window
                             # between the terminal observation and the turn landing had
                             # no evidence in it at all. A channel turn runs inline and
@@ -4589,7 +4590,7 @@ class AutoNudgeService:
         after restart, never a premature or dropped fire"), and a far better trade
         than a sixth guard on an uncloseable window.
 
-        The countdown reset issue #8212 asks for is UNAFFECTED, because it never
+        The countdown reset callers ask for is UNAFFECTED, because it never
         came from this write: a delivered cycle clears ``next_due_ts`` in
         :meth:`_run_fire_cycle` and the re-arm then starts a fresh full interval.
         """

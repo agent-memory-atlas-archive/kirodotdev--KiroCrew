@@ -126,16 +126,16 @@ class SemanticRejectCode(str, Enum):
 class LessonWriteOutcome(str, Enum):
     """What a lesson write actually DID, for callers that must tell the cases apart.
 
-    ``write_lesson`` used to return a bare ``bool`` whose ``False`` meant several
-    unrelated things: validation refused the value, a dedup rule claimed the write,
+    A bare ``bool`` cannot: ``False`` covers several unrelated things --
+    validation refused the value, a dedup rule claimed the write,
     the submit was a genuine no-op, or a bare re-submit deliberately kept the stored
     NOT-clause. The first two mean "your lesson did not land"; the last two mean
     "your lesson is fine, there was nothing to do". A caller that cannot tell them
-    apart has to guess, and the CLI guessed wrong -- it read every ``False`` as "the
-    vector store did not take it" and wrote a second record into ``lessons.jsonl``.
+    apart has to guess, and a caller reading every ``False`` as "the vector store
+    did not take it" writes a second record into ``lessons.jsonl``.
 
     The vocabulary matches :meth:`kiro_crew.learn.LessonStore.save_or_enrich`, which
-    already returns ``inserted``/``enriched``/``unchanged``, so the two stores now
+    returns ``inserted``/``enriched``/``unchanged``, so the two stores
     describe the same events with the same words.
     """
 
@@ -172,21 +172,21 @@ class LessonWriteResult:
     was saved with nothing naming what the save cost. Supersede-on-dedup is
     deliberate (see :meth:`VectorMemoryStore.write_lesson`, and the docstring's
     "longer wins" / "newer replaces older"), and this field does not change it:
-    the same rows are deleted as before, and the caller is now told which. It is
+    it only reports which rows that rule deleted. It is
     empty on every path that deleted nothing, so a surface can render it with a
     bare ``if`` and say nothing when there is nothing to say.
 
-    **Truthiness is deliberate, and it is the reason this replaced the old ``bool``
-    outright instead of shipping beside it.** ``write_lesson`` used to answer
-    ``True``/``False``, and three callers plus ~55 assertions read that answer with a
-    bare ``if``/``assert``. Returning any ordinary object would have made every one of
+    **Truthiness is deliberate, and it is why this type is the whole return value
+    rather than something shipped beside a ``bool``.** Three callers plus ~55
+    assertions read ``write_lesson``'s answer with a
+    bare ``if``/``assert``. Returning any ordinary object would make every one of
     them unconditionally true -- silently, since a bare ``if`` on a truthy value is not
-    a type error and mypy cannot flag it. :meth:`__bool__` closes exactly that hole by
-    giving this type the OLD answer: ``bool(result)`` is ``wrote``, byte-for-byte the
-    predicate those callers were already written against. So there is one method, one
+    a type error and mypy cannot flag it. :meth:`__bool__` closes exactly that hole:
+    ``bool(result)`` is ``wrote``, byte-for-byte the
+    predicate those callers are written against. So there is one method, one
     name, and nothing to migrate to -- a caller that needs the detail reads
     :attr:`outcome`, and a caller that only needs "did this write something" keeps
-    using the truth value it always used.
+    using the truth value.
     """
 
     outcome: LessonWriteOutcome
@@ -627,8 +627,7 @@ def _split_stored(existing_val: str, rule_norm: str, existing_key: str) -> tuple
     happens to contain the separator. No amount of text parsing settles that -- both
     readings are valid, and picking either one by itself loses data in the other case
     (silently dropping a clause update one way, OVERWRITING an unrelated rule the
-    other). Two review rounds demanded exactly opposite behaviour on the same text
-    for that reason.
+    other).
 
     The row itself carries the answer: the key is ``md5(rule)`` taken at write time,
     in the rule's stored casing. So a candidate prefix is the rule only when it
@@ -831,7 +830,7 @@ def _is_selective_keyword(word: str) -> bool:
 
 
 # A whole-population retrieval scan, as opposed to a bounded or single-row read.
-# Only the two surfaces #8971 is about are attributed; everything else lands in
+# Only the two whole-population surfaces are attributed; everything else lands in
 # the all-tables totals.
 _ScanSurface = Literal["semantic", "episodic"]
 
@@ -845,8 +844,8 @@ class _ReadCounters:
     cannot tell one materialized row from a thousand, and wall-clock timing is
     not admissible evidence. These counters are the in-band signal instead, so a
     caller can assert that a second identical search did not re-read the
-    population (#8971) the way ``_EpisodicScoringSet`` already avoids on the
-    episodic side (#8956).
+    population the way ``_EpisodicScoringSet`` already avoids on the
+    episodic side.
 
     Cost is a method call and a few integer adds per SELECT, so counting is
     always on; only the EXPOSURE is a surface decision. Every increment happens
@@ -1159,11 +1158,11 @@ class VectorMemoryStore:
         # this lockdown pass (in-process on Windows since the advapi32
         # conversion, but still filesystem work that can stall on a slow
         # volume) — so calling it directly on an event loop stalls every task.
-        # All async callers now offload: ``eval.runner``, ``slack.gateway`` and
-        # ``cli_server._run_task`` via ``asyncio.to_thread``
-        # (#5389); ``dashboard/handlers/memory.py``'s standalone fallback routes
+        # All async callers offload: ``eval.runner``, ``slack.gateway`` and
+        # ``cli_server._run_task`` via ``asyncio.to_thread``;
+        # ``dashboard/handlers/memory.py``'s standalone fallback routes
         # through ``_get_vector_store_async``, which offloads the init-bearing
-        # path (#5221).
+        # path.
         self._restrict_memory_files()
 
         # Load persisted FAISS index (or rebuild from SQLite embeddings)
@@ -1515,7 +1514,7 @@ class VectorMemoryStore:
             # the value is unchanged (a re-affirmation with a new confidence or
             # source — consolidation rewrites the same keys every cycle) and
             # clears it when the value changed, so a row never keeps ranking by
-            # a vector computed from text it no longer holds. Step 8.5 below
+            # a vector computed from superseded text. Step 8.5 below
             # (or the backfill sweep) refills a cleared vector.
             now = _now_iso()
             self.db.execute(
@@ -1671,7 +1670,7 @@ class VectorMemoryStore:
                 # mmr=False: internal write-path caller that applies its own cosine
                 # threshold below, so the MMR diversity rerank buys nothing here and
                 # cost ~71ms per superseding write at 1,000 pooled candidates
-                # (issue #8902). mmr also SIZES the candidate pool
+                # per superseding write. mmr also SIZES the candidate pool
                 # (limit vs _MMR_MAX_POOL), so keep the limit wide: the 0.7
                 # threshold, not the pool cut, decides what gets retired.
                 results = self.search_episodic(
@@ -2323,11 +2322,11 @@ class VectorMemoryStore:
             with self._db_lock:
                 k = min(limit * 2, self._faiss_index.ntotal)  # type: ignore[attr-defined]
                 distances, indices = self._faiss_index.search(vec.reshape(1, -1), k)  # type: ignore[attr-defined]
-                # FAISS returns ids and distances only. The row bodies used to be
-                # fetched one "SELECT *" per hit — an N+1 that also dragged each
-                # row's embedding BLOB back out of the store even though the
-                # vectors are already resident in the index. Resolve every hit in
-                # a single IN (...) query over an explicit column list instead.
+                # FAISS returns ids and distances only. Every hit is resolved in
+                # a single IN (...) query over an explicit column list: one
+                # "SELECT *" per hit is an N+1 that also drags each row's
+                # embedding BLOB back out of the store even though the vectors
+                # are already resident in the index.
                 hits: list[tuple[str, float]] = []
                 for dist, idx in zip(distances[0], indices[0]):
                     if idx == -1:
@@ -3030,9 +3029,9 @@ class VectorMemoryStore:
         the sanctioned way to opt out of it (route to ``set_semantic_if_absent``,
         which cannot replace anything -- see ``onboarding_import``).
 
-        What it does NOT keep is the silence. Every rule that deletes now records the
+        What it does NOT keep is the silence. Every rule that deletes records the
         rule text it removed in :attr:`LessonWriteResult.superseded`, so a caller is
-        no longer handed a bare ``inserted`` for a call that destroyed a lesson the
+        never handed a bare ``inserted`` for a call that destroyed a lesson the
         user still wanted. The result is the only place that can carry this: the
         deleted row is a tombstone, so it is gone from ``get_lessons``, from
         ``learn_list`` and from the injected lessons block by the time the caller
@@ -3659,7 +3658,7 @@ class VectorMemoryStore:
             # Unbounded: the whole lesson population, which is what the
             # _stored_similarity_scorer callers (_rank_lessons,
             # find_contradiction_candidates) score over — the other half of
-            # #8971's read-volume shape. The LIMIT branch above is bounded and
+            # the whole-population read volume. The LIMIT branch above is bounded and
             # so is not a population scan.
             rows = self._fetch_all_locked(sql, scan="semantic")
         return [dict(r) for r in rows]
@@ -4104,11 +4103,11 @@ class VectorMemoryStore:
         """Discard embeddings produced by a DIFFERENT model. Returns rows invalidated.
 
         Stored vectors are only comparable to each other when they came from the
-        same model at the same dimensionality. Nothing recorded which model
-        produced them, so swapping the embedding model used to corrupt search
-        silently: with a different dim the old rows were quietly dropped from the
-        index, and with the SAME dim (any other 1024-d model) stale vectors were
-        cosine-scored against new-model queries and returned meaningless
+        same model at the same dimensionality. Without a record of which model
+        produced them, swapping the embedding model corrupts search
+        silently: with a different dim the old rows are quietly dropped from the
+        index, and with the SAME dim (any other 1024-d model) stale vectors are
+        cosine-scored against new-model queries and return meaningless
         similarities.
 
         This records the active vector space in ``memory_meta`` and, when it
@@ -4453,7 +4452,7 @@ class VectorMemoryStore:
                 # value was REWRITTEN during the (paced) embed — the write path
                 # clears the vector when the rule text changes — so the old
                 # rule's vector would be stamped onto the new rule and rank it by
-                # text it no longer holds. `value_json` pins the row we embedded,
+                # text it does not hold. `value_json` pins the row we embedded,
                 # and `is_deleted = 0` keeps a vector off a row tombstoned in the
                 # same window.
                 self.db.execute(
@@ -4518,9 +4517,9 @@ class VectorMemoryStore:
                     continue
                 # value_json guard: a concurrent re-write of this key already
                 # cleared-and-refilled its own vector; stamping the OLD value's
-                # vector over it would rank the row by text it no longer holds.
-                # `is_deleted = 0` is the third leg, added when pacing widened
-                # this window: a row tombstoned during the pause must not come
+                # vector over it would rank the row by text it does not hold.
+                # `is_deleted = 0` is the third leg, for the window pacing opens:
+                # a row tombstoned during the pause must not come
                 # back carrying a vector.
                 self.db.execute(
                     "UPDATE semantic_memory SET embedding = ? "

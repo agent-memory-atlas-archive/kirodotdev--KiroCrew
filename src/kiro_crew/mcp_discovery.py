@@ -1024,8 +1024,8 @@ _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
 #: proceeds under ``unresolved:<pid>`` by product decision — and unnamed is the
 #: NORMAL case on macOS, the only platform with a computer-use driver.
 #:
-#: #5322 gave those unnamed callers a per-CONNECTION nonce, so on a CURRENT
-#: gateway they no longer collapse onto one ``SnapshotIndex`` namespace. The
+#: A per-CONNECTION nonce keeps those unnamed callers from collapsing onto one
+#: ``SnapshotIndex`` namespace on a CURRENT gateway. The
 #: entry stays because that is not the whole precondition. This set feeds
 #: ``managed_server_is_session_bound``, which feeds the shareability verdict,
 #: which ``mcp_gateway/seed.py`` turns into a CONFIG WRITE (``recommend_share``
@@ -1036,8 +1036,7 @@ _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
 #: socket, so a gatewayd that outlived a package upgrade keeps running and
 #: injects no nonce (which is exactly why ``REGISTERED_CAPABILITIES`` exists).
 #: Promotion therefore has to wait until a nonce-blind gateway cannot serve a
-#: POOLED computer backend at all — negotiated, not assumed. Tracked as the
-#: #5322 follow-up.
+#: POOLED computer backend at all — negotiated, not assumed.
 #:
 #: Contrast ``kirocrew-dashboard``, which refuses an unidentified caller and is
 #: therefore safe to classify shareable regardless of the daemon's generation.
@@ -1421,7 +1420,7 @@ def _expand_header_placeholders(
     form (docs/reference/kiro-cli/mcp/configuration.md) that kiro-cli expands
     at session runtime. Sending the reference as literal text gets the server's
     correct rejection reported as a failing row — with advice to delete a
-    header that works in every session (issue #9206).
+    header that works in every session.
 
     Delegates to the mcp_gateway rewriter's declared-env expander — same regex,
     same credential-filtered source view (``is_secret_env_key`` /
@@ -1757,9 +1756,9 @@ async def _read_stdio_jsonrpc_response(
     stdio MCP servers must speak newline-delimited JSON, but some processes —
     or launchers that front them, like ``aim`` while self-updating — print a
     human-readable banner or a blank line to stdout *before* the handshake.
-    The probe used to read the first line and ``json.loads`` it directly, so a
-    single stray line raised ``Expecting value: line 1 column 1 (char 0)`` and
-    a healthy server was reported as errored (cached for up to 30 min).
+    Reading the first line and ``json.loads``-ing it directly would let a
+    single stray line raise ``Expecting value: line 1 column 1 (char 0)`` and
+    report a healthy server as errored (cached for up to 30 min).
 
     This consumes lines within one overall ``timeout`` budget, skipping blank
     lines, non-JSON lines, and JSON-RPC *notifications* (objects without an
@@ -1786,7 +1785,7 @@ async def _read_stdio_jsonrpc_response(
         line = await asyncio.wait_for(stream.readline(), timeout=remaining)
         if not line:
             # EOF — process closed stdout without responding. Preserve the
-            # "non-JSON was on stdout" signal the old json.loads error used to
+            # "non-JSON was on stdout" signal a json.loads error would
             # surface, so a banner-then-EOF probe is still diagnosable.
             if banner_lines:
                 logger.debug(
@@ -1841,11 +1840,11 @@ async def probe_server(
 
     A consent-disabled server is refused HERE, ahead of the local/remote
     dispatch, because probing is the act that runs it: the local branch spawns
-    the command and the remote branch opens the connection. Enforcement used to
-    live in each caller (``probe_all`` filtered disabled rows before building
-    coroutines), which made the guarantee only as good as the newest call
-    site's memory — so a second entry point had to restate the check or become
-    a way around the consent gate. Keeping the rule in the one function every
+    the command and the remote branch opens the connection. Enforcement in each
+    caller (``probe_all`` filtering disabled rows before building
+    coroutines) would make the guarantee only as good as the newest call
+    site's memory — a second entry point would have to restate the check or
+    become a way around the consent gate. Keeping the rule in the one function every
     probe must pass through removes that whole class; callers keep their own
     filters and error surfaces as behaviour and UX, not as the safety property.
     """
@@ -1939,7 +1938,7 @@ async def probe_server(
         # through the sandbox chokepoint: OS-level isolation plus a
         # credential-scrubbed environment (on top of the augmented PATH built
         # above). ``strip_python_env`` keeps KiroCrew's PYTHONPATH/PYTHONHOME out
-        # of a foreign Python MCP server. See the related security-review finding.
+        # of a foreign Python MCP server.
         #
         # ``first_party_fixed_argv`` is True ONLY when command+args+env EQUAL
         # the invocation this package derives for its own managed servers
@@ -1949,7 +1948,7 @@ async def probe_server(
         # start?" probe runs for real instead of fail-closing. Third-party
         # probes (and any customized managed command/args/env) pass False and
         # keep the full fail-close + opt-in behavior.
-        # Probe temp containment (#5064): each probe gets its OWN private dir
+        # Probe temp containment: each probe gets its OWN private dir
         # under the managed root, cleaned in this function's finally -- unlike
         # a backend, a probe knows exactly when its lifecycle ends, so no
         # shared directory and no sweep race exist. Lazily imported
@@ -1957,13 +1956,13 @@ async def probe_server(
         # would cycle), created off-loop, and fail-open: a probe must run even
         # when containment cannot be set up.
         #
-        # Allocated BEFORE the sandbox wrap (#8653): the managed root lives at
+        # Allocated BEFORE the sandbox wrap: the managed root lives at
         # ``<data home>/run/mcp-tmp``, inside the runtime parent the sandbox
         # seals read-only, so the wrap must know the directory to carve its
-        # write access out of that seal. Allocating after the wrap handed the
-        # child a ``TMPDIR`` it could not write -- a Bun-packaged server then
-        # failed the probe with "Cannot find the native Koffi module" because
-        # it could not extract its native module. The allocation failure path
+        # write access out of that seal. Allocating after the wrap hands the
+        # child a ``TMPDIR`` it cannot write -- a Bun-packaged server then
+        # fails the probe with "Cannot find the native Koffi module" because
+        # it cannot extract its native module. The allocation failure path
         # stays fail-open (probe runs with inherited temp, no carve-out), and
         # the outer ``finally`` sweeps the dir even when the wrap itself
         # raises.
@@ -2262,7 +2261,7 @@ async def probe_server(
         #     tools then never load"), and short-circuiting on the name alone would
         #     report `ok` for a managed server that cannot run — changing what `ok`
         #     means in the shared `_cache_probe` store, silently, for the one
-        #     surface that used to catch it.
+        #     surface that catches it.
         #   * importing these modules runs package code IN THE GATEWAY PROCESS,
         #     which the gateway does not otherwise do (they are absent from
         #     sys.modules at boot). The package dir is writable by the same uid the
@@ -2730,10 +2729,10 @@ def sync_to_agent_config(servers: list[McpServerInfo]) -> bool:
     ``~/.kiro/settings/mcp.json``), merges them with correct priority, resolves
     commands, normalizes each spec's ``env`` (see ``env.emit_env``), and writes
     the final agent config. There is deliberately no second registration path:
-    a ``kiro-cli mcp add`` subprocess used to run here for cosmetic parity with
-    ``kiro-cli mcp list``, but it was an unsynchronized second writer of the
-    same file with its own (unnormalized) env serialization, and everything it
-    wrote was rewritten by ``install_agent()`` moments later.
+    a ``kiro-cli mcp add`` subprocess here would buy cosmetic parity with
+    ``kiro-cli mcp list`` at the cost of an unsynchronized second writer of the
+    same file with its own (unnormalized) env serialization, whose writes
+    ``install_agent()`` rewrites moments later.
 
     Returns True if any servers were synced.
     """
@@ -2780,7 +2779,7 @@ def sync_discovered_servers() -> list[McpServerInfo]:
     ``asyncio.to_thread`` from a handler.
 
     Returns the servers discovery flagged (new or diverged; empty when none —
-    which, deliberately, no longer implies nothing was written).
+    which, deliberately, does not imply nothing was written).
     """
     with _SYNC_MUTEX:
         to_sync = discover_servers_to_sync()

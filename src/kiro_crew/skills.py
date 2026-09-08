@@ -253,7 +253,7 @@ def _emit_pending_consumed(payload: dict) -> None:
 
 
 # Frontmatter field used to mark a skill as auto-generated.  Absence means
-# the skill is hand-authored (or legacy, pre-feature).
+# the skill carries no source field, i.e. is hand-authored.
 AUTO_SKILL_SOURCE_VALUE = "auto"
 
 # Cap synthesized procedure markdown at 10 KB.  Longer outputs indicate
@@ -504,14 +504,14 @@ def _mentions_skill_basename(raw_params: dict | None, command: str | None) -> bo
 
 
 def _decode_skill_text(raw: bytes, *, strict: bool = True) -> str:
-    """Decode SKILL.md bytes the way ``read_text`` used to.
+    """Decode SKILL.md bytes with ``read_text``'s newline handling.
 
-    These reads moved from ``read_text`` to bytes so containment could be checked
+    These reads take bytes rather than ``read_text`` so containment can be checked
     on the descriptor actually opened. ``read_text`` opens in TEXT mode and
     performs universal-newline translation; a bytes read does not. Git checks out
-    CRLF on Windows, so without this every frontmatter key carried a trailing
-    ``\r``, nothing matched ``always`` or ``pinned``, and skill bodies silently
-    stopped being injected there while Linux and macOS looked fine.
+    CRLF on Windows, so without this every frontmatter key would carry a trailing
+    ``\r``, nothing would match ``always`` or ``pinned``, and skill bodies would
+    silently stop being injected there while Linux and macOS looked fine.
 
     *strict* decoding propagates invalid UTF-8, which a WRITER must hear
     (``update_auto_skill`` carries version metadata across a rewrite). Callers
@@ -1517,10 +1517,10 @@ def _ensure_builtin_skills(base: Path) -> None:
             source_names.add(name)
             # First source root to ship a name owns it for this run. Without
             # this, the second root races the copy the first just made: the
-            # destination is no longer user data but this run's own output, and
+            # destination is this run's own output rather than user data, and
             # which tree ends up installed is decided by comparing mtimes
             # across two unrelated source trees. The project dir is iterated
-            # first, so a project skill is no longer replaced by a packaged
+            # first, so a project skill is not replaced by a packaged
             # one that merely carries a newer file.
             if name in supplied:
                 continue
@@ -1872,8 +1872,8 @@ class SkillsLoader:
 
         Deliberately NOT per call. This runs on every message via
         ``get_triggered_skills``, and a per-message governance event would bury the
-        events that matter while adding the hot-path cost an earlier review round
-        was about. Keyed on (canonical key, outcome) so a new directory, or the
+        events that matter while adding hot-path cost to every message.
+        Keyed on (canonical key, outcome) so a new directory, or the
         same directory after the feature switch is flipped, is recorded again --
         a second message about an unchanged decision is not.
 
@@ -2413,7 +2413,7 @@ class SkillsLoader:
         repeat calls (e.g. dashboard refreshes) do not re-walk the skills tree.
 
         This is the public seam for *alias resolution* specifically — the budget
-        endpoint no longer builds the map itself. It still reads other loader
+        endpoint does not build the map itself. It still reads other loader
         internals to assemble its rows, so this is one step out of that coupling,
         not the end of it. It deliberately does NOT live inside ``list_skills()``
         — that method guarantees one stat per skill and runs on the hot path
@@ -2474,7 +2474,7 @@ class SkillsLoader:
         # silently drops every app-skill alias.
         roots = [self._dir, *self._extra_paths]
 
-        # A ledger key that no longer names a served skill: resolve it on disk and
+        # A ledger key that does not name a served skill: resolve it on disk and
         # fold it into whichever served key shares its file.
         for ledger_key in snapshot:
             if ledger_key in realpath_to_served.values():
@@ -4052,7 +4052,7 @@ class SkillsLoader:
         whose ``name`` / ``created_at`` / ``version`` lines are rewritten anyway.
 
         Returns ``None`` when the slug is unsafe, the candidate is missing or is
-        not an update, or its target is no longer a live auto-skill. Read-only:
+        not an update, or its target is not a live auto-skill. Read-only:
         never mutates the candidate or the live skill.
         """
         if not self._is_pending_slug_safe(slug):
@@ -4708,9 +4708,9 @@ class SkillsLoader:
         triggered = [name for name, _ in scored[: self._max_triggered]]
 
         # Emit ONE audit event for the matched + denied sets rather than one per
-        # skill. Previously this wrote a SEL entry for every skill (incl. every
-        # non-match) on every message — N synchronous writes per message that
-        # dominated the per-message cost. The security-relevant signals are which
+        # skill. A SEL entry per skill (incl. every non-match) on every message
+        # would be N synchronous writes that dominate the per-message cost.
+        # The security-relevant signals are which
         # skills were injected (permission grant) and which were excluded by a
         # negative trigger (permission deny); both are captured here. Skipped
         # entirely only when nothing triggered and nothing was denied (the
@@ -4722,7 +4722,7 @@ class SkillsLoader:
                 # Record HOW each match was delivered, not just that it matched.
                 # A pointer is an offer the agent may decline, so an auditor
                 # reconstructing "was this procedure actually in the prompt?"
-                # needs the split — the skill list alone no longer answers it.
+                # needs the split — the skill list alone does not answer it.
                 bodies, pointers = self.split_triggered(triggered, project_dir)
                 metadata["bodies"] = ",".join(bodies)
                 metadata["pointers"] = ",".join(pointers)
@@ -5268,12 +5268,12 @@ class SkillsLoader:
 
         Only a key at column 0 is a field. An indented ``key: value`` belongs to
         the enclosing block scalar — a description that documents a setting, for
-        instance — and reading it as the setting made the writer and the reader
-        disagree: ``set_inject_on_trigger`` deliberately leaves an indented
+        instance — and reading it as the setting would make the writer and the
+        reader disagree: ``set_inject_on_trigger`` deliberately leaves an indented
         occurrence alone (deleting it would rewrite the author's prose), so
-        honoring it here meant the opt-in could never take effect. Ignoring
+        honoring it here would keep the opt-in from ever taking effect. Ignoring
         indented lines also drops the junk keys a prose line like
-        ``  Steps: do x`` used to invent.
+        ``  Steps: do x`` would otherwise invent.
 
         A value that is a YAML block-scalar indicator (``>``, ``|``, with an
         optional chomping ``-``/``+``) is resolved from the indented lines that
@@ -5307,12 +5307,12 @@ class SkillsLoader:
         ``frontmatter._COLUMN0_BLOCK_RE`` — the ``column0_fence`` extraction
         that ``frontmatter.SKILL_LOADER`` binds to the skills surface: the
         closer is the first line after the opener that STARTS with ``---`` —
-        trailing text on the closer line is tolerated and consumed (#6182), and
+        trailing text on the closer line is tolerated and consumed, and
         an optional carriage return before each fence newline is tolerated the
         way the parser tolerates one. Anything
         the display parser reads as frontmatter must also be stripped here:
-        a stricter closer (the old ``---`` must-be-followed-by-newline
-        grammar) let a ``---junk`` or ``--- `` closer parse fields in the UI
+        a stricter closer (a ``---`` must-be-followed-by-newline
+        grammar) would let a ``---junk`` or ``--- `` closer parse fields in the UI
         while the whole block leaked to the model. Editing either grammar
         means revisiting the other.
         """

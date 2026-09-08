@@ -709,10 +709,9 @@ def cron_gate_budget(wake_budget: float) -> float:
 async def run_in_cron_gate_pool(func: Callable[..., _T], /, *args: Any, timeout: float) -> _T:
     """Run a cron fire-time gate on :func:`cron_gate_executor`, bounded both ways.
 
-    Two changes from awaiting ``run_in_executor`` directly, which is what the
-    gate sites used to do:
+    Two differences from awaiting ``run_in_executor`` directly:
 
-    * the gate no longer shares a pool with externally-paced inbound traffic, so
+    * the gate does not share a pool with externally-paced inbound traffic, so
       an inbound burst cannot put a FIFO backlog ahead of it; and
     * the wait is BOUNDED, raising :class:`CronQueueTimeout` when the gate never
       got a worker, which is the signal the callers translate into a

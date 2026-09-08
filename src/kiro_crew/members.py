@@ -832,7 +832,7 @@ def read_member_briefing(slug: str) -> str:
       alone is not enough, because the member's own directory
       (``members/<slug>/``) is agent-writable too, and swapping IT for a link
       redirects the whole traversal while the leaf open still finds an
-      ordinary file (the same ancestor-swap shape that closed #2446).
+      ordinary file (the same ancestor-swap shape the pinned walk exists to close).
       ``O_NONBLOCK`` makes a FIFO open return immediately instead of waiting
       for a writer (both at open time — no check-then-open race); ``fstat``
       then rejects anything that is not a regular file. Where the pinned walk

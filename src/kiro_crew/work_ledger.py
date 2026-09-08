@@ -6,9 +6,8 @@ Three ledgers now carry that name, and they are not interchangeable.
 module is the third: a record two parties write and neither owns, so that a
 conductor learns what a worker did as DATA instead of reading its transcript.
 
-Phase 1 of the conductor-work-ledger RFC (pull request #8842) — storage only.
-No MCP tool, no HTTP route, no UI, and deliberately no importer anywhere else in the
-tree, so the phase reverts by deleting this file and its test.
+Storage only: no MCP tool, no HTTP route, no UI, and deliberately no importer
+anywhere else in the tree, so it reverts by deleting this file and its test.
 
 WRITER OWNERSHIP is the whole design, and it is expressed as two entry points rather
 than one update function with a field allowlist:

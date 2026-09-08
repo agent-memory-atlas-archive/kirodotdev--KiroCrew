@@ -34,8 +34,8 @@ dispatch:
 * **KAS:** nothing is dispatched. KAS treats the ``/compact`` prompt as
   ordinary text and never answers it with a compaction status, so the
   gate declines (``compact_unsupported``) before the compaction task is
-  scheduled: an ungated dispatch stranded the wait for the full budget
-  while holding the semaphore and then recycled the session (#7812). KAS
+  scheduled: an ungated dispatch strands the wait for the full budget
+  while holding the semaphore and then recycles the session. KAS
   summarizes on its own initiative, the same way ``cc_managed`` leaves
   Claude-Code sessions to compact themselves.
 
@@ -591,8 +591,8 @@ _COMPACT_MIN_EFFECT_PCT_POINTS = 5.0
 # re-crosses the trigger threshold, and on the task runner the next prompt
 # itself may no longer fit. Such a session is reset — with its native resume
 # sid cleared, so the overflowed conversation is not reloaded — instead of
-# limping through compact/cooldown cycles. Promoted from the task runner's
-# post-compaction verification so every compaction caller gets it (#4686).
+# limping through compact/cooldown cycles. Every compaction caller gets this,
+# not just the task runner's post-compaction verification.
 # The escalation rides the verdict settle (not a raw re-read after compact())
 # because only a settled reading has passed the measurability rules — a raw
 # re-read can be unknown (kiro zeroes + flags stats) or stale (a backend that
@@ -781,7 +781,7 @@ def _provider_has_unfinished_turn(provider: LLMProvider) -> bool:
     already been ``session/cancel``'d but whose native turn-done ack has not yet
     arrived reports ``has_active_turn() is False`` yet still holds kiro-cli's
     native-session lock open; killing the process now reproduces the
-    empty-response-after-restart bug (#200). Reporting it as "unfinished" keeps
+    empty-response-after-restart bug. Reporting it as "unfinished" keeps
     it in the drain set so the ack is waited on before teardown.
 
     Same defensive guard as :func:`_provider_has_active_turn`: providers that
@@ -1637,9 +1637,9 @@ class SessionManager:
     def _sync_autocompact_pct(self) -> None:
         """Adopt a newly published compaction threshold, if one arrived.
 
-        The threshold is captured on ``_cfg`` when the gateway starts, so a
-        config write used to reach disk and stop there. Every successful
-        ``KiroCrewConfig.load`` now publishes it, and prompt assembly loads
+        The threshold is captured on ``_cfg`` when the gateway starts, so on its
+        own a config write would reach disk and stop there. Every successful
+        ``KiroCrewConfig.load`` publishes it, and prompt assembly loads
         config once per turn, so a write from ANY writer -- the dashboard PATCH
         handler or ``kirocrew config set`` -- is in force by the next context
         reading without a restart.

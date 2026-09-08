@@ -64,7 +64,7 @@ class SuggestionsCache:
 
     suggestions: list[str] = field(default_factory=lambda: list(_FALLBACK_SUGGESTIONS))
     generated_at: float = 0.0
-    # LoopBoundLock, not asyncio.Lock (#4800): the cache is stored on the
+    # LoopBoundLock, not asyncio.Lock: the cache is stored on the
     # long-lived DashboardState, which outlives any single event loop.
     _lock: LoopBoundLock = field(default_factory=LoopBoundLock, repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)  # type: ignore[type-arg]

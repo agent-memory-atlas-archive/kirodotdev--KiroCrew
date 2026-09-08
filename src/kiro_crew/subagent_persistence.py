@@ -429,9 +429,9 @@ def read_tombstone(agent_id: str) -> dict | None:
 #: (model provenance, CC-path model refinement, per-turn diagnostics -- each via
 #: ``asyncio.to_thread``), so two pool writers overlap during a run and a
 #: loop-side write executes while the run's coroutine is suspended inside a
-#: pool-side one (#6298). Cancellation widens it: cancelling a ``to_thread``
+#: pool-side one. Cancellation widens it: cancelling a ``to_thread``
 #: await DETACHES the worker rather than stopping it, so it finishes carrying a
-#: read that is already stale (#6308).
+#: read that is already stale.
 #:
 #: SCOPE -- ordinary ``update_state`` callers take the lock OFF-LOOP only.
 #: Serializing every loop-side write by waiting would block the event loop behind
@@ -439,7 +439,7 @@ def read_tombstone(agent_id: str) -> dict | None:
 #: instead probes the same per-agent lock non-blocking and returns RETRYABLE when
 #: busy; once acquired, its existing on-loop keep write cannot be overwritten by
 #: an older pool writer. Other on-loop callers keep their pre-existing unlocked
-#: behavior -- see :func:`update_state` for the remaining #6308 limitation.
+#: behavior -- see :func:`update_state` for the remaining limitation.
 #:
 #: The ordinary acquire is UNBOUNDED, and can be, because no on-loop caller reaches
 #: it: only pool workers block there, and their own read + fsync + rename already
@@ -572,18 +572,18 @@ def update_state(agent_id: str, **fields: object) -> bool:
     the current state could not be read (missing/corrupt/unreadable). The skip
     is deliberate -- fabricating a fresh state here would resurrect a record
     the reaper deleted -- but callers with a durability contract (the pre-spawn
-    provenance write, #5394) need to see the skip to retry rather than mistake
+    provenance write) need to see the skip to retry rather than mistake
     a silent no-op for success.
 
     The read / merge / rewrite is serialized per agent for OFF-LOOP callers (see
-    :data:`_STATE_LOCKS`), so two pool writers can no longer rewrite a snapshot
+    :data:`_STATE_LOCKS`), so two pool writers cannot rewrite a snapshot
     that predates the other's write.
 
     KNOWN LIMITATION: ordinary ON-LOOP callers do not take the lock, because waiting
     on a pool thread's fsync from the event loop is exactly the blocking call the
-    repo's anchor forbids. Every writer inside a run now goes off-loop through
-    ``_write_state_off_loop`` and is drained on cancellation (#6298 / #6308 /
-    #7302); an abandoned writer holds the conversation until it settles, so the
+    repo's anchor forbids. Every writer inside a run goes off-loop through
+    ``_write_state_off_loop`` and is drained on cancellation; an abandoned writer
+    holds the conversation until it settles, so the
     on-loop retention writes are deferred past it. Retention promotion adds a
     second defense: on the event loop it probes the same per-agent lock
     non-blocking and returns RETRYABLE on contention, while off-loop promotion
@@ -591,7 +591,7 @@ def update_state(agent_id: str, **fields: object) -> bool:
     roll back ``keep=True`` and no loop-side caller waits for a pool writer's
     fsync. The remaining on-loop callers are the synchronous retention writers;
     they still pay their own fsync on the loop, and moving that I/O while keeping
-    their ``SessionMap`` mutation on-loop is the rest of #7302.
+    their ``SessionMap`` mutation on-loop remains outstanding.
     """
     p = _agent_dir(agent_id) / "state.json"
     # Off-loop callers serialize; on-loop callers keep pre-existing behaviour.

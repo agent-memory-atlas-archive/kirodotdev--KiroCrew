@@ -13,10 +13,9 @@ each call so it can:
 * Scope per-session state (memory keys, file paths, audit records).
 * Enforce per-session authorization policies.
 
-Previously, the backend read this identity from the ``KIROCREW_SESSION_KEY``
-environment variable baked in at spawn time. That approach is incompatible
-with pooling because one backend would serve many sessions but see only the
-first session's env var.
+A ``KIROCREW_SESSION_KEY`` environment variable baked in at spawn time cannot
+carry this identity under pooling: one backend serves many sessions but sees
+only the first session's env var.
 
 DESIGN
 ------
@@ -112,7 +111,7 @@ CALLER_SCHEMA_VERSION = 1
 #: to a per-PROCESS namespace, which separates sessions exactly as far as the
 #: 1:1 shim topology makes them separate processes. On a POOLED backend one
 #: process serves N connections, so that fallback collapses every unnamed
-#: co-tenant onto one namespace (#5322).
+#: co-tenant onto one namespace.
 TENANT_META_KEY = "kirocrew.tenant"
 
 #: Schema version of the tenant block. Same additive rule as the caller block.
@@ -125,7 +124,7 @@ _TENANT_NONCE_BYTES = 8
 
 #: Process-lifetime cache of a RESOLVED ``from_env()`` identity. The env var
 #: and ancestor pidfile chain are immutable once present, so the walk need run
-#: at most once. It no longer forks ``ps`` per ancestor (``_parent_pid``
+#: at most once. The walk does not fork ``ps`` per ancestor (``_parent_pid``
 #: delegates to ``platform_compat.get_ppid``), but it is still a chain of file
 #: reads or syscalls on a hot path. Only a non-empty result is cached, so a
 #: warm-pool session claimed after the first call can still resolve once its
@@ -342,8 +341,8 @@ def new_tenant_nonce() -> str:
     Minted by the GATEWAY, never derived from anything the stub sends. A stub
     supplies its own ``stub_uuid`` on the Register frame, so deriving the nonce
     from that value would let one stub choose to land in another unnamed
-    co-tenant's namespace — re-creating #5322's collision deliberately instead of
-    by accident.
+    co-tenant's namespace — re-creating the unnamed-co-tenant collision
+    deliberately instead of by accident.
     """
     return secrets.token_hex(_TENANT_NONCE_BYTES)
 

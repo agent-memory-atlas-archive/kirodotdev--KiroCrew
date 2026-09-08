@@ -1232,7 +1232,7 @@ def _caller_header() -> dict[str, str]:
     ``run_mcp_stdio_loop``), and every loopback request from these helpers
     carries it so the gateway's audit log can attribute an internal write to
     the actual component instead of inferring "some internal caller" from the
-    secret's mere presence (#3503). Attribution only — the gateway
+    secret's mere presence. Attribution only — the gateway
     authenticates on ``X-Internal-Secret`` and validates this name against a
     known set before trusting it into an audit line. Processes that never
     declared an identity (CLI, tests) send no header rather than a guess.
@@ -1970,8 +1970,8 @@ def _call_tool_body(name: str, raw_args: dict[str, Any]) -> str:
     # Tag a directive tool's marker-less result as a refusal at the OUTERMOST
     # return, which is the only point that sees every way such a tool can
     # decline — argument validation runs inside the wrapper below, ahead of the
-    # handler, so a schema rejection never reaches code that could tag itself
-    # (#8635). Without the tag the consumer reads a decline as a LOST directive
+    # handler, so a schema rejection never reaches code that could tag itself.
+    # Without the tag the consumer reads a decline as a LOST directive
     # marker and fires a WARNING meant for a transport regression.
     return refuse_if_markerless(
         name,
@@ -2466,9 +2466,8 @@ def run_mcp_core_server() -> None:
         # Pooled-operation opt-in: kirocrew-core consumes the per-call
         # ``kirocrew.caller`` identity (see _resolve_session_key*), so it is
         # safe to share one backend across sessions. All four managed servers
-        # advertise today -- kirocrew-cron since #4622, kirocrew-computer and
-        # kirocrew-dashboard since #4659 -- and what advertising buys is the
-        # injected block, not co-tenancy: a backend that does NOT advertise is
+        # advertise, and what advertising buys is the injected block, not
+        # co-tenancy: a backend that does NOT advertise is
         # pooled all the same (nothing declines to pool one; see
         # ``rewriter.UNPOOLABLE_SERVERS``) and simply never receives an identity.
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,

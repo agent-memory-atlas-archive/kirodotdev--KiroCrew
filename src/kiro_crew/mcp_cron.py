@@ -233,7 +233,7 @@ _CRON_GLOB_META_RE = re.compile(r"\[[^]]*\]|[?*]")
 # can legitimately match one; it bounds fnmatch's superlinear pattern compile
 # on a hostile `cat ????...`.
 _CRON_MAX_GLOB_WORD = 256
-# Local variable assignments used to smuggle path fragments past the vet:
+# Local variable assignments can smuggle path fragments past the vet:
 # `A=.s; B=sh; cp ~/$A$B/id_rsa ...` — the vetter sees `~/` and `/id_rsa` as
 # separate tokens and misses the assembled `~/.ssh/id_rsa`.
 #
@@ -757,7 +757,7 @@ def _vet_shell_command(command: str) -> str | None:
     # sh also drops an escaping backslash during word expansion, so `~/.ss\h`
     # names `.ssh` while the literal text keeps the name split. Unescaping runs
     # AFTER unquoting: inside single quotes a backslash is literal, which the
-    # unquoted view no longer distinguishes, so this view over-approximates --
+    # unquoted view does not distinguish, so this view over-approximates --
     # a refusal on `'.ss\h'` is a false positive the vet accepts.
     resolved = _substitute_local_assignments(command)
     unquoted = _unquote(command)
@@ -830,11 +830,11 @@ def _vet_script_contents(text: str) -> str | None:
     Both read their subject with shell grammar -- tool-name globs like ``*git*push*``,
     separator-run collapse (in source a backslash run is an ESCAPE), newline-split
     pipeline stages under a fail-closed budget (every line of a script counted as a
-    stage, so ~512 lines was a permanent refusal), ordered-existence ``env | grep``
+    stage, so ~512 lines is a permanent refusal), ordered-existence ``env | grep``
     rules matching pieces hundreds of lines apart, and a ``find``-grammar parse of
-    English docstrings. Each produced a class of false denial on ordinary scripts
-    (#7912, #8563, #8643, #8812), each was closed by another layer of AST analysis in
-    ``security.py``, and the ~1500 lines that resulted still could not stop
+    English docstrings. Each produces a class of false denial on ordinary scripts,
+    each closeable only by another layer of AST analysis in
+    ``security.py``, and ~1500 lines of that still cannot stop
     ``open(os.environ["LOCALAPPDATA"] + r"\\kiro-cli\\config.json")``: static text
     analysis of a Turing-complete body cannot be the fence. The runtime control for
     what a script may OPEN is the sandbox ``run_script`` spawns it in (``wrap_argv``
@@ -1491,9 +1491,8 @@ def _job_kind(job: Any) -> str:
 def _render_cron_list_full(jobs: list[Any]) -> str:
     """Legacy (verbose) cron_list output — full message body per job.
 
-    This rendering MUST stay byte-for-byte identical to the pre-change
-    output so that ``verbose=true`` is regression-safe for existing
-    callers that parse this format.
+    This rendering MUST stay byte-for-byte stable so that ``verbose=true``
+    keeps working for existing callers that parse this format.
     """
     active = sum(1 for j in jobs if j.enabled)
     paused = len(jobs) - active
@@ -1746,8 +1745,7 @@ def _deny_channel_agent_cron(tool_name: str) -> str | None:
 #: A job with no recorded owner. Written by every creation path that has no
 #: session to name: ``kirocrew cron add`` from the CLI (``cli_commands``, which
 #: drives ``CronService`` directly and never routes through this server), the
-#: onboarding importer, and -- before this change -- ``cron_add`` on a pooled
-#: backend, which resolved no identity at all.
+#: onboarding importer.
 #:
 #: No MCP session may read or write one. "Nobody owns it" must not read as
 #: "anybody may have it": a job's ``message`` is arbitrary prompt text and its
@@ -1824,8 +1822,8 @@ def _not_found(job_id: str) -> str:
     to whoever asked -- a fluent, plausible answer that happens to be false, and one
     the caller cannot distinguish from a true one. Saying outright that this answer
     is not evidence of absence is the only place that inference can be intercepted.
-    The recovery command is named for the same reason: ``cron adopt`` shipped in
-    #4660 precisely to un-strand these rows, and a caller who never sees it named
+    The recovery command is named for the same reason: ``cron adopt`` exists
+    precisely to un-strand these rows, and a caller who never sees it named
     has no way to reach it from inside the product. It is phrased as something to
     ASK THE USER for, not to run: ``security.py``'s ``self-protection-cron-adopt``
     rule denies that command to the agent so a session cannot assign itself
@@ -1908,10 +1906,10 @@ def _check_cron_job_ownership(svc: "CronService", job_id: str) -> str | None:
     job = svc.get_job(job_id)
     if not job:
         # Same wording as both refusals below, and that is the point: this gate
-        # claims to be anti-enumeration, but it used to answer "Job not found"
-        # here and "Error: job not found" for another session's row -- two
-        # distinguishable strings, so a caller could tell an id that exists from
-        # one that does not. Post-gate messages may name the row freely: by then
+        # is anti-enumeration, so answering "Job not found" here and "Error: job
+        # not found" for another session's row would be two distinguishable
+        # strings, letting a caller tell an id that exists from one that does
+        # not. Post-gate messages may name the row freely: by then
         # the caller owns it.
         return _not_found(job_id)
     if job.session_key == _UNOWNED:
@@ -1933,10 +1931,10 @@ def _check_cron_job_ownership(svc: "CronService", job_id: str) -> str | None:
 #: The answer when rows exist but none are in the caller's scope, kept DISTINCT
 #: from the store-is-empty ``"No cron jobs."``.
 #:
-#: One string served both states until #6447, and a filtered result reading
-#: "nothing is scheduled" is actively misleading: an operator whose 15 jobs were
-#: all enabled and running on schedule read it and concluded this server was
-#: pointed at a different store. The scoping decision was legible only in the SEL
+#: One string for both states is actively misleading: a filtered result reading
+#: "nothing is scheduled" tells an operator whose 15 jobs are all enabled and
+#: running on schedule that this server is pointed at a different store. The
+#: scoping decision is otherwise legible only in the SEL
 #: row that records it (``kept=0 withheld=N``), and an audit log is the right
 #: place to keep that record, not the only place to explain it.
 #:
@@ -2214,7 +2212,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     return f"Error: invalid skip_date: {redact(str(d))!r} (expected YYYY-MM-DD)"
         thread_ts = (args.get("thread_ts") or "").strip() or None
         # Resolve EVERY first-save field before the single locked add_job() so
-        # the job is persisted fully-formed in one transaction (#391) -- no
+        # the job is persisted fully-formed in one transaction -- no
         # create-then-mutate + second unlocked _save() window that a crash or a
         # concurrent reader could capture as a job missing its agent_id/model.
         # Bool fields are enforced by validation.py CRON_ADD_SCHEMA (FieldSpec

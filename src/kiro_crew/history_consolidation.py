@@ -787,7 +787,7 @@ class HistoryConsolidator:
             # Structured memory extraction (when vector store is available)
             has_vector = self._vector_store is not None
             if has_vector and self._vector_store is not None:
-                # Offload: the fetch serializes on the store's _db_lock (#1947),
+                # Offload: the fetch serializes on the store's _db_lock,
                 # and this coroutine runs on the gateway event loop — a worker
                 # holding the lock (backfill's FAISS rebuild, reconcile's bulk
                 # UPDATEs) would otherwise block the whole loop here.
@@ -1840,9 +1840,8 @@ class HistoryConsolidator:
             # Eligible session ran the skill-gen prompt, but the model returned
             # no new-skill candidate. Emit a lightweight audit trail so
             # operators can distinguish "asked, model declined" from "never
-            # asked" — previously this branch left no SEL event or log line,
-            # making it impossible to tell from the audit log whether skill
-            # generation was ever attempted during a consolidation.
+            # asked" — with no event or log line here the audit log cannot show
+            # whether skill generation was attempted during a consolidation.
             self._logger.info(
                 "Auto-skill: model proposed no skill candidate for session %s",
                 key,

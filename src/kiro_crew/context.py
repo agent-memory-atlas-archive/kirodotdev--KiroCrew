@@ -1081,7 +1081,7 @@ _UI_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 #: detection tags, which never reach this field). A stored ``zh-cn`` or
 #: ``zh-TW`` therefore degrades to auto-detect in the SPA, and the backend must
 #: reach the same verdict or the two disagree about the active language —
-#: which is exactly the bug this set exists to prevent (#1130).
+#: which is exactly the bug this set exists to prevent.
 #:
 #: The dev-only ``en-XA`` pseudolocale is deliberately ABSENT: in a production
 #: build ``isRestorableLanguage()`` refuses to restore it (the chrome degrades
@@ -1104,7 +1104,7 @@ def normalize_ui_language_tag(value: object, *, source: str = "language") -> str
     itself, which is the only way the backend can learn an implicitly chosen
     language at all. Both clear the identical bar deliberately: the frontend
     admits a language through exactly one gate, and a second, laxer copy here
-    would let the two disagree about what the active language is (#1130).
+    would let the two disagree about what the active language is.
 
     Rejected as ``""``: a non-string, a blank, a value that is not tag-shaped
     (``_UI_LANGUAGE_TAG_RE``), and a shape-valid tag naming no shipped catalog
@@ -1150,7 +1150,7 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
     Those purposes persist in session history and are inherited by forked
     sessions, so the mismatch is durable. A non-catalog tag therefore takes the
     identical path to ``""``: inject nothing, and the model mirrors the
-    conversation instead (#1130).
+    conversation instead.
 
     ``""`` means "the backend does not know" — nothing was chosen (the
     "follow the browser" sentinel, resolved in the SPA's ``resolveLanguage()``),
@@ -1253,13 +1253,13 @@ def _load_steering_resources() -> str:
             return ""
         # The agents dir is user-writable and shared with other tools, so the
         # spec goes through the hardened agent-spec reader. ``safe_read_file``
-        # screened the resolved target but read it with an unbounded
+        # screens the resolved target but reads it with an unbounded
         # ``fh.read()`` -- the size cap guards ``safe_read_file_bytes``, the
-        # other helper -- and emitted no SEL event, so an oversized spec was
-        # still read whole here and a refusal was never audited. Every outcome
-        # the blanket ``except`` below used to absorb (PermissionError on a
-        # sensitive target, AttributeError on non-object JSON) now arrives as
-        # ``None`` and returns the same empty string, without the read.
+        # other helper -- and emits no SEL event, so it would read an oversized
+        # spec whole here and audit no refusal. Every outcome the blanket
+        # ``except`` below would absorb (PermissionError on a sensitive target,
+        # AttributeError on non-object JSON) arrives as ``None`` and returns
+        # the same empty string, without the read.
         from kiro_crew.agent_discovery import _read_agent_spec
 
         cfg = _read_agent_spec(
@@ -2788,9 +2788,9 @@ class ContextBuilder:
             ws_name = workspace or "default"
             ws_path = workspace_dir_for(ws_name)
             # Deliberately does NOT advertise scope="workspace" for lessons. That
-            # scope no longer reaches a prompt (see the lessons block above), so
+            # scope does not reach a prompt (see the lessons block above), so
             # telling the agent to use it would make it save corrections that
-            # silently never apply — the exact failure the unwire removes.
+            # silently never apply.
             parts.append(
                 "[WORKSPACE IDENTITY]\n"
                 f"You are operating in workspace: {ws_name}\n"
@@ -2997,13 +2997,11 @@ class ContextBuilder:
 
         # Lessons: injected for ALL agents (skipped for temporary sessions), gated
         # by the same project scope the skill loader applies. A lesson with no
-        # ``repo_scope`` applies everywhere, so this changes nothing for an
-        # existing store; a scoped one reaches only sessions whose active project
-        # is inside the named tree.
+        # ``repo_scope`` applies everywhere; a scoped one reaches only sessions
+        # whose active project is inside the named tree.
         #
-        # The legacy ``scope="workspace"`` tier is NOT merged here. It dates from
-        # when a workspace WAS a project, and its read was removed because a
-        # workspace no longer identifies one -- project identity lives on the
+        # The legacy ``scope="workspace"`` tier is NOT merged here: a workspace
+        # does not identify a project -- project identity lives on the
         # session (``slot.project``), which is what ``repo_scope`` keys on instead.
         #
         # ``LessonStore`` and ``get_lessons_for`` are intentionally left intact:

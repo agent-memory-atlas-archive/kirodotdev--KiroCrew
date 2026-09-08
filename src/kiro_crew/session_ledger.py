@@ -14,7 +14,7 @@ Layout (see docs/system-specs/modules/session-work-ledger.md):
         state.json      # the whole record, replaced atomically on every write
         .lock           # cross-process mutex inode (never replaced by writes)
 
-Design notes, each earned by a review finding:
+Design notes:
 
 - **One document, one atomic write.** State and its event land in the same
   ``atomic_write`` (temp file + rename), so a crash between "phase moved" and
@@ -453,7 +453,7 @@ def record(
         # ``_serialize_bounded`` evicted from THIS dict, so the caller's
         # post-write view is the document that just landed on disk. Do not
         # serialize a copy here: that would return the pre-eviction lists
-        # while disk held the evicted ones (#6290).
+        # while disk held the evicted ones.
         return state
 
 

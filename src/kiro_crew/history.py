@@ -194,7 +194,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "folder_id",
         "app",
         "artifact",
-        # Durable copy of the slot's held /note lines (issue #4093). Owned, not
+        # Durable copy of the slot's held /note lines. Owned, not
         # monotonic: the hold is written while notes are held and must be
         # CLEARED by absence once the flush delivers them — carried forward
         # instead, a restart would re-deliver a note the user already saw.
@@ -1016,7 +1016,7 @@ def metadata_now_iso() -> str:
     offset, so a reader (the browser, or a merge running on another host) has no
     way to know which timezone produced it -- the dashboard then renders it
     verbatim, showing a Slack/channel session's creation time in UTC instead of
-    the viewer's local zone (issue #1948). Resolving to an absolute instant with
+    the viewer's local zone. Resolving to an absolute instant with
     ``astimezone()`` records the offset, matching the message-row convention in
     :func:`monotonic_transcript_ts` so both the metadata line and the rows below
     it speak the same, unambiguous format.
@@ -1633,13 +1633,13 @@ class ConversationLog:
                     # Depth hit 0. ``platform_compat.release_lock`` (flock
                     # LOCK_UN) and ``os.close`` are both ``blocking: true``
                     # syscalls, so run them off the event loop — a wedged
-                    # descriptor must never freeze chat/WS/heartbeat (the
-                    # finding this addresses). We DO NOT pop the state here:
+                    # descriptor must never freeze chat/WS/heartbeat. We DO NOT
+                    # pop the state here:
                     # the entry stays alive with ``held``=1 so a sequential
                     # same-key re-acquire before the release runs reuses the
-                    # still-held flock instead of ``flock``-ing a fresh fd (the
-                    # regression that spuriously raised HistoryLockTimeout under
-                    # executor load). The deferred release re-checks depth and
+                    # still-held flock instead of ``flock``-ing a fresh fd, which
+                    # would spuriously raise HistoryLockTimeout under executor
+                    # load. The deferred release re-checks depth and
                     # its own fd under the guard, so a reuse cancels it.
                     self._schedule_flock_release(key, lock_key, state[0])
 
@@ -1987,7 +1987,7 @@ class ConversationLog:
                 # created provably holds no rows yet, so it is not consulted.
                 #
                 # ``astimezone()`` resolves the clock to an absolute instant
-                # before it is stored. This used to record a bare local wall
+                # before it is stored. A bare local wall
                 # clock, which repeats for an hour when daylight saving ends and
                 # cannot be ordered against the offset-aware rows the dashboard
                 # writes into this same file.

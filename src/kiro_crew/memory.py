@@ -189,10 +189,10 @@ class MemoryStore:
         Windows; on Windows the workspace's ancestor chain is walked too,
         while POSIX ancestors are deliberately excluded — see the read gate).
 
-        The write surface previously accumulated point defenses (hardened
-        temp files, symlink-safe lock opens) while each writer still trusted
-        the directories themselves, so a linked ``memory/`` or ``history/``
-        directory routed staging and replacement outside the workspace. One
+        Point defenses alone (hardened temp files, symlink-safe lock opens)
+        leave each writer trusting the directories themselves, so a linked
+        ``memory/`` or ``history/`` directory routes staging and replacement
+        outside the workspace. One
         gate at every writer entry makes that whole class unreachable
         instead of patching instances. Writers must fail LOUD, not silently
         no-op, so this raises where the read gate returns ``False`` (a
@@ -297,10 +297,10 @@ class MemoryStore:
         """Write user preferences and update FTS index.
 
         Serialized behind the same advisory ``file_lock`` mechanism
-        :meth:`append_history` uses: now that async callers offload these
-        writes to worker threads, a dashboard Save and a consolidation pass
-        can run concurrently (the event loop no longer accidentally
-        serializes them), and without the lock two whole-file atomic writes
+        :meth:`append_history` uses: async callers offload these
+        writes to worker threads, so a dashboard Save and a consolidation pass
+        can run concurrently (the event loop does not accidentally
+        serialize them), and without the lock two whole-file atomic writes
         of independently-read snapshots would silently last-writer-win.
 
         ``expected_baseline`` is the compare-and-swap guard for the

@@ -12254,6 +12254,8 @@
       "view_last_result": "Visualizza l'ultimo risultato",
       "writes_badge_tooltip": "Il job di questo modello pubblica branch, apre PR o modifica issue. Le sue protezioni sono istruzioni per l’agente, non una policy applicata dal sistema.",
       "writes_notice": "Il job di questo modello pubblica branch, apre PR o modifica issue nei tuoi repository. I limiti indicati nel prompt (per esempio “non pubblicare mai sul branch predefinito”) sono istruzioni per l’agente, non una policy applicata dal sistema — rivedi il prompt prima di salvare.",
+      "template_updated_notice": "Il modello {{name}} \u00e8 cambiato da quando hai salvato questo job. Il tuo messaggio qui sotto \u00e8 invariato: rivedi il messaggio aggiornato del modello se vuoi adottarlo.",
+      "template_updated_dismiss": "Ignora",
       "writes_to_your_repos": "Scrive nei tuoi repository",
       "script_source": "Codice sorgente dello script",
       "script_source_download": "Scarica script",

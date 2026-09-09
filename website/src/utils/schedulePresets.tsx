@@ -25,6 +25,24 @@ export interface CronPrefill {
    * prompts deliver positive findings via send_message instead.
    */
   silent?: boolean
+  /**
+   * The preset id this prefill came from, threaded to the create body as
+   * `source_preset` so the saved job records which template seeded it. Set by
+   * `SchedulePage.openPreset` from the clicked `SchedulePreset.id`; absent for
+   * a blank create. Provenance only -- never affects scheduling or execution.
+   */
+  sourcePreset?: string
+  /**
+   * The template's prompt in the CANONICAL (English) locale at the moment the
+   * preset was picked, threaded to the create body as `source_template_prompt`.
+   * This is the SNAPSHOT the Schedule page compares against the template's
+   * current canonical prompt to detect that the TEMPLATE moved. Captured via
+   * `presetCanonicalPrompt` (not `prefill.message`) so the operand is
+   * locale-stable: a user editing the Message field, switching languages, or a
+   * translation-only catalog edit does not change it -- only an edit to the
+   * English source does, which is what a genuine template-prompt fix touches.
+   */
+  sourceTemplatePrompt?: string
 }
 
 export interface SchedulePreset {
@@ -382,3 +400,54 @@ export const SCHEDULE_PRESETS: SchedulePreset[] = [
     },
   },
 ]
+
+/**
+ * The canonical (locale-stable) rendering of a preset's prompt: the English
+ * source, resolved through i18next with an explicit `lng`. Provenance must
+ * compare a locale-STABLE operand -- `prefill.message` renders in the viewer's
+ * current language, so snapshotting it in one locale and comparing against
+ * another (a language switch, or a translation-only edit to a non-source
+ * locale) would report a change the TEMPLATE never made. Pinning both the
+ * snapshot and the comparison to English means only an edit to the English
+ * source -- what a genuine template-prompt fix touches -- moves the value.
+ *
+ * The key is derived from the preset id (`<id-with-underscores>_message`),
+ * which is exactly how the catalog names it, so no per-preset key field is
+ * needed. Returns "" for an id with no such key.
+ */
+export function presetCanonicalPrompt(id: string): string {
+  if (!id) return ''
+  return i18nT(`utils.schedulePresets.${id.replace(/-/g, '_')}_message`, { lng: 'en' })
+}
+
+/**
+ * Whether a saved job's SOURCE TEMPLATE has changed since the job was saved --
+ * and, if so, the preset title and its current prompt so the notice can name
+ * its subject.
+ *
+ * Attribution is the whole point. A job carries the template's prompt as it was
+ * at save time (`source_template_prompt`, captured via `presetCanonicalPrompt`).
+ * We compare THAT snapshot against the template's current canonical prompt. A
+ * snapshot fixes one operand at save time, so a difference is attributable to
+ * the TEMPLATE moving -- a compare against the job's live message is symmetric
+ * and conflates a moved template with a user editing their own copy. Both
+ * operands are the English source, so the comparison is also locale-stable: a
+ * language switch or a translation-only edit does not move it.
+ *
+ * Returns `null` (no hint) when: the job carries no `source_preset` (blank or
+ * non-dashboard create), the id no longer matches a shipped preset (retired
+ * template -- nothing to compare against), or the snapshot equals the current
+ * canonical prompt (template unchanged). The displayed `currentPrompt` is the
+ * viewer's-locale rendering (what an update would deliver); only the CHANGE
+ * DETECTION uses the canonical operand.
+ */
+export function templateUpdate(
+  job: { source_preset?: string | null; source_template_prompt?: string | null },
+): { title: string; currentPrompt: string } | null {
+  const id = job.source_preset
+  if (!id) return null
+  const preset = SCHEDULE_PRESETS.find(p => p.id === id)
+  if (!preset) return null
+  if (presetCanonicalPrompt(id) === (job.source_template_prompt ?? '')) return null
+  return { title: preset.title, currentPrompt: preset.prefill.message }
+}

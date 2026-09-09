@@ -12254,6 +12254,8 @@
       "view_last_result": "Ver el último resultado",
       "writes_badge_tooltip": "El trabajo de esta plantilla sube ramas, abre PR o edita issues. Sus límites son instrucciones para el agente, no una política aplicada.",
       "writes_notice": "El trabajo de esta plantilla sube ramas, abre PR o edita issues en tus repositorios. Los límites del prompt (por ejemplo, «nunca subas cambios a la rama por defecto») son instrucciones para el agente, no una política aplicada — revisa el prompt antes de guardar.",
+      "template_updated_notice": "La plantilla {{name}} ha cambiado desde que guardaste este trabajo. Tu mensaje de abajo no ha cambiado: revisa el mensaje actualizado de la plantilla si quieres adoptarlo.",
+      "template_updated_dismiss": "Descartar",
       "writes_to_your_repos": "Escribe en tus repositorios",
       "script_source": "Código fuente del script",
       "script_source_download": "Descargar script",

@@ -12083,6 +12083,8 @@
       "view_last_result": "Letztes Ergebnis ansehen",
       "writes_badge_tooltip": "Der Job dieser Vorlage pusht Branches, öffnet PRs oder bearbeitet Issues. Ihre Schutzmaßnahmen sind Anweisungen an den Agenten, keine erzwungene Richtlinie.",
       "writes_notice": "Der Job dieser Vorlage pusht Branches, öffnet PRs oder bearbeitet Issues in Ihren Repos. Die Grenzen im Prompt (zum Beispiel „niemals auf den Standardbranch pushen“) sind Anweisungen an den Agenten, keine erzwungene Richtlinie — prüfen Sie den Prompt, bevor Sie speichern.",
+      "template_updated_notice": "Die Vorlage {{name}} hat sich ge\u00e4ndert, seit Sie diesen Job gespeichert haben. Ihre Nachricht unten ist unver\u00e4ndert \u2014 pr\u00fcfen Sie die aktualisierte Vorlagennachricht, wenn Sie sie \u00fcbernehmen m\u00f6chten.",
+      "template_updated_dismiss": "Schlie\u00dfen",
       "writes_to_your_repos": "Schreibt in Ihre Repos",
       "script_source": "Skript-Quellcode",
       "script_source_download": "Skript herunterladen",

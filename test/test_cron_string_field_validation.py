@@ -27,7 +27,12 @@ from kiro_crew.cron import (
     CronJob,
     CronService,
 )
-from kiro_crew.validation import CHANNEL_MAX_LEN, CRON_ADD_SCHEMA, MAX_SHORT_STRING
+from kiro_crew.validation import (
+    CHANNEL_MAX_LEN,
+    CRON_ADD_SCHEMA,
+    MAX_CRON_MESSAGE,
+    MAX_SHORT_STRING,
+)
 
 # Derived from the table (its single source of truth) — the set the anti-drift
 # test checks CronJob's fields against.
@@ -263,20 +268,33 @@ class TestCapAlignment:
         "created_by",
         "session_key",
         "folder_id",
+        # Dashboard-only provenance: only the Schedule-page template gallery
+        # can stamp it, so it is accepted on POST /api/crons but has no
+        # CRON_ADD_SCHEMA (MCP) entry. General ID cap applies.
+        "source_preset",
+        # Dashboard-only prompt snapshot (message-sized cap), same reasoning:
+        # written by the create handler, no CRON_ADD_SCHEMA entry.
+        "source_template_prompt",
         # Secret-grant pins and the requesting session key are written only by
         # the grant endpoint / cron_secret_request tool, never via
         # CRON_ADD_SCHEMA (grants cannot be created through cron_add).
         "secret_env_pin",
         "secret_env_pending_pin",
     }
+    # A no-schema field defaults to MAX_SHORT_STRING (the general ID cap).
+    # Override here for the rare no-schema field that is legitimately a
+    # different size: source_template_prompt snapshots a template's PROMPT, so
+    # it mirrors the message cap, not the ID cap.
+    _NO_SCHEMA_CAPS = {"source_template_prompt": MAX_CRON_MESSAGE}
 
     def test_table_caps_match_cron_add_schema(self):
         schema_caps = {spec.name: spec.max_len for spec in CRON_ADD_SCHEMA.fields}
         for field_name, cap in _CRON_STRING_FIELD_CAPS:
             if field_name in self._NO_SCHEMA_FIELDS:
-                assert cap == MAX_SHORT_STRING, (
+                expected = self._NO_SCHEMA_CAPS.get(field_name, MAX_SHORT_STRING)
+                assert cap == expected, (
                     f"{field_name} has no boundary schema entry and must use "
-                    f"MAX_SHORT_STRING, got {cap}"
+                    f"{expected}, got {cap}"
                 )
                 continue
             schema_name = self._SCHEMA_NAME_MAP.get(field_name, field_name)

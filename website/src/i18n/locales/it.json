@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "Il server ha accettato la richiesta, ma la risposta non è stata leggibile.",
       "paste_token_url_or_raw_token": "Incolla l'URL del token o il token grezzo…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
       "session_expired": "Sessione scaduta.",
@@ -123,10 +124,9 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "L'agente è al lavoro...",
+      "app_not_allowed_to_send": "Questa app non è autorizzata a inviare messaggi di chat.",
       "chat_message": "Messaggio di chat",
       "message": "Messaggio...",
-      "send": "Invia",
-      "send_message": "Invia il messaggio",
       "session_ready_type_a_message_to_start": "Sessione pronta. Digita un messaggio per iniziare.",
       "streaming": "streaming"
     },
@@ -5795,6 +5795,7 @@
       "screenshot": "Screenshot",
       "select_project": "Seleziona il progetto",
       "send": "Invia",
+      "sending": "Invio in corso…",
       "send_options": "Opzioni di invio",
       "show_in_chat": "Mostra nella chat",
       "show_pending_tool_call_in_chat": "Mostra nella chat la chiamata allo strumento in attesa",
@@ -9926,7 +9927,8 @@
       "could_not_generate_title": "Impossibile generare un titolo",
       "could_not_open_side_chat": "Impossibile aprire la chat laterale",
       "side_command_not_run": "Il comando /side non è stato eseguito. Il tuo messaggio è ancora nel campo di scrittura.",
-      "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale"
+      "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale",
+      "delivery_unconfirmed_option": "Consegna non confermata: controlla la conversazione e, se manca, scegli di nuovo l'opzione."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

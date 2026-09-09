@@ -1,6 +1,7 @@
 {
   "api": {
     "client": {
+      "accepted_body_unreadable": "O servidor aceitou a solicitação, mas a resposta não pôde ser lida.",
       "paste_token_url_or_raw_token": "Cole a URL do token ou o token bruto…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limite de taxa aplicado pela borda do túnel (HTTP 429) — muitas solicitações em rajada. O painel repete a tentativa automaticamente; se isso persistir, aguarde alguns segundos e recarregue.",
       "session_expired": "Sessão expirada.",
@@ -123,10 +124,9 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "O agente está trabalhando...",
+      "app_not_allowed_to_send": "Este aplicativo não tem permissão para enviar mensagens de chat.",
       "chat_message": "Mensagem do chat",
       "message": "Mensagem...",
-      "send": "Enviar",
-      "send_message": "Enviar mensagem",
       "session_ready_type_a_message_to_start": "Sessão pronta. Digite uma mensagem para começar.",
       "streaming": "em streaming"
     },
@@ -5795,6 +5795,7 @@
       "screenshot": "Captura de tela",
       "select_project": "Selecionar projeto",
       "send": "Enviar",
+      "sending": "Enviando…",
       "send_options": "Opções de envio",
       "show_in_chat": "Mostrar no chat",
       "show_pending_tool_call_in_chat": "Mostrar chamada de ferramenta pendente no chat",
@@ -9926,7 +9927,8 @@
       "could_not_generate_title": "Não foi possível gerar um título",
       "could_not_open_side_chat": "Não foi possível abrir o chat lateral",
       "side_command_not_run": "O comando /side não foi executado. Sua mensagem continua no editor.",
-      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral"
+      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral",
+      "delivery_unconfirmed_option": "Entrega não confirmada — verifique a conversa e, se estiver faltando, escolha a opção novamente."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

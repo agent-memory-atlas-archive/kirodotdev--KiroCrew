@@ -8,6 +8,12 @@
  * This module lives inside the KiroCrew frontend for now. When we publish
  * it as a standalone package, apps will `import { useAppApi } from '@kirocrew/app-sdk'`
  * and the import map will resolve it to the host's vendored copy.
+ *
+ * Publish-plan note: `ChatEmbed` renders the host's native ChatInput, whose
+ * subtree reads slot state from the dashboard Redux store. It therefore
+ * requires mounting inside the host document (as every in-tree app does) and
+ * is not a store-free component -- a standalone publish either ships it as
+ * host-only or gives the composer a store-free seam first.
  */
 import {
   createContext,
@@ -18,6 +24,8 @@ import {
   type ReactNode,
 } from 'react'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
+import { AcceptedBodyUnreadable } from '../api/apiError'
+import { AppApiError, AppApiPermissionError } from './apiError'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -403,7 +411,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     const normalized = parsed.pathname
     const allowed = allowedPaths.some(p => normalized === p || normalized.startsWith(p.endsWith('/') ? p : p + '/'))
     if (!allowed) {
-      throw new Error(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
+      throw new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
     }
     return normalized + parsed.search
   }
@@ -429,7 +437,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
       // iframe copy of this SDK — detection is a no-op and the throw below is
       // unchanged either way.
       noteStaleOwnerResponse(res.status, text)
-      throw new Error(`API ${res.status}: ${text}`)
+      throw new AppApiError(res.status, text)
     }
     // An empty-body response is not JSON — res.json() would throw a SyntaxError
     // (e.g. a 204 No Content on DELETE, or a 200 with an empty body and no
@@ -439,11 +447,24 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     if (res.status === 204 || res.status === 205) {
       return undefined as T
     }
-    const text = await res.text()
+    // Past this point the server has ACCEPTED the request; a body that cannot
+    // be read (stream cut) or parsed is a lost receipt, not a failed request.
+    // Tag it so a send path can tell it from a request that never left (which
+    // `fetch` also reports as a `TypeError`) and not offer a duplicate retry.
+    let text: string
+    try {
+      text = await res.text()
+    } catch (e) {
+      throw new AcceptedBodyUnreadable(e)
+    }
     if (text.trim() === '') {
       return undefined as T
     }
-    return JSON.parse(text) as T
+    try {
+      return JSON.parse(text) as T
+    } catch (e) {
+      throw new AcceptedBodyUnreadable(e)
+    }
   }
 
   return {

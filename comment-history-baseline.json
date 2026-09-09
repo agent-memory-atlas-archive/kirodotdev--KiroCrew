@@ -1,6 +1,6 @@
 {
   "_comment": "Comments and docstrings that narrate change history, per file, as a match COUNT. The rule they break is in docs/system-specs/common/code-style.md (\"Comments explain the WHY\"); it predates any enforcement, so the tree is recorded here rather than rewritten in one pass. The gate requires every OTHER file to be clean and none of these counts to grow, so this list can only shrink. Do NOT add or raise an entry to make a red gate green: a new offender means the comment should state CURRENT behavior in present tense. Lower and prune with `python3 scripts/check_comment_history.py --write-baseline`, which never adds or raises one.",
-  "_total": 6970,
+  "_total": 6938,
   "files": {
     "src/kiro_crew/__main__.py": 1,
     "src/kiro_crew/acp/_dispatch.py": 8,
@@ -278,7 +278,6 @@
     "src/kiro_crew/context.py": 11,
     "src/kiro_crew/context_blocks.py": 1,
     "src/kiro_crew/context_management.py": 3,
-    "src/kiro_crew/crew_chat.py": 8,
     "src/kiro_crew/cron.py": 6,
     "src/kiro_crew/cron_inflight.py": 1,
     "src/kiro_crew/cron_script.py": 7,
@@ -887,10 +886,6 @@
     "test/test_crash_guard.py": 2,
     "test/test_credential_patterns.py": 1,
     "test/test_credential_prefilter.py": 2,
-    "test/test_crew_chat.py": 16,
-    "test/test_crew_http.py": 2,
-    "test/test_crew_store_read_retry.py": 3,
-    "test/test_crew_store_write_retry.py": 3,
     "test/test_cron.py": 7,
     "test/test_cron_adopt_ownerless.py": 1,
     "test/test_cron_arbiter_items.py": 1,

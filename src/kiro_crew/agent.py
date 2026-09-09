@@ -75,6 +75,7 @@ from kiro_crew.config.paths import (
     ambient_agents_dir,
     isolated_agents_dir,
     kiro_agents_dir,
+    shared_kiro_agents_writable,
 )
 from kiro_crew.env import (
     MCP_PATH_HINT,
@@ -653,6 +654,8 @@ def _managed_mcp_env() -> dict[str, str]:
 
     Pins ``KIROCREW_HOME`` when the gateway is running under an override, because
     a child process does NOT inherit it: the spec's ``env`` is the only channel.
+    That pin doubles as the spec's write provenance — see
+    :func:`_existing_specs_are_mine`.
     Without this the gateway and its own stdio shims read DIFFERENT data homes,
     which is silent and self-contradictory rather than merely wrong —
     ``computer_use.json`` is written to the override home by Settings while
@@ -3409,6 +3412,73 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
     return spec_path, str(previous)
 
 
+def _existing_specs_are_mine(target: Path, own_home: Path | None) -> bool | None:
+    """Do the owned specs already in *target* record THIS instance as writer?
+
+    The specs carry their own provenance: ``rebuild_agent_config`` pins the
+    writing instance's ``KIROCREW_HOME`` into every managed server entry
+    (``_managed_mcp_env``), and a default-home writer pins nothing. Reading
+    that back is what lets the shared-home guard refuse FOREIGN specs instead
+    of ALL specs — a self-pinned spec is this instance's own, so its later
+    rebuilds keep refreshing it rather than locking themselves out.
+
+    Only entries named in ``_MANAGED_MCP_SERVERS`` are consulted — custom
+    entries flow in from user configuration and cannot vouch — and EVERY
+    managed entry present must record *own_home*: the writer pins them all in
+    one rebuild, so a spec whose managed entries disagree (one pinned here,
+    one pinned elsewhere or not at all) was not written whole by this
+    instance and is foreign. A spec with no managed entry at all (the lite
+    and knowledge agents) carries no signature and is neutral rather than
+    foreign, so a complete self-written set reads back as its writer's.
+
+    Returns ``None`` when no owned spec exists (nothing to preserve — a fresh
+    write is safe), ``True`` when the specs that carry a signature all record
+    *own_home*, and ``False`` otherwise — including unreadable or malformed
+    specs, recorded values that cannot resolve as a path, and a set where
+    only neutral siblings survive (ownership unknowable). Every ``False``
+    shape refuses, the conservative direction the capped reader already
+    takes for anything it cannot parse.
+    """
+    found = False
+    signals = 0
+    for name in OWNED_KIRO_AGENT_FILES:
+        spec_path = target / name
+        if not spec_path.exists():
+            continue
+        found = True
+        if own_home is None:
+            return False
+        data = _read_spec_capped(spec_path)
+        if not isinstance(data, dict):
+            return False
+        servers = data.get("mcpServers")
+        has_managed_entry = False
+        if isinstance(servers, dict):
+            for server_name in _MANAGED_MCP_SERVERS:
+                server_spec = servers.get(server_name)
+                if not isinstance(server_spec, dict):
+                    continue
+                has_managed_entry = True
+                env = server_spec.get("env")
+                recorded = env.get("KIROCREW_HOME") if isinstance(env, dict) else None
+                if not isinstance(recorded, str):
+                    return False
+                try:
+                    if Path(recorded).expanduser().resolve() != own_home:
+                        return False
+                except (OSError, RuntimeError, ValueError):
+                    # The recorded value is spec content, not trusted input: a
+                    # NUL byte raises ValueError, a bare "~unknown" RuntimeError.
+                    # A provenance read must refuse on garbage, never abort
+                    # agent setup.
+                    return False
+        if has_managed_entry:
+            signals += 1
+    if not found:
+        return None
+    return signals > 0
+
+
 def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     """Return the spec path to report, WITHOUT writing, when this instance must
     not own the shared agent home; ``None`` when writing is safe.
@@ -3430,7 +3500,10 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
 
     The predicate is deliberately **"is the target shared, and am I ephemeral"** —
     NOT "am I in a worktree", and NOT "is the target the hard-coded
-    ``~/.kiro/agents``". Two bypasses of those narrower forms are closed here:
+    ``~/.kiro/agents``". A second, independent arm refuses the shared target from
+    any instance whose data home is not the default one, ephemeral or durable
+    (:func:`shared_kiro_agents_writable`) — see the inline comment at that
+    arm. Two bypasses of those narrower forms are closed here:
 
     * A **pod running from the primary checkout** is not in a linked worktree at
       all, yet ``pod down`` deletes its home and checkout venv, so it still leaves
@@ -3481,6 +3554,65 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
         # specs this guard protects. A different KIRO_HOME layout is refused
         # rather than guessed; the warning below names the supported path.
         return None
+
+    # A non-default data home refuses the SHARED write when the specs already
+    # there belong to SOMEONE ELSE. The spec this write would produce pins THIS
+    # instance's ``KIROCREW_HOME`` into every managed server entry
+    # (``_managed_mcp_env``), and on the shared target that value is wrong for
+    # every default-home instance under this ``$HOME``: their stubs then
+    # resolve ``config_dir()`` to a home the real gateway never writes, and
+    # every strict-identity tool fails closed with "signed pid mapping did not
+    # verify". Durability is no defence — the reported writer was a durable
+    # checkout, not a worktree or a temp clone, so the ephemerality arms below
+    # never saw it.
+    #
+    # Ownership is read from the specs themselves (:func:`_existing_specs_are_mine`)
+    # rather than inferred from mere existence, and that single invariant is
+    # what keeps every population correct at once: a fresh relocated-home
+    # install writes (no spec, no audience to poison — refusing would leave it
+    # with no spec at all, the health check suppressed by this same guard, and
+    # every turn dying at ``Mode 'kirocrew' not found``); an install that wrote
+    # its own self-pinned specs keeps refreshing them (its own provenance
+    # matches, so it cannot lock itself out); and specs pinned by a DIFFERENT
+    # home — or pinned by nobody, the default-home writer's signature — refuse,
+    # which is the reported poisoning shape. A concurrent FIRST boot of a
+    # default- and an override-home gateway can still interleave (both read
+    # "no spec"), but the wrong-owner state now CONVERGES instead of holding:
+    # the default-home instance rewrites unconditionally on its next rebuild,
+    # and this arm then reads that provenance and refuses from that point on.
+    # This does not resurrect the offline-E2E regression recorded below: the
+    # harness points ``KIRO_HOME`` at its own home, so its target is private
+    # and exempted above, and an override that resolves to the default home
+    # still writes (see :func:`shared_kiro_agents_writable`).
+    if not shared_kiro_agents_writable() and _existing_specs_are_mine(target, own_home) is False:
+        if audit:
+            logger.warning(
+                "Refusing to rewrite the shared agent home %s from a non-default "
+                "data home (KIROCREW_HOME=%s%s): the specs would pin this "
+                "instance's home into every managed MCP server entry and break "
+                "strict session identity for the default-home gateway (#9690). "
+                "This instance will use the existing specs instead. If no "
+                "default-home install exists anymore (the data home was "
+                "permanently relocated), the existing specs are stale leftovers: "
+                "remove the kirocrew*.json files under %s and restart, and this "
+                "instance will write its own.",
+                target,
+                own_home or "",
+                " with KIROCREW_POD" if os.environ.get("KIROCREW_POD") else "",
+                target,
+            )
+            sel().log_api_access(
+                caller="system",
+                operation="agent_home_write",
+                outcome="denied",
+                source="rebuild_agent_config",
+                resources=str(target),
+                error=(
+                    f"non-default data home {own_home or 'pod'} refused write to "
+                    f"shared agent home"
+                ),
+            )
+        return kiro_agents_dir_path() / AGENT_FILENAME
 
     # Ephemerality must be POSITIVE evidence that this instance is throwaway.
     # "Has an isolated KIROCREW_HOME" is NOT that: a CI test gateway and a user
@@ -3909,6 +4041,11 @@ def _reconcile_tool_aliases_from_disk(path: Path, config: dict) -> bool:
 #: for equality only, per ``governance_generation``'s contract.
 _projected_ceiling_generation: int | None = None
 
+#: Generation the pending-projection warning last fired for, so a projection a
+#: declined instance cannot apply is reported once per ceiling move rather than
+#: on every confirming poll.
+_pending_projection_warned_generation: int | None = None
+
 
 def prime_ceiling_projection() -> None:
     """Record the ceiling generation boot projected the agent config under.
@@ -3963,6 +4100,36 @@ def reproject_for_ceiling_change() -> None:
 
     generation = governance_generation()
     if _projected_ceiling_generation == generation:
+        return
+    if _decline_shared_agent_home(audit=False) is not None:
+        # The shared specs are not this instance's to rewrite, so the moved
+        # ceiling CANNOT be projected from here — and the memo must say so.
+        # ``rebuild_agent_config`` reports a refusal by RETURNING the spec path
+        # rather than raising, so advancing the memo after that return would
+        # mark the generation synchronised while the on-disk ``allowedTools``
+        # were never narrowed, silently auto-approving tools the ceiling now
+        # forbids (the harness short-circuits them before PreToolUse). Leaving
+        # the memo behind keeps the advance-only-after-success rule literal
+        # for refusals: every later poll re-checks (this probe is silent —
+        # ``audit=False`` — and cheap, so retrying does not spam the audit
+        # trail the way re-entering the rebuild would), and the pending
+        # generation is projected the moment the refusal clears instead of
+        # being lost for the process lifetime.
+        #
+        # The pending state is the security-relevant half of the refusal, so it
+        # logs at WARNING — the same tier as the decline itself — but once per
+        # generation rather than per confirming poll, which fires every refresh
+        # interval.
+        global _pending_projection_warned_generation
+        if _pending_projection_warned_generation != generation:
+            _pending_projection_warned_generation = generation
+            logger.warning(
+                "ceiling generation %s is pending: this instance may not rewrite "
+                "the shared agent home, so its on-disk auto-approvals still "
+                "reflect the previous ceiling until the owning instance projects "
+                "the new one (or this instance's refusal clears)",
+                generation,
+            )
         return
     logger.info("the governance ceiling moved; re-deriving the agent config's auto-approvals")
     rebuild_agent_config()

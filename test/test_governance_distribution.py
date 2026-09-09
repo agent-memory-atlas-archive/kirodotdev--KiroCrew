@@ -3148,6 +3148,48 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
         agent_mod.reproject_for_ceiling_change()
         assert len(attempts) == 2
 
+    def test_a_declined_shared_home_holds_the_memo(self, monkeypatch, install_ceiling):
+        """A REFUSED rebuild is not a successful one, and the memo must not say it was.
+
+        ``rebuild_agent_config`` reports the shared-home refusal by RETURNING the
+        spec path rather than raising, so without this arm the hook would mark
+        the moved generation synchronised while the on-disk ``allowedTools``
+        were never narrowed — stale entries then auto-approve tools the ceiling
+        forbids, short-circuiting inside the harness before PreToolUse. The
+        projection must instead stay pending and apply the moment the refusal
+        clears.
+        """
+        from kiro_crew import agent as agent_mod
+
+        rebuilds: list[int] = []
+        monkeypatch.setattr(agent_mod, "rebuild_agent_config", lambda **kw: rebuilds.append(1))
+        monkeypatch.setattr(agent_mod, "_projected_ceiling_generation", None, raising=False)
+        declined = {"value": True}
+        monkeypatch.setattr(
+            agent_mod,
+            "_decline_shared_agent_home",
+            lambda *, audit=True: (
+                Path("/shared/agents/kirocrew.json") if declined["value"] else None
+            ),
+        )
+        agent_mod.prime_ceiling_projection()
+        install_ceiling(governance.parse_policy(_doc("tightened")))
+
+        # While declined: no rebuild is attempted and the memo stays behind.
+        agent_mod.reproject_for_ceiling_change()
+        agent_mod.reproject_for_ceiling_change()
+        assert rebuilds == [], "a declined instance must not attempt the shared rewrite"
+
+        # The refusal clears (e.g. the stale shared spec was removed): the
+        # pending generation is projected rather than lost.
+        declined["value"] = False
+        agent_mod.reproject_for_ceiling_change()
+        assert rebuilds == [1], "the pending generation must be projected once writable"
+
+        # And once projected, it stops.
+        agent_mod.reproject_for_ceiling_change()
+        assert rebuilds == [1]
+
     def test_an_unseeded_baseline_rebuilds_rather_than_skipping(self, monkeypatch):
         """The safe direction if some other entry point starts the poller: a redundant
         rewrite costs a file write, a skipped one costs the tighten."""

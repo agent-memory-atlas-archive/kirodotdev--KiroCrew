@@ -95,7 +95,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import _resolve_default_home, _valid_override_home, config_dir
 from kiro_crew.sel import _sel_hmac_key_bytes, sel_hmac_key_path
 
 logger = logging.getLogger(__name__)
@@ -507,6 +507,25 @@ def read_session_pid_txt(pid: int | str, cfg: Path | None = None) -> str:
     if token is not None and _pid_recycled(pid, token):
         return ""
     return session_key
+
+
+def session_pid_mapping_path(pid: int | str) -> Path:
+    """The mapping file strict verification reads for *pid* (diagnostics only).
+
+    Resolves the same home ``config_dir()`` serves — a valid ``KIROCREW_HOME``
+    override, else the default — WITHOUT the mkdir maintenance ``config_dir()``
+    performs: a diagnostic only names a path, so nothing needs to exist, and an
+    uncreatable configured home must not turn the denial message this feeds
+    into a crash. When an agent spec pins a foreign ``KIROCREW_HOME`` into the
+    stub's environment, this path points at the poisoned home — the one piece
+    of evidence that distinguishes "wrong home" from a genuinely broken trust
+    root, where ``kirocrew doctor`` on the real gateway reports everything
+    healthy.
+    """
+    home = _valid_override_home()
+    if home is None:
+        home = _resolve_default_home()
+    return _txt_path(pid, home)
 
 
 def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:

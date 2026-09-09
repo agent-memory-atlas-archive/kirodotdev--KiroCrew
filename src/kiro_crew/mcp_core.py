@@ -70,6 +70,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import DIRECTIVE_TOOLS, refuse_if_markerless
+from kiro_crew.session_pid_sig import session_pid_mapping_path
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.validation import (
     MCP_CORE_SCHEMAS,
@@ -832,13 +833,37 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
     """
     if _resolve_session_key_strict():
         return ""
-    if os.environ.get("KIROCREW_HOST_PID", "").isdigit():
+    host_pid = os.environ.get("KIROCREW_HOST_PID", "")
+    if host_pid.isdigit():
         # The sandbox launcher declared a host pid, so the channel exists and
         # the sidecar is what failed — a signing/trust-root problem, not routing.
+        # Name the directory the verifier actually searched: when an agent spec
+        # pinned a foreign KIROCREW_HOME into this stub's environment,
+        # the path is the poisoned home, and without it the operator is sent to
+        # `kirocrew doctor` on the real gateway, which reports a healthy trust
+        # root and points nowhere.
+        suffix = ""
+        try:
+            mapping = session_pid_mapping_path(host_pid)
+            # No-follow on purpose: the mapping directory is same-uid
+            # agent-writable, so an agent can plant a symlink at the mapping
+            # path. Path.exists() would FOLLOW it, turning this wording into an
+            # existence oracle for the link's target. lexists answers "is
+            # anything at this path" without following — and a planted symlink
+            # reads as "failed verification", which is accurate: the strict
+            # no-follow reader refused it.
+            if os.path.lexists(mapping):
+                suffix = f" (mapping at {mapping} failed verification)"
+            else:
+                suffix = f" (mapping not found at {mapping})"
+        except OSError:
+            # A diagnostic must never replace the denial it decorates with a
+            # crash: on any path-resolution error, keep the generic wording.
+            suffix = ""
         return (
-            f" No identity channel: the signed pid mapping for this session did not "
-            f"verify. Check `kirocrew doctor` (trust root) — {server} does not need "
-            f"routing when this channel works."
+            f" No identity channel: the signed pid mapping for this session did "
+            f"not verify{suffix}. Check `kirocrew doctor` (trust root) — {server} "
+            f"does not need routing when this channel works."
         )
     return (
         f" No identity channel on this install: {server} is not in "

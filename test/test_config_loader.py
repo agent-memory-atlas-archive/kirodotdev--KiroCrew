@@ -348,11 +348,11 @@ def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
 
 
 class TestMemberDispatchLoad:
-    """agent.member_dispatch load-time coercion (issue #8073).
+    """agent.member_dispatch load-time coercion.
 
     The operator ceiling on the member session-control bypass. A MISSING key
-    defaults to true (today's behaviour), but a PRESENT-but-malformed value —
-    the routine quoted `"false"` config mistake — must coerce to FALSE, so a
+    defaults to true, but a PRESENT-but-malformed value — the routine quoted
+    `"false"` config mistake — must coerce to FALSE, so a
     botched opt-out withdraws the bypass rather than silently leaving it on
     (a governance ceiling that fails open otherwise).
     """
@@ -4381,6 +4381,20 @@ class TestMalformedConfigNeverBricksLoad:
         assert cfg.instances.max_recovery_attempts == defaults.instances.max_recovery_attempts
         assert cfg.instances.recover_backoff_max_secs == defaults.instances.recover_backoff_max_secs
         assert cfg.instances.probe_failure_threshold == defaults.instances.probe_failure_threshold
+
+    @pytest.mark.parametrize("junk", ["false", "off", "0", 0, 1, [], {}, None, "true"])
+    def test_a_non_bool_never_opts_into_the_loopback_transport(self, junk: object) -> None:
+        # `bool("false")` is True, so a JSON string would read the operator's
+        # "off" as "on" -- opting into a transport that puts this gateway's
+        # internal credential on the wire to another local process. Even a
+        # correct-looking "true" must not enable it: a parse that guesses at a
+        # string is the same parse that cannot refuse "false".
+        cfg = _load_from_dict({"instances": {"allow_loopback_transport": junk}})
+        assert cfg.instances.allow_loopback_transport is False
+
+    def test_a_real_bool_opts_into_the_loopback_transport(self) -> None:
+        cfg = _load_from_dict({"instances": {"allow_loopback_transport": True}})
+        assert cfg.instances.allow_loopback_transport is True
 
 
 class TestEmptyResponseAutoContinueWiring:

@@ -3779,6 +3779,14 @@ class KiroCrewConfig:
             ),
             instances=InstancesConfig(
                 enabled=bool(instances_data.get("enabled", False)),
+                # _safe_bool, not bool(): `bool("false")` is True, so a JSON
+                # string would read the operator's "off" as "on" -- turning on a
+                # transport that sends this gateway's internal credential to
+                # another local process, from a config value that says the
+                # opposite. A non-bool reads as the default (off).
+                allow_loopback_transport=_safe_bool(
+                    instances_data.get("allow_loopback_transport"), False
+                ),
                 warm_set_cap=_safe_int(
                     instances_data.get("warm_set_cap", _DEFAULT_WARM_SET_CAP), _DEFAULT_WARM_SET_CAP
                 ),

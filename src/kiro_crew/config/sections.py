@@ -4742,8 +4742,9 @@ class InstancesConfig:
             "useful when you run more than one gateway on this host (or are verifying "
             "the instances feature against this one), and keeping it opt-in means a "
             "hand-edited instances.json cannot make the gateway dial its own loopback "
-            "ports on an install that never asked for it. The destination must be a "
-            "numeric loopback address (127.0.0.0/8); hostnames and every off-host "
+            "ports on an install that never asked for it. The destination must be "
+            "127.0.0.1 — the one address the mint's port-granular ownership proof "
+            "covers; hostnames, other loopback addresses and every off-host "
             "address are refused.",
         ),
     )

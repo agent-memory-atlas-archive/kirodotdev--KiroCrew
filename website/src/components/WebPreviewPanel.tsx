@@ -857,7 +857,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           />
         )}
         {/* This chat's session, by the name the framed dashboard lists it under
-            — the sidebar shows every browser on the host, and the name is what
+            — the sidebar lists the gateway's own browser sessions, and the name is what
             tells this one apart. The label is visible text, not a tooltip, and
             says "browser session": "session" alone is also what the app calls
             its chats and what the frame's own list is headed. Rendered only

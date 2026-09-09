@@ -219,6 +219,12 @@ lists as up and this life has not recorded (`reclaim_stranded`, a background
 task so a CLI spawn never gates the port bind) — the previous life that died
 without reaching its shutdown hook. A panel session therefore never outlives the
 gateway that owns it; an unclean death only defers the close to the next start.
+**Accepted cost:** there is no idle timeout, cap or LRU on `panel-` sessions —
+one Chromium daemon per chat slot whose address bar was used, alive for the
+gateway's life. The bound is a dashboard's handful of slots, a human's open
+browser is exactly what must not be closed under them (their logins live in it),
+and the human closes one themselves from the framed grid when they are done;
+a close policy is a follow-up if that bound is ever exceeded in practice.
 What startup reclamation reads is the registry, same-user-writable filesystem
 state the sweep above refuses to act on — acceptable here because the only
 action it can be tricked into is a `close` of a session under our own prefix, a

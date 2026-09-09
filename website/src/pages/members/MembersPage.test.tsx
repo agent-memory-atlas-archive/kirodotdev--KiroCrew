@@ -367,7 +367,7 @@ describe('MembersPage thread', () => {
       row({ name: 'fresh-talker', slug: 'fresh-talker', last_active_ts: 200 }),
     ])
     const list = await screen.findByRole('list')
-    const names = Array.from(list.querySelectorAll('li button .font-medium')).map(
+    const names = Array.from(list.querySelectorAll('li button .font-semibold')).map(
       (el) => el.textContent,
     )
     // Recent first; ts=0 rows trail in name order — mirroring an IM member list.
@@ -495,8 +495,9 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(screen.queryByRole('button', { name: /close panel/i })).toBeNull()
     // The strip is the SidePanel's: its own resize splitter (the same shared
     // handle the chat page drags) pins that the page mounted the real
-    // component rather than a lookalike.
-    expect(screen.getByRole('separator', { name: /resize/i })).toBeInTheDocument()
+    // component rather than a lookalike. Named precisely: the roster's own
+    // grip ("Resize member list") is a second resize separator on the page.
+    expect(screen.getByRole('separator', { name: /resize panel/i })).toBeInTheDocument()
   })
 
   it('the Crew summary is the FIRST tab, selected by default, and has no close control', async () => {

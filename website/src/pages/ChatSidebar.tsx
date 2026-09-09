@@ -1,7 +1,7 @@
 import { useState, useRef, useReducer, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -56,6 +56,9 @@ import { platformShortcut } from '../utils/platform'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePointerDrag } from '../hooks/usePointerDrag'
+import ResizeHandle from '../components/ResizeHandle'
+import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../components/SearchFilterBar'
+import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_META_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../components/listShell'
 import { safeSetItem } from '../utils/safeStorage'
 import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, movePinnedSession, persistPinnedSessionOrder, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { LAYOUT } from '../components/layout'
@@ -140,15 +143,8 @@ const RENAME_MAX_H = 120
  *  rect measurement) is disabled — the IssueList/PrList ANIM_CAP pattern. */
 const SIDEBAR_ANIM_CAP = 200
 
-const ROW_META_CLS = 'text-[10px] leading-[12px]'
-const ROW_TITLE_CLS = 'text-[13px] leading-[20px]'
-const ROW_STATUS_CLS = 'text-[11px] leading-[16px]'
-
-/* A SECOND surface now tracks these three sizes: the Notes app's left rail
- * (`apps/md-notebook/constants.ts`, `RAIL_TYPE`) mirrors them so the two
- * sidebars read as one scale. The agreement is by copied value, not a shared
- * token — nothing goes red if these move. Change a size here and update
- * `RAIL_TYPE` in the same commit, or the rail silently diverges. */
+/* ROW_META_CLS / ROW_TITLE_CLS / ROW_STATUS_CLS come from components/listShell,
+ * shared with the Crew Members roster so the two lists sit on one type scale. */
 
 /** The secondary line's three shapes, as whole class strings. The eight status
  *  branches that render this line each used to spell the type classes out, so a
@@ -1924,7 +1920,7 @@ const SessionRow = memo(function SessionRow({
           <ContextMenuTrigger asChild>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming).toString()}
-          className={`session-row group relative flex items-start pl-3.5 pr-3 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(!dndRow && !isRenaming) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
@@ -3472,6 +3468,14 @@ function ChatSidebar({
       onWidthChangeRef.current?.(w)
     },
   })
+  // Arrow-key resize for the shared handle: the same clamp a drag applies,
+  // persisted at once since a key press has no "release" to persist on.
+  const nudgeSidebar = useCallback((dx: number) => {
+    const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarWidthRef.current + dx))
+    setSidebarWidth(w)
+    safeSetItem(SIDEBAR_LS_KEY, String(w))
+    onWidthChangeRef.current?.(w)
+  }, [])
 
   // Unmount guard: if the sidebar unmounts mid-drag (collapse / route change),
   // onEnd never fires — setPointerCapture dies with the element — so the global
@@ -5919,27 +5923,24 @@ function ChatSidebar({
 
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
-      {/* Drag handle — Pointer-Events column resize (mouse + touch + pen).
-          role="separator" gives it correct ARIA; touch-action:none so a touch
-          drag resizes the panel instead of scrolling the page. Pointer capture
-          (in usePointerDrag) continues the drag off the thin handle. No
-          keyboard analogue for a drag splitter. */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={i18nT('pages.chatSidebar.resize_sidebar')}
-        className="sidebar-resize-handle absolute top-0 -right-[2px] w-[5px] h-full cursor-col-resize z-10 group/drag flex items-center justify-center"
-        style={{ touchAction: 'none' }}
-        {...sidebarResize}
-      >
-        {/* Visual bar only — the 5px parent stays full-height as the hit
-            area. The bar's ends are inset by the card's border radius
-            (rounded-xl = 12px, so 24px total) so its accent state spans
-            exactly the straight segment of the card's right border instead
-            of overshooting past the rounded corners. */}
-        <div className="w-[2px] h-[calc(100%-24px)] rounded-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
-      </div>
+    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={{ width: sidebarWidth }}>
+      {/* Drag handle — the shared column grip (components/ResizeHandle), so
+          this edge looks and behaves exactly like the Crew Members roster's and
+          the app workspaces'. Positioned absolutely on the card's right border
+          (the default is an in-flow flex sibling); `inset` is the card's
+          rounded-xl radius so the accent bar spans exactly the straight
+          segment of the border. `sidebar-resize-handle` stays as the hook the
+          mobile overlay and the split-pane host use to hide it. */}
+      <ResizeHandle
+        handleProps={sidebarResize}
+        label={i18nT('pages.chatSidebar.resize_sidebar')}
+        onNudge={nudgeSidebar}
+        value={sidebarWidth}
+        min={SIDEBAR_MIN}
+        max={SIDEBAR_MAX}
+        inset={12}
+        className="sidebar-resize-handle absolute top-0 -right-[3px] h-full z-10"
+      />
 
       {/* Header — all elements ("Sessions" title, kebab, New button) centered
           on one line 23px from the panel top (1px card border + mt-0.5, then
@@ -5949,9 +5950,9 @@ function ChatSidebar({
           px-2 is symmetric so the New button ends 9px from the card's right
           edge (8 + 1px border) — the same as its 9px gap to the top edge
           (1px border + mt-0.5 + 6px of the h-10 row around the h-7 button). */}
-      <div className="flex justify-between items-center px-2 mt-0.5 h-10">
+      <div className={LIST_HEADER_CLS}>
         <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-9' : 'pl-1.5'}`}>
-          {!tinyHeader && <span className="sessions-panel-title text-sm font-semibold text-text-strong tracking-[.04em] truncate">{i18nT('pages.chatSidebar.sessions')}</span>}
+          {!tinyHeader && <span className={LIST_TITLE_CLS}>{i18nT('pages.chatSidebar.sessions')}</span>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <DropdownMenu>
@@ -6374,14 +6375,17 @@ function ChatSidebar({
         </div>
       )}
 
-      {/* Search with inline sort/filter control */}
-      <div className="px-2 pt-2 pb-1">
-        <div className="relative">
-          <SearchInput className={`w-full ${slotFilter ? (folders.length > 0 ? '[&>input]:pr-[76px]' : '[&>input]:pr-14') : (folders.length > 0 ? '[&>input]:pr-14' : '[&>input]:pr-9')}`} placeholder={i18nT('pages.chatSidebar.search_sessions')} value={slotFilter} onChange={e => setSlotFilter(e.target.value)} />
-          {slotFilter && (
-            <button type="button" className={`absolute ${folders.length > 0 ? 'right-[56px]' : 'right-8'} top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors`} onClick={() => setSlotFilter('')} aria-label={i18nT('pages.chatSidebar.clear_search')}><X size={13} /></button>
-          )}
-          <div className="absolute right-1 inset-y-0 flex items-center gap-0.5">
+      {/* Search with inline sort/filter control — the shared list-panel
+          search row (components/SearchFilterBar), also mounted by the Crew
+          Members roster. */}
+      <SearchFilterBar
+        placeholder={i18nT('pages.chatSidebar.search_sessions')}
+        clearLabel={i18nT('pages.chatSidebar.clear_search')}
+        value={slotFilter}
+        onChange={setSlotFilter}
+        trailingCount={folders.length > 0 ? 2 : 1}
+        trailing={(
+          <>
             {/* Flat-view toggle only makes sense when folders exist — without
              *  them the list is already flat. */}
             {folders.length > 0 && (
@@ -6406,29 +6410,18 @@ function ChatSidebar({
             )}
             <DropdownMenu open={filterSortOpen} onOpenChange={setFilterSortOpen}>
               <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="relative w-6 h-6 rounded text-muted flex items-center justify-center cursor-pointer transition-colors hover:text-text hover:bg-bg-hover bg-transparent border-none"
+                <FilterMenuButton
                   title={i18nT('pages.chatSidebar.sort_filter_sessions')}
                   aria-label={i18nT('pages.chatSidebar.sort_and_filter_sessions')}
-                >
-                  <ListFilter size={14} />
-                  {filterCounts['unread'] > 0 && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-accent text-accent-fg text-[10px] font-semibold leading-[14px] text-center pointer-events-none shadow-[0_0_4px_var(--accent-glow)]"
-                    >
-                      {filterCounts['unread'] > 99 ? '99+' : filterCounts['unread']}
-                    </span>
-                  )}
-                </button>
+                  badge={filterCounts['unread']}
+                />
               </DropdownMenuTrigger>
               {/* max-w keeps the menu inside a phone viewport. Radix sizes the
                   popper wrapper to `max-content`, so the inline pickers' caption
                   sentences (a phone renders them here instead of in a flyout)
                   would otherwise stretch the menu past the screen edge. */}
-              <DropdownMenuContent align="end" className="min-w-[180px] max-w-[calc(100vw-1rem)]">
-                <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">{i18nT('pages.chatSidebar.filter')}</DropdownMenuLabel>
+              <DropdownMenuContent align="end" className={FILTER_MENU_CONTENT_CLS}>
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{i18nT('pages.chatSidebar.filter')}</DropdownMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)
                   const slotCount = filterCounts[filterDef.key] ?? 0
@@ -6579,7 +6572,7 @@ function ChatSidebar({
                   )
                 })}
                 <DropdownMenuSeparator />
-                <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">{i18nT('pages.chatSidebar.sort_by')}</DropdownMenuLabel>
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{i18nT('pages.chatSidebar.sort_by')}</DropdownMenuLabel>
                 {SORT_OPTIONS.map(o => (
                   <DropdownMenuItem
                     key={o.value}
@@ -6691,7 +6684,7 @@ function ChatSidebar({
                 {tagFilterRows.length > 0 && (
                   <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">
+                    <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>
                       {i18nT('pages.chatSidebar.tags')}
                     </DropdownMenuLabel>
                     {tagFilterRows.map(({ tag: t, count, selected }) => (
@@ -6792,9 +6785,9 @@ function ChatSidebar({
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
-          </div>
-        </div>
-      </div>
+          </>
+        )}
+      />
       {/* One aggregate chip in its OWN row, never per-tag chips in the row below.
           AUTOSDE max-two-buttons-per-row grandfathers that row's existing filter
           chips but forbids growing it, and per-tag chips grow it without bound.
@@ -6828,7 +6821,7 @@ function ChatSidebar({
         </div>
       )}
       {activeFilters.size > 0 && (
-        <div className="px-3 pb-1 flex items-center gap-1.5 flex-wrap">
+        <div className={FILTER_CHIP_ROW_CLS}>
           {SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key)).map(filterDef => {
             const slotCount = filterCounts[filterDef.key] ?? 0
             const filterLabel = i18nT(FILTER_LABEL_KEY[filterDef.key])
@@ -6838,18 +6831,13 @@ function ChatSidebar({
             // to a dotless `ı`.
             const clearLabel = i18nT('pages.chatSidebar.clear_named_filter', { filter: filterLabel })
             return (
-              <button
+              <FilterChip
                 key={filterDef.key}
-                type="button"
-                className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors"
-                style={{ background: `color-mix(in srgb, ${filterDef.color} 10%, transparent)`, color: filterDef.color, borderWidth: 1, borderColor: `color-mix(in srgb, ${filterDef.color} 30%, transparent)` }}
-                onClick={() => toggleFilter(filterDef.key)}
-                title={clearLabel}
-                aria-label={clearLabel}
-              >
-                {filterLabel}{filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}{slotCount > 0 ? ` (${slotCount})` : ''}
-                <X size={11} />
-              </button>
+                label={`${filterLabel}${filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}${slotCount > 0 ? ` (${slotCount})` : ''}`}
+                color={filterDef.color}
+                clearLabel={clearLabel}
+                onClear={() => toggleFilter(filterDef.key)}
+              />
             )
           })}
         </div>
@@ -6961,7 +6949,7 @@ function ChatSidebar({
                 <ChatPaneDropZone refusal={draggingRefRefusal} />,
                 chatDropTarget,
               )}
-            <motion.div layoutScroll={rowAnimEnabled} className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
+            <motion.div layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
               {/* Flat view renders no folder headers, so the per-folder mount
                *  points for the create-failure notice never exist here — yet
                *  the New menu still offers "New chat in folder". Render the
@@ -7029,7 +7017,7 @@ function ChatSidebar({
           // the sidebar rather than a transient hint. Scrolling itself is
           // untouched — wheel, trackpad, keyboard, and drag-autoscroll all
           // still work, and the list's own overflow is still the affordance.
-          <motion.div layoutScroll={rowAnimEnabled} className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }}>
+          <motion.div layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }}>
             {/* Tree-lane fallback, completing the set (flat and board lanes
              *  carry the same): a create into a folder the folder-filter or
              *  hide feature excludes never renders that folder's header, so

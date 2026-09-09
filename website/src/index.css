@@ -1543,9 +1543,10 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 [data-theme="kiro-light"] .nav-active,[data-theme="kiro-light"] .session-row.session-active,[data-theme="kiro-light"] .list-selected{background:#d8d2e0;color:#723acc;border-color:#c4bcd0}
 [data-theme="kiro-light"] .nav-active .text-accent{color:#723acc}
 /* Kiro light: the canvas is white and the app shell steps back. --bg is #ffffff so the chat
-   transcript and every page read as the primary surface; the nav rail and sessions list take
-   --panel (#fafafa) instead of the elevated white they use elsewhere, which is the only thing
-   separating them from the canvas — a white card on a white page has no edge but its border.
+   transcript and every page read as the primary surface; the nav rail and the list cards (the
+   sessions list and the Crew Members roster, both built from components/listShell) take --panel
+   (#fafafa) instead of the elevated white they use elsewhere, which is the only thing separating
+   them from the canvas — a white card on a white page has no edge but its border.
    The user bubble is a borderless bg-card fill, so on a white canvas it needs a tint or it
    disappears entirely; --bg-hover (#f0f0f0) keeps it in the same grey family as the shell. The
    edit-mode box that replaces a bubble in place carries the same hook, so editing does not flip

@@ -259,7 +259,10 @@ or structural repro does not substitute. A missing route, caller identity, scena
 capability, or externally drivable trigger produces an evidence-bearing stand-down with no edits,
 commit, or PR, and the conductor advances the queue. The same pod trace must turn green before the
 item can report green. This distinction prevents a pipeline advertised as pod verification from
-silently measuring ordinary unit-fix throughput instead.
+silently measuring ordinary unit-fix throughput instead. The two values are the whole set, checked
+at startup by `scripts/spec_check.py` rather than by prose: a spec whose gate is neither value
+engages neither branch, so it would run generically while reading as gated, and the check refuses
+the run instead of defaulting.
 
 ## Phases
 

@@ -21,6 +21,8 @@ rather than permission.
   error tails + banned-process scan + host load + delivery counters, in ONE
   call per cycle.
 - `scripts/credit_spend.py` — per-item credit rollup + budget verdict.
+- `scripts/spec_check.py` — the spec's closed-value fields, checked once at
+  startup. Exit 2 refuses the run.
 
 A decision this procedure states as prose rots silently; a decision a script
 computes can be tested. So anything below that cites a script is that script's
@@ -57,7 +59,11 @@ in the config and it is what makes `cwd=fleet` reachable, so leaving it out
 classifies every banned line as `foreign` or `unknown` and the enforcing row of
 the banned-ops table never fires.
 
-`verifier.repro_gate` has two values:
+`verifier.repro_gate` has two values, and exactly two — `spec_check.py` refuses
+the run on anything else (`malformed spec: verifier.repro_gate 'pod-required':
+expected 'best_effort' or 'pod_required'`), because a third value engages neither
+branch below and would leave the generic contract in force under a spec that
+reads as gated:
 
 - `best_effort` (default) keeps the generic pipeline behavior: reproduce where
   cheap, and let the worker justify the narrowest honest verification when a
@@ -82,7 +88,14 @@ never relabel it success in the friction report.
 
 ## Startup (once per run)
 
-1. Read the spec. `chat_folder_create` the pipeline folder.
+1. Read the spec, then `spec_check.py --spec <path>` before anything else. Exit 2
+   is a REFUSAL TO START, not a warning: it means a field with a closed value set
+   carries a value that is neither of its options, and every such value engages
+   no branch at all — so the mode the operator asked for is silently off while
+   the spec says it is on. Report the message verbatim and stop; do not guess a
+   default, and do not open the folder or claim an item first, because a run that
+   has already dispatched a worker cannot un-dispatch it. `chat_folder_create`
+   the pipeline folder once the spec checks out.
 2. Build the queue from the work source (or adopt the operator's seeded
    backlog). **Record the backlog at whatever size it is** — as the queue's
    PROVENANCE, one entry: the work source, its selector, the count, and the item

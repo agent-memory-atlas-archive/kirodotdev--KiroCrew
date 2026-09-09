@@ -84,3 +84,44 @@ AWS_KEY_ID_REDACTION = (
 #: distinct pattern for a distinct job, not another spelling of this one, and it
 #: stays where it is used.
 JWT_MULTI_SEGMENT = r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}"
+
+
+#: Vendor and forge API-token spellings shared by the credential scrubber and any
+#: standalone subset that cannot import it. Each entry is ``(label, fragment)``;
+#: the fragment is pattern SOURCE (no anchors, no flags) so a consumer wraps it in
+#: whatever ``\b`` / word-boundary shape its site needs. Kept here for the reason
+#: the module exists: a subset that restates these drifts silently, because both
+#: copies must be edited together to stay wrong and no test can see a one-sided
+#: omission. Adding a format here reaches every consumer at once.
+#:
+#: The ``sk-proj-`` / ``sk-ant-`` bodies carry the hyphen INSIDE the class: a plain
+#: ``sk-[A-Za-z0-9]{20,}`` stops at the first hyphen after ``sk-`` and never reaches
+#: its length floor, so the project/vendor-scoped forms need their own spelling. The
+#: fine-grained GitHub PAT is length-flexible (``{40,}``) rather than pinned to one
+#: id/secret split, because a single exact length lets any other-length PAT past.
+#:
+#: Every lower bound here matches the scrubber's own spelling for the same format:
+#: the bound is the one chosen against real tokens, and a tighter one here would ship
+#: a short token the scrubber redacts. So these are copied FROM the scrubber, not
+#: re-guessed -- a GitLab body is ``{16,}`` and an npm body ``{24,}`` for that reason.
+SK_PROJECT_TOKEN = r"sk-proj-[A-Za-z0-9_-]{16,}"
+SK_ANT_TOKEN = r"sk-ant-[A-Za-z0-9_-]{16,}"
+SK_VENDOR_TOKEN = r"sk-[A-Za-z0-9]{20,}"
+GITHUB_FINE_GRAINED_PAT = r"github_pat_[A-Za-z0-9_]{40,}"
+GITLAB_PAT = r"glpat-[A-Za-z0-9_-]{16,}"
+NPM_TOKEN = r"npm_[A-Za-z0-9]{24,}"
+PYPI_TOKEN = r"pypi-[A-Za-z0-9_-]{16,}"
+
+#: Iterable single source for the vendor/token formats above, as
+#: ``(label, fragment)`` pairs. ``sk-proj-`` and ``sk-ant-`` precede the plain
+#: ``sk-`` form so the more specific spelling is offered first; a consumer that
+#: matches greedily still masks either way, but the order keeps the label truthful.
+VENDOR_TOKEN_PATTERNS = (
+    ("openai-project-key", SK_PROJECT_TOKEN),
+    ("anthropic-key", SK_ANT_TOKEN),
+    ("vendor-key", SK_VENDOR_TOKEN),
+    ("github-fine-grained-pat", GITHUB_FINE_GRAINED_PAT),
+    ("gitlab-pat", GITLAB_PAT),
+    ("npm-token", NPM_TOKEN),
+    ("pypi-token", PYPI_TOKEN),
+)

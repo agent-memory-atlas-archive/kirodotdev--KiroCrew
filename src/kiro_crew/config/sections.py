@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import re as _re
+import sys as _sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit as _urlsplit
@@ -922,7 +923,7 @@ class AgentConfig:
         ),
     )
     sandbox_allow_unsandboxed_exec: bool = field(
-        default=False,
+        default_factory=lambda: _sys.platform == "win32",
         metadata=_meta(
             "Allow Unsandboxed Execution",
             "When true, allow agent subprocesses to execute without any sandbox "
@@ -931,20 +932,21 @@ class AgentConfig:
             "execution entirely (fail-closed). This is distinct from "
             "sandbox_allow_no_isolation which only controls warning severity — "
             "this field controls whether execution proceeds at all. "
-            "This field records only what the OPERATOR DECLARED; it is not the "
-            "effective policy, and `false` here does NOT by itself mean the host "
-            "fail-closes. An UNDECLARED key resolves per platform in "
-            "sandbox.unsandboxed_exec_platform_default(): allow on Windows, which "
-            "has no backend that any operator action could install, and "
-            "fail-closed everywhere else, where a missing backend is broken or "
-            "one profile away from working. A declared value always outranks that "
-            "default in both directions, and a governance sandbox.min_level floor "
-            "outranks the declaration. `kirocrew setup` surfaces the decision on a "
-            "backend-less host — offering the opt-in where the default is "
-            "fail-closed, and stating the exposure plus offering the opt-out where "
-            "it is allow — and writes nothing unless the operator answers yes. "
-            "Read the effective verdict from the sandbox module, never from this "
-            "field alone.",
+            "This field carries the EFFECTIVE policy, and its default is resolved "
+            "per platform in BOTH construction paths: the dataclass default_factory "
+            "here, and the loader's .get() default when a config document omits the "
+            "key. Allow on Windows, which has no backend that any operator action "
+            "could install; fail-closed everywhere else, where a missing backend is "
+            "broken or one profile away from working. A declared value always wins "
+            "in both directions, and a governance sandbox.min_level floor outranks "
+            "the declaration. Both paths must agree: the fresh-gateway boot "
+            "constructs KiroCrewConfig() directly, save()s it — which serializes "
+            "every field — and reloads it, so a fail-closed dataclass default here "
+            "would write itself in as a declared lockdown and refuse every spawn on "
+            "a host with no backend to fall back on. `kirocrew setup` surfaces the "
+            "decision on a backend-less host, offering the opt-in where the default "
+            "is fail-closed and stating the exposure plus offering the opt-out where "
+            "it is allow, and writes nothing unless the operator answers yes.",
         ),
     )
     apps_allow_third_party: bool = field(

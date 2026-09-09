@@ -207,8 +207,16 @@ def test_max_subagents_defaults_to_auto_sentinel() -> None:
 
 
 def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
-    assert KiroCrewConfig().agent.sandbox_allow_unsandboxed_exec is False
-    assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is False
+    # Direct construction resolves per platform too, so pin one. Both paths must
+    # agree — see test_fresh_gateway_boot_does_not_write_itself_a_lockdown.
+    with unittest.mock.patch("sys.platform", "linux"):
+        assert KiroCrewConfig().agent.sandbox_allow_unsandboxed_exec is False
+    # The undeclared case resolves per platform, so pin one: unpinned, this line
+    # would assert the fail-closed default on Linux CI and the permitting one on a
+    # Windows dev box. The platform matrix itself lives in
+    # test_sandbox_allow_unsandboxed_exec_default_resolves_per_platform.
+    with unittest.mock.patch("sys.platform", "linux"):
+        assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is False
     enabled = _load_from_dict({"agent": {"sandbox_allow_unsandboxed_exec": True}})
     assert enabled.agent.sandbox_allow_unsandboxed_exec is True
 
@@ -263,31 +271,99 @@ def test_dashboard_tailscale_hydrates_and_survives_a_round_trip() -> None:
     )
 
 
-def test_sandbox_allow_unsandboxed_exec_default_is_platform_independent(monkeypatch) -> None:
-    """The CONFIG LAYER stays platform-independent; the platform split lives in
-    ``sandbox``.
+def test_sandbox_allow_unsandboxed_exec_default_resolves_per_platform(monkeypatch) -> None:
+    """An UNDECLARED key resolves per platform, INTO the dataclass value.
 
-    This field records only what the operator DECLARED, so the loader must report
-    ``False`` for "never decided" on every platform — identically to a deliberate
-    ``false``. What an undeclared key then RESOLVES to is
-    ``sandbox.unsandboxed_exec_platform_default()`` (allow on Windows, fail-closed
-    elsewhere), and telling the two apart is
-    ``config.loader.unsandboxed_exec_declared()``, which reads key presence rather
-    than value.
+    The resolution lives here, at the one place that sees the raw document, and the
+    result is carried by the VALUE rather than by whether the key was present. That
+    is a safety property, not a style choice: :meth:`KiroCrewConfig.save` publishes
+    the whole in-memory snapshot through ``to_dict()`` -> ``asdict(self.agent)``, so
+    every full-document write (the boot default-config write, CLI one-shots)
+    materializes this key. Were the effective policy keyed on presence, such a write
+    would silently convert "never decided" into a declared lockdown and refuse every
+    agent subprocess on a host that has no backend to fall back on — see
+    ``test_windows_default_survives_a_full_document_round_trip``.
 
-    Guarding the layering is the point: if the loader ever derived this from
-    ``sys.platform``, a declared ``false`` and an absent key would become
-    indistinguishable downstream, and an operator who deliberately locked a Windows
-    host down would be silently overruled by the platform default. The effective
-    verdict is ``sandbox.unsandboxed_exec_permitted_by()``; the direction
-    ``kirocrew setup`` asks in is covered by
-    ``test_sandbox_unsandboxed_exec_consent.py``.
+    A declared value still wins in both directions, on every platform.
+    ``config.loader.unsandboxed_exec_declared`` remains for diagnostics only (audit
+    labelling and message wording); the effective verdict is
+    ``sandbox.unsandboxed_exec_permitted_by()``. The direction ``kirocrew setup``
+    asks in is covered by ``test_sandbox_unsandboxed_exec_consent.py``.
     """
-    for plat in ("win32", "linux", "darwin"):
+    monkeypatch.setattr("sys.platform", "win32")
+    assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is True
+    assert _load_from_dict(
+        {"agent": {"approval_mode": "auto"}}
+    ).agent.sandbox_allow_unsandboxed_exec
+    for plat in ("linux", "darwin"):
         monkeypatch.setattr("sys.platform", plat)
         assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is False, plat
         with_section = _load_from_dict({"agent": {"approval_mode": "auto"}})
         assert with_section.agent.sandbox_allow_unsandboxed_exec is False, plat
+    # A declaration outranks the platform in both directions.
+    for plat in ("win32", "linux", "darwin"):
+        monkeypatch.setattr("sys.platform", plat)
+        declared_false = _load_from_dict({"agent": {"sandbox_allow_unsandboxed_exec": False}})
+        assert declared_false.agent.sandbox_allow_unsandboxed_exec is False, plat
+        declared_true = _load_from_dict({"agent": {"sandbox_allow_unsandboxed_exec": True}})
+        assert declared_true.agent.sandbox_allow_unsandboxed_exec is True, plat
+
+
+def test_fresh_gateway_boot_does_not_write_itself_a_lockdown(monkeypatch) -> None:
+    """The first-run path is construct -> save -> load, and it must not flip the policy.
+
+    ``cli_server._gateway`` creates the default config by constructing
+    ``KiroCrewConfig()`` DIRECTLY — not through ``load()`` — then ``save()``-ing it
+    and reloading. ``save()`` publishes ``to_dict()``, which serializes every field,
+    so a fail-closed dataclass default on a platform whose resolved default is allow
+    would write ``false`` into the fresh file and read it back as a deliberate
+    operator lockdown: every agent subprocess refused on a host with no backend to
+    fall back on, on the very first boot, with nobody having declared anything.
+
+    Guarding BOTH construction paths is the point. The loader's ``.get()`` default
+    covers a document that omits the key; this covers the object that never had one.
+    """
+    monkeypatch.setattr("sys.platform", "win32")
+    fresh = KiroCrewConfig()
+    assert fresh.agent.sandbox_allow_unsandboxed_exec is True
+
+    written = fresh.to_dict()
+    assert written["agent"]["sandbox_allow_unsandboxed_exec"] is True
+
+    reloaded = _load_from_dict({"agent": written["agent"]})
+    assert reloaded.agent.sandbox_allow_unsandboxed_exec is True
+
+    # And the fail-closed platforms keep writing themselves fail-closed.
+    for plat in ("linux", "darwin"):
+        monkeypatch.setattr("sys.platform", plat)
+        boot = KiroCrewConfig()
+        assert boot.agent.sandbox_allow_unsandboxed_exec is False, plat
+        assert (
+            _load_from_dict({"agent": boot.to_dict()["agent"]}).agent.sandbox_allow_unsandboxed_exec
+            is False
+        ), plat
+
+
+def test_windows_default_survives_a_full_document_round_trip(monkeypatch) -> None:
+    """Serializing the loaded config and reloading it must not flip the policy.
+
+    ``KiroCrewConfig.save()`` publishes ``to_dict()``, which materializes every
+    field. On Windows an undeclared key resolves to ``True``, so the round-trip
+    writes ``true`` and reloading it yields ``True`` again. The failure this guards
+    is the opposite arrangement: if the resolution were keyed on key PRESENCE, the
+    same write would materialize ``false``, be read back as a deliberate operator
+    lockdown, and refuse every agent subprocess on a platform where no backend can
+    be installed — turning a boot-time config write into a permanent brick.
+    """
+    monkeypatch.setattr("sys.platform", "win32")
+    loaded = _load_from_dict({})
+    assert loaded.agent.sandbox_allow_unsandboxed_exec is True
+
+    serialized = loaded.to_dict()
+    assert serialized["agent"]["sandbox_allow_unsandboxed_exec"] is True
+
+    reloaded = _load_from_dict({"agent": serialized["agent"]})
+    assert reloaded.agent.sandbox_allow_unsandboxed_exec is True
 
 
 def test_registry_branchless_legacy_entry_preserves_mainline():
@@ -1674,7 +1750,7 @@ class TestEdgeCases:
         assert cfg.memory.embedding_provider == "llama_cpp"
 
     def test_none_provider_coerces_to_llama_cpp(self) -> None:
-        """Embeddings are always-on: a legacy 'none' (previously-disabled) coerces too."""
+        """Embeddings are always-on: a legacy 'none' (the disabled spelling) coerces too."""
         raw_config: dict = {
             "memory": {"embedding_provider": "none"},
         }

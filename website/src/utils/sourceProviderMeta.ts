@@ -25,7 +25,10 @@
  */
 import { i18nT } from '../i18n/t'
 import {
+  sourceProjectHost,
+  sourceProjectPath,
   sourceProviderDescriptor,
+  type PullRequestLink,
   type PullRequestProvider,
   type SourceProviderCapabilities,
   type SourceProviderIcon,
@@ -140,4 +143,52 @@ export function sourceProviderCapabilities(
   provider: PullRequestProvider,
 ): SourceProviderCapabilities {
   return sourceProviderMeta(provider).capabilities
+}
+
+/** Per-tab project qualifier for a source-switcher tab strip, or null when the
+ *  bare reference label is already unambiguous.
+ *
+ *  A GitLab MR IID is unique only within its project, so two projects that each
+ *  have `!1` render identical `MR !1` tabs. Given the strip's rendered sources,
+ *  this returns a lookup that yields each link's qualifying prefix:
+ *
+ *  - `null` for every link when all sources share one project (the common case,
+ *    where the concise bare label is correct), and always for a link whose
+ *    project cannot be recovered (Jira, a registered provider, an unparseable
+ *    url) — an ambiguous tab is never worse than today's.
+ *  - The full project path (`group/project`) when the strip spans more than one
+ *    distinct project.
+ *  - The host-qualified path (`gitlab.internal/group/project`) when the SAME
+ *    project path appears on more than one host — self-managed GitLab makes the
+ *    path alone collide, so the host is the remaining discriminator.
+ *
+ *  Identity is keyed on host + path throughout, so two same-named projects on
+ *  different hosts count as distinct and engage qualification. The `MR`/`PR`
+ *  word stays with `refLabel` and the i18n catalog; the prefix is an
+ *  identifier, not prose, exactly like a provider `displayName`. */
+export function sourceTabQualifier(
+  sources: PullRequestLink[],
+): (link: PullRequestLink) => string | null {
+  const identities = new Set<string>()
+  const hostsByPath = new Map<string, Set<string>>()
+  for (const item of sources) {
+    const path = sourceProjectPath(item)
+    if (!path) continue
+    const host = sourceProjectHost(item) ?? ''
+    identities.add(`${host}/${path}`)
+    let hosts = hostsByPath.get(path)
+    if (!hosts) hostsByPath.set(path, (hosts = new Set()))
+    hosts.add(host)
+  }
+  if (identities.size <= 1) return () => null
+  return link => {
+    const path = sourceProjectPath(link)
+    if (!path) return null
+    const hosts = hostsByPath.get(path)
+    if (hosts && hosts.size > 1) {
+      const host = sourceProjectHost(link)
+      return host ? `${host}/${path}` : path
+    }
+    return path
+  }
 }

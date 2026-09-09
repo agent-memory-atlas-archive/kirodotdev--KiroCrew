@@ -4,6 +4,15 @@ Most tests exercise the harness's internal helpers in isolation with a
 stand-in for ``subprocess.Popen``. Spawning a real gateway takes 5–15s
 and pulls in the full MCP probe / config init / dashboard bind path, so
 the end-to-end test is gated behind ``KIROCREW_HARNESS_INTEGRATION``.
+
+This file runs on Windows too. A wholesale collect-ignore of it is what
+hid the READY-wait and orchestration tests -- the majority of it, and all of the
+platform-neutral part -- from the only shards that could have caught the
+selectors-on-a-pipe break. What is genuinely POSIX-only is the ``terminate_pgid``
+family plus the SIGKILL return-code assertions, and those carry
+``_POSIX_ONLY`` per test. Nothing else is skipped: see
+``docs/system-specs/common/testing-conventions.md`` on why a whole-file skip is
+the expensive kind of green.
 """
 
 from __future__ import annotations
@@ -21,6 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.testing.harness import (
     DEFAULT_READY_TIMEOUT,
     READY_PREFIX,
@@ -33,6 +43,16 @@ from kiro_crew.testing.harness import (
     parse_ready_line,
     spawn_feature_gateway,
     terminate_pgid,
+)
+
+# Process groups, ``setsid``, ``killpg`` and negative SIGKILL return codes are
+# POSIX concepts with no Windows equivalent -- ``_terminate_process_group``
+# routes Windows through ``platform_compat.kill_process_tree`` instead, whose
+# ``taskkill /F`` exit is not a negative signal number. Per test, never
+# per file.
+_POSIX_ONLY = pytest.mark.skipif(
+    platform_compat.IS_WINDOWS,
+    reason="POSIX process-group semantics (setsid/killpg, -SIGKILL return codes)",
 )
 
 
@@ -221,12 +241,18 @@ def test_parse_ready_line_rejects_missing_prefix(non_matching_line: str) -> None
 
 
 def test_terminate_handles_already_exited_proc() -> None:
-    """Already-exited proc → no-op, no exception."""
+    """Already-exited proc → no-op, no exception.
+
+    Runs on Windows too: ``_terminate_process_group`` returns on the ``poll()``
+    check before reaching either platform's kill primitive, so this pins the one
+    branch that is genuinely shared.
+    """
     proc = subprocess.Popen(
         [sys.executable, "-c", "pass"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     # 30s: generous for `python -c pass`, but the package-builder fleet can
     # stall a fresh child process >5s under load (two consecutive Dry Run
@@ -238,6 +264,7 @@ def test_terminate_handles_already_exited_proc() -> None:
     _terminate_process_group(proc)
 
 
+@_POSIX_ONLY
 def test_terminate_falls_back_to_sigkill() -> None:
     """Process that ignores SIGTERM gets SIGKILL after the grace period.
 
@@ -280,9 +307,95 @@ def test_terminate_falls_back_to_sigkill() -> None:
             proc.wait(timeout=2)
 
 
+# ── Windows teardown routing (asserted from every platform) ─────────────
+
+
+def test_terminate_routes_through_process_tree_kill_on_windows() -> None:
+    """On Windows the teardown must use ``kill_process_tree``, not the pgid path.
+
+    Asserted with ``IS_WINDOWS`` patched rather than only on a Windows runner:
+    the POSIX legs are the ones a contributor runs locally, and a reroute that
+    quietly went back to ``terminate_pgid`` would otherwise only surface as an
+    ``AttributeError`` from ``os.getpgid`` inside a Windows CI job.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+    )
+    killed: list[int] = []
+    try:
+        with (
+            patch("kiro_crew.testing.harness.platform_compat.IS_WINDOWS", True),
+            patch(
+                "kiro_crew.testing.harness.platform_compat.kill_process_tree",
+                side_effect=lambda pid, sig=None: killed.append(pid) or True,
+            ),
+            patch("kiro_crew.testing.harness.terminate_pgid") as pgid,
+            patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.2),
+        ):
+            _terminate_process_group(proc)
+        assert killed == [proc.pid], "Windows teardown did not kill the process tree"
+        assert not pgid.called, "Windows teardown reached the POSIX pgid primitive"
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+
+
+def test_terminate_on_windows_survives_a_failed_tree_kill() -> None:
+    """A ``taskkill`` failure is logged, not raised.
+
+    Teardown runs in a ``finally``: letting a protected descendant or a
+    transient access denial propagate would convert a PASSING test into an error
+    whose traceback names the harness rather than the test.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        with (
+            patch("kiro_crew.testing.harness.platform_compat.IS_WINDOWS", True),
+            patch(
+                "kiro_crew.testing.harness.platform_compat.kill_process_tree",
+                side_effect=PermissionError("taskkill rc=5 access denied"),
+            ),
+            patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.2),
+        ):
+            _terminate_process_group(proc)  # must not raise
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+
+
+# ── READY emitted in the same breath as the exit ─────────────────────────
+
+
+def test_ready_line_returned_when_child_exits_immediately_after_printing() -> None:
+    """A child that prints READY and exits at once still yields its payload.
+
+    The child-exit check runs before the read, so a gateway whose exit lands in
+    that window would be reported as "exited before READY" even though the
+    line was already in the pipe. That is a wall-clock race (flake class 2), not
+    a verdict, so the exit path drains what the reader captured first.
+    """
+    fake = FakePopen([f'{READY_PREFIX}{{"port": 7, "token": "t"}}\n'.encode()])
+    fake.returncode = 0  # already exited, as a fast gateway would be
+
+    result = _wait_for_ready_line(fake, timeout=5.0, stderr_buffer=[])  # type: ignore[arg-type]
+
+    assert result["port"] == 7
+
+
 # ── terminate_pgid ──────────────────────────────────────────────────────
 
 
+@_POSIX_ONLY
 def test_terminate_pgid_noop_when_pid_gone() -> None:
     """A pid with no live process is a clean no-op (no exception)."""
     proc = subprocess.Popen(
@@ -299,6 +412,7 @@ def test_terminate_pgid_noop_when_pid_gone() -> None:
     terminate_pgid(proc.pid)
 
 
+@_POSIX_ONLY
 def test_terminate_pgid_sigkills_after_grace() -> None:
     """A process ignoring SIGTERM is SIGKILLed after the grace window.
 
@@ -335,6 +449,7 @@ def test_terminate_pgid_sigkills_after_grace() -> None:
             proc.wait(timeout=2)
 
 
+@_POSIX_ONLY
 def test_terminate_pgid_graceful_exit_returns_fast() -> None:
     """A group that exits promptly on SIGTERM returns well under ``grace``.
 
@@ -368,6 +483,7 @@ def test_terminate_pgid_graceful_exit_returns_fast() -> None:
             proc.wait(timeout=2)
 
 
+@_POSIX_ONLY
 def test_terminate_pgid_grace_default_resolved_at_call_time() -> None:
     """Patching ``TERMINATE_GRACE_SECONDS`` affects the default grace.
 
@@ -404,6 +520,7 @@ def test_terminate_pgid_grace_default_resolved_at_call_time() -> None:
             proc.wait(timeout=2)
 
 
+@_POSIX_ONLY
 def test_terminate_pgid_wait_hook_used_for_exit_detection() -> None:
     """A supplied ``wait`` hook replaces the pid poll for exit detection.
 

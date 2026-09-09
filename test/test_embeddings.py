@@ -1014,6 +1014,11 @@ class TestEmbedThreads:
     """
 
     def test_default_when_unset(self, monkeypatch) -> None:
+        # The resolver clamps to the core count, so a host with fewer cores than
+        # the default answers with its own core count and the assertion would pin
+        # the runner. Pinned above the default, the same way
+        # ``test_clamped_to_the_core_count`` below pins it under one.
+        monkeypatch.setattr("os.cpu_count", lambda: 8)
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         assert embeddings_mod._embed_threads() == embeddings_mod._DEFAULT_EMBED_THREADS
 
@@ -1026,6 +1031,7 @@ class TestEmbedThreads:
     @pytest.mark.parametrize("bad", [0, -1, True, False, "4", 2.5, None])
     def test_invalid_values_fall_back_to_the_default(self, monkeypatch, bad) -> None:
         """Booleans are rejected explicitly: ``True`` would coerce to 1 thread."""
+        monkeypatch.setattr("os.cpu_count", lambda: 8)
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": bad}
         )

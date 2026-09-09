@@ -1,0 +1,58 @@
+# Known macOS test gaps -- burn-down backlog for full macOS parity.
+#
+# Applied by conftest.py::pytest_collection_modifyitems (rootdir) on macOS
+# ONLY, through the same _apply_tracked_gap_list matcher that applies
+# windows-expected-failures.txt: each listed test (all parametrizations) is
+# skipped there and runs normally on the Linux matrix. Entries are
+# unparametrized pytest node ids -- file, class, function, no [params] and no
+# @group suffix. Captured from the first full-suite macOS shard runs on
+# macos-15 (run 34288884863). Fix the test (or the product gap) and DELETE the
+# line -- additions require a reason in the PR.
+#
+# Grouped under a `# reason` heading, so the PR body's count-by-reason table can
+# be rebuilt from this file.
+
+# frame recording is Linux-only BY DESIGN: src/kiro_crew/acp/_frame_record.py
+# refuses KIROCREW_ACP_RECORD_FRAMES unless IS_LINUX and os.listxattr exists,
+# because no other platform can prove the destination carries no ACL granting
+# another account. These suites assert the recorder RUNS, so they cannot pass
+# on darwin. Not a gap to fix in src: the refusal is the intended behaviour.
+# The refusal-path tests in the same files are NOT listed and keep running here.
+test/test_acp_frame_record.py::test_a_burst_of_large_frames_is_bounded_by_bytes_not_count
+test/test_acp_frame_record.py::test_a_credential_in_a_header_map_leaves_valid_json
+test/test_acp_frame_record.py::test_a_credential_is_scrubbed_before_it_is_written
+test/test_acp_frame_record.py::test_a_directory_created_by_this_run_that_inherited_an_acl_is_refused
+test/test_acp_frame_record.py::test_a_dot_dot_component_cannot_climb_out_through_a_link
+test/test_acp_frame_record.py::test_a_failed_notifier_start_stops_the_writer_it_already_started
+test/test_acp_frame_record.py::test_a_failing_hardlink_helper_does_not_leak_the_descriptor
+test/test_acp_frame_record.py::test_a_filesystem_without_xattrs_has_no_acls_and_is_accepted
+test/test_acp_frame_record.py::test_a_frame_lands_in_the_backend_file
+test/test_acp_frame_record.py::test_a_fresh_recording_is_created_owner_only
+test/test_acp_frame_record.py::test_a_pre_existing_owner_only_directory_is_reused_and_a_loose_file_tightened
+test/test_acp_frame_record.py::test_a_pre_existing_owner_only_directory_with_an_acl_is_refused
+test/test_acp_frame_record.py::test_a_reader_side_stand_down_is_logged_even_when_the_writer_is_wedged
+test/test_acp_frame_record.py::test_a_reader_side_stand_down_is_logged_from_the_writer_thread
+test/test_acp_frame_record.py::test_a_recording_file_that_carries_an_acl_is_refused
+test/test_acp_frame_record.py::test_a_refused_linked_component_is_named_in_the_stand_down
+test/test_acp_frame_record.py::test_no_recorder_thread_is_ever_started_from_the_event_loop
+test/test_acp_frame_record.py::test_one_failure_logs_once_and_discards_the_backlog
+test/test_acp_frame_record.py::test_queued_bytes_are_released_as_frames_are_written
+test/test_acp_frame_record.py::test_record_frame_never_waits_on_the_byte_budget_lock
+test/test_acp_frame_record.py::test_record_frame_offloads_the_write_off_the_event_loop
+test/test_acp_frame_record.py::test_record_frame_returns_while_the_writer_is_wedged
+test/test_acp_frame_record.py::test_teardown_does_not_block_on_a_full_queue
+test/test_acp_frame_record.py::test_the_lockdown_is_applied_to_the_opened_descriptor_not_the_path
+test/test_acp_frame_record.py::test_the_recording_home_directory_is_scrubbed
+test/test_acp_frame_record.py::test_two_event_loops_share_one_writer_and_one_byte_budget
+test/test_acp_frame_record_provider_safety.py::test_provider_is_untouched_once_the_recorder_has_stood_down
+test/test_acp_frame_record_provider_safety.py::test_provider_never_waits_on_a_wedged_writer_thread
+test/test_acp_frame_record_provider_safety.py::test_provider_reader_does_not_propagate_an_unexpected_recorder_exception
+test/test_acp_frame_record_provider_safety.py::test_provider_reads_frames_normally_with_the_recorder_on
+test/test_acp_frame_record_provider_safety.py::test_provider_survives_a_full_queue_by_bytes
+test/test_acp_frame_record_provider_safety.py::test_provider_survives_a_full_queue_by_count
+test/test_acp_frame_record_provider_safety.py::test_provider_survives_an_unwritable_destination
+test/test_acp_frame_record_provider_safety.py::test_runtime_does_not_die_on_an_unexpected_recorder_exception
+test/test_acp_frame_record_provider_safety.py::test_runtime_never_waits_on_a_wedged_writer_thread
+test/test_acp_frame_record_provider_safety.py::test_runtime_recorder_fault_does_not_leak_across_sessions
+test/test_acp_frame_record_provider_safety.py::test_runtime_routes_frames_normally_with_the_recorder_on
+test/test_acp_frame_record_provider_safety.py::test_runtime_survives_a_full_queue

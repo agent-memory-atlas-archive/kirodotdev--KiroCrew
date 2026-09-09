@@ -311,6 +311,137 @@ def copy_fixture_into_dir_fd(fixture_name: str, dst_fd: int) -> None:
         os.close(src_fd)
 
 
+def copy_fixture_into_witnessed_dir(fixture_name: str, home_dir: Path) -> None:
+    """Copy one shipped fixture into a directory the CALLER just created and witnessed.
+
+    The win32 twin of :func:`copy_fixture_into_dir_fd`, and it exists because that
+    function's whole mechanism is unavailable here: Windows has no ``dir_fd``, so a
+    destination cannot be addressed relative to a held descriptor at all.
+
+    What is preserved, and what is not:
+
+    * The SOURCE is still fully pinned. Each fixture file is opened once and handed
+      to :func:`pinned_fs.copy_file_pinned` as ``src_fd``, which is documented as the
+      only pinned source form on this platform, and each source directory is screened
+      with :func:`pinned_fs.is_reparse_point` before it is descended.
+    * Every DESTINATION is created ``O_CREAT | O_EXCL`` under *home_dir*, so this
+      function can only ever add entries it created. It cannot overwrite anything,
+      and an occupied name is an error rather than a silent replace.
+    * What is NOT preserved is destination ancestor pinning. *home_dir* is reached by
+      name on every entry, which is sound only because the caller created that
+      directory fresh and holds an open handle plus an
+      :func:`pinned_fs.fd_real_path` witness for it -- the documented exception for
+      "a path this process just created". The caller re-witnesses before publishing
+      the completion marker, so a swap during the copy is detected and the seed is
+      refused rather than booted.
+
+    The manifest is deliberately not copied, exactly as in the descriptor twin: the
+    caller publishes it last through
+    :func:`publish_fixture_manifest_into_witnessed_dir` so a partial tree can never
+    carry a completion marker.
+    """
+    src = _resolve_fixture(fixture_name)
+    manifest_seen = False
+
+    def _refuse_skip(reason: str, path: str) -> None:
+        raise SeedError(
+            f"fixture {fixture_name!r} contains an unsupported {reason}: {path}",
+            guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+        )
+
+    def _walk(src_dir: Path, dst_dir: Path, display: Path) -> None:
+        nonlocal manifest_seen
+        for name in sorted(os.listdir(src_dir)):
+            if display == src and name == FIXTURE_MANIFEST:
+                manifest_seen = True
+                continue
+            shown = display / name
+            src_entry = src_dir / name
+            if pinned_fs.is_reparse_point(src_entry):
+                _refuse_skip(pinned_fs.SKIP_SYMLINK, str(shown))
+            st = os.lstat(src_entry)
+            if stat.S_ISDIR(st.st_mode):
+                child = dst_dir / name
+                try:
+                    child.mkdir(mode=0o700)
+                except FileExistsError as exc:
+                    raise SeedError(
+                        f"seed destination name was occupied during copy: {shown}",
+                        guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                    ) from exc
+                _walk(src_entry, child, shown)
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                _refuse_skip(pinned_fs.SKIP_NOT_REGULAR, str(shown))
+            # The source descriptor is opened ONCE and handed over; copy_file_pinned
+            # takes ownership and fstats it, so the bytes copied are the bytes of the
+            # inode this open reached rather than of whatever the name means later.
+            src_fd = os.open(src_entry, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                copied = pinned_fs.copy_file_pinned(
+                    str(shown),
+                    str(dst_dir / name),
+                    src_fd=src_fd,
+                    force_mode=0o600,
+                    on_skip=_refuse_skip,
+                )
+            except FileExistsError as exc:
+                raise SeedError(
+                    f"seed destination name was occupied during copy: {shown}",
+                    guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                ) from exc
+            if not copied:  # pragma: no cover - the reporter above always raises
+                raise SeedError(
+                    f"fixture entry could not be copied: {shown}",
+                    guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                )
+
+    if pinned_fs.is_reparse_point(src):
+        _refuse_skip(pinned_fs.SKIP_SYMLINK, str(src))
+    _walk(src, home_dir, src)
+    if not manifest_seen:
+        raise SeedError(
+            f"fixture {fixture_name!r} has no {FIXTURE_MANIFEST} completion marker",
+            guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+        )
+
+
+def publish_fixture_manifest_into_witnessed_dir(fixture_name: str, home_dir: Path) -> None:
+    """Publish the completion manifest into a caller-witnessed seeded home.
+
+    The commit step of the win32 seeding transaction, and the twin of
+    :func:`publish_fixture_manifest`. The source is pinned by descriptor and the
+    destination is an ``O_EXCL`` create under *home_dir*, so the marker can only
+    appear once and only over a tree this process finished writing.
+    """
+    src = _resolve_fixture(fixture_name) / FIXTURE_MANIFEST
+    if pinned_fs.is_reparse_point(src):
+        raise SeedError(
+            f"fixture {fixture_name!r} completion marker is a link: {src}",
+            guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+        )
+
+    def _refuse_skip(reason: str, path: str) -> None:
+        raise SeedError(
+            f"fixture {fixture_name!r} completion marker is an unsupported {reason}: {path}",
+            guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+        )
+
+    src_fd = os.open(src, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    copied = pinned_fs.copy_file_pinned(
+        str(src),
+        str(home_dir / FIXTURE_MANIFEST),
+        src_fd=src_fd,
+        force_mode=0o600,
+        on_skip=_refuse_skip,
+    )
+    if not copied:  # pragma: no cover - the reporter above always raises
+        raise SeedError(
+            f"fixture {fixture_name!r} completion marker could not be copied",
+            guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+        )
+
+
 def publish_fixture_manifest(fixture_name: str, dst_fd: int) -> None:
     """Publish the fixture's completion manifest into an already-seeded home.
 

@@ -5891,7 +5891,8 @@ async def test_startup_skips_background_tasks_when_disabled(monkeypatch):
     when background tasks are disabled, so tests that boot the real app via
     ``create_app()`` (e.g. the HMAC tests above) never drag in a live network
     ``git fetch``. See issue #1832: an unstubbed ``_status_refresher`` leaked
-    into unrelated tests and flaked ``Gateway Tests (macOS)``."""
+    into unrelated tests and flaked the macOS CI job (then named ``Gateway Tests
+    (macOS)``, now ``Backend Tests (macOS)``)."""
     monkeypatch.setattr(http_api_mod, "_load_app_secret", lambda: "sekrit")
     monkeypatch.setattr(worktree_ops_mod, "_background_tasks_disabled", lambda: True)
     app = mod.create_app()

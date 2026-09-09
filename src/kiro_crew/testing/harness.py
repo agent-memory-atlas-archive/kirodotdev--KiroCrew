@@ -27,6 +27,22 @@ Reusable primitives:
     gateway (tail its log for the READY line, terminate it later by pid
     without holding the ``Popen``) can reuse them instead of re-implementing
     the wire-contract parse and the SIGTERM→SIGKILL group kill.
+
+Cross-platform: the harness runs on Linux, macOS and Windows. Two things had
+to be platform-neutral for that, and both are load-bearing rather than
+cosmetic:
+
+    * The READY wait reads the child's stdout through a daemon reader thread
+      feeding a ``queue.Queue`` (:class:`_StdoutPump`). ``selectors`` cannot
+      poll a PIPE on Windows -- ``DefaultSelector`` there is select()-based and
+      accepts sockets only -- so a selector-driven read is not merely slower on
+      Windows, it raises. The queue's bounded ``get`` preserves what the
+      selector poll bought: the deadline is enforced even while the child is
+      alive and silent.
+    * Teardown routes through ``platform_compat.kill_process_tree`` on Windows
+      (``taskkill /T /F``) instead of ``terminate_pgid``; there is no
+      ``setsid`` / ``killpg`` there. See
+      ``docs/system-specs/common/platform-compat.md``.
 """
 
 from __future__ import annotations
@@ -35,18 +51,20 @@ import contextlib
 import json
 import logging
 import os
-import selectors
+import queue
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Callable, Iterator, Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.kiro_prerequisite import FAKE_ACP_TEST_MODE_ENV
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,6 +79,12 @@ DEFAULT_READY_TIMEOUT = 60.0
 # common case (no pending tool calls, no hung MCP servers) and bounds the
 # pytest teardown latency for tests that exercise multiple invocations.
 TERMINATE_GRACE_SECONDS = 5.0
+
+# How long the READY wait keeps reading stdout after the child has exited, so a
+# READY line already written but not yet handed over by the reader thread is not
+# misreported as "exited before READY". The child's write end is closed by then,
+# so EOF arrives in milliseconds; this is a ceiling, not a sleep.
+EXIT_DRAIN_SECONDS = 2.0
 
 # Sentinel prefix the gateway prints to stdout once the dashboard is bound.
 # Owned by ``slack/gateway.py``; if you change it there, update here too.
@@ -96,6 +120,22 @@ class GatewayHandle:
     token: str
     home: Path
     proc: subprocess.Popen[bytes]
+    #: Bound diagnostics provider (exit status, stderr tail, stdout tail).
+    #: ``None`` for handles built outside :func:`spawn_feature_gateway`.
+    _diagnostics: Optional[Callable[[], str]] = None
+
+    def diagnostics(self) -> str:
+        """Exit status plus the stderr and stdout tails of the child, for a
+        failure AFTER the READY line.
+
+        The READY wait already attaches stderr to a spawn failure. A test's own
+        first request failing (connection reset, refused, a 5xx) is the other
+        common shape, and on a platform nobody can reproduce locally the child's
+        stderr is the only evidence there is. Call this in the assertion message.
+        """
+        if self._diagnostics is None:
+            return f"pid {self.proc.pid} exit={self.proc.poll()!r} (no captured output)"
+        return self._diagnostics()
 
 
 class GatewaySpawnError(RuntimeError):
@@ -171,75 +211,215 @@ def parse_ready_line(line: str) -> dict[str, Any]:
     return payload
 
 
+class _StdoutPump:
+    """One daemon reader over the child's stdout, for the whole run.
+
+    Why a thread and not ``selectors``: ``selectors.DefaultSelector()`` is
+    select()-based on Windows and accepts SOCKETS only, so registering a
+    subprocess PIPE there raises rather than polling it. A reader thread behaves
+    identically on all three platforms.
+
+    Why the queue: the thread would otherwise read ahead without bound, and the
+    READY waiter needs a *bounded* wait so the deadline is checked even while
+    the child is alive and silent -- the one guarantee the old selector poll
+    provided. ``queue.Queue.get(timeout=...)`` gives exactly that, without a
+    busy loop, and it does not spin on EOF the way a selector does (EOF is
+    permanently readable).
+
+    Why one thread for the whole run and not one per phase: two readers on one
+    pipe race for the same bytes. Before READY, chunks go to the queue for the
+    waiter. After :meth:`handoff`, the same thread keeps draining -- which is
+    what stops the gateway blocking on a full stdout pipe partway through a long
+    run -- into a bounded ring buffer, so a multi-minute run's whole stdout is
+    not retained.
+    """
+
+    #: Chunks retained after handoff, for post-mortem diagnostics of a failed
+    #: run. Matches the previous ``deque(maxlen=256)`` drain.
+    TAIL_CHUNKS = 256
+
+    def __init__(self, stdout: IO[bytes]) -> None:
+        self._stdout = stdout
+        self._queue: queue.Queue[Optional[bytes]] = queue.Queue()
+        self._tail: deque[bytes] = deque(maxlen=self.TAIL_CHUNKS)
+        self._handed_off = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            while True:
+                chunk = self._stdout.read1(4096)  # type: ignore[attr-defined]
+                if not chunk:
+                    return
+                if self._handed_off.is_set():
+                    self._tail.append(chunk)
+                else:
+                    self._queue.put(chunk)
+        except (OSError, ValueError):
+            # Pipe closed under us (teardown races the read). Nothing to
+            # report: the waiter's deadline and ``proc.poll()`` own the verdict.
+            return
+        finally:
+            # EOF sentinel, so the waiter can stop expecting bytes without
+            # having to poll the thread's liveness.
+            self._queue.put(None)
+
+    def get(self, timeout: float) -> Optional[bytes]:
+        """Next stdout chunk, ``None`` at EOF, raising ``queue.Empty`` on timeout."""
+        return self._queue.get(timeout=timeout)
+
+    def drain_until_eof(self, timeout: float) -> bytes:
+        """Everything the reader captures up to EOF, bounded by ``timeout``.
+
+        Used on child exit. The child is gone, so its write end is closed and
+        the pipe EOFs promptly -- but the reader thread may not have handed the
+        last chunk over yet, and a READY line already in the pipe must not be
+        reported as "exited before READY". A plain non-blocking drain loses that
+        race; waiting for the sentinel does not.
+        """
+        deadline = time.monotonic() + timeout
+        chunks: list[bytes] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                chunk = self._queue.get(timeout=min(remaining, 0.05))
+            except queue.Empty:
+                continue
+            if chunk is None:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def handoff(self) -> None:
+        """Stop queueing; keep draining the pipe into the bounded tail."""
+        self._handed_off.set()
+
+    def tail_text(self) -> str:
+        """The post-handoff stdout tail, decoded for a diagnostic message."""
+        return b"".join(self._tail).decode("utf-8", errors="replace")
+
+
+def fake_acp_backend_launcher(directory: Path) -> Path:
+    """The path to hand ``KIROCREW_KIRO_BIN`` so the gateway spawns the packaged
+    fake ACP backend, on every platform.
+
+    On POSIX that is ``fake_acp_backend.__file__`` itself: the module carries a
+    shebang and is exec'd in place. Windows has no shebang, so ``CreateProcess``
+    refuses a ``.py`` path outright; it DOES run a ``.cmd`` (handed to the
+    command interpreter), and ``.cmd`` is in ``platform_compat``'s
+    runnable-suffix set, so the candidate also survives ``is_executable_file``.
+    ``build.yml`` stages its Windows backend payload as ``kirocrew.cmd`` for the
+    same reason.
+
+    Named ``kiro-backend.cmd`` ON PURPOSE, not ``kiro-cli.exe``: delegation to
+    Kiro CLI's own sandbox must come from the reviewed ACP call site passing
+    ``is_kiro_cli=True``, never from the basename, so a launcher whose name
+    cannot satisfy ``_spawns_kiro_cli`` proves the classification is what grants
+    it. ``directory`` must outlive the gateway that runs the shim.
+    """
+    from kiro_crew.testing import fake_acp_backend
+
+    backend = Path(str(fake_acp_backend.__file__))
+    if not platform_compat.IS_WINDOWS:
+        return backend
+    launcher = Path(directory) / "kiro-backend.cmd"
+    launcher.write_text(
+        "@echo off\r\n" f'"{sys.executable}" -m kiro_crew.testing.fake_acp_backend %*\r\n',
+        encoding="ascii",
+    )
+    return launcher
+
+
 def _wait_for_ready_line(
     proc: subprocess.Popen[bytes],
     *,
     timeout: float,
     stderr_buffer: list[bytes],
+    pump: Optional[_StdoutPump] = None,
 ) -> dict[str, Any]:
     """Read stdout until we see ``KIROCREW_READY:{...}`` or hit the timeout.
 
-    Uses ``selectors`` rather than ``stdout.readline()`` so the deadline is
-    enforced even when the subprocess is alive but silent. ``readline()``
-    is a blocking call on a pipe — a gateway that's stuck on a network
-    call or deadlocked internally without writing to stdout and without
-    exiting would otherwise hang the harness indefinitely, contradicting
-    the documented 60s timeout guarantee. The selector poll caps the wait
-    per iteration so the deadline check fires at least every 0.5 s.
+    Consumes chunks from a :class:`_StdoutPump` rather than reading the pipe
+    directly, so the deadline is enforced even when the subprocess is alive but
+    silent. A blocking ``stdout.readline()`` on a gateway stuck in a network
+    call -- writing nothing and not exiting -- would hang the harness
+    indefinitely, contradicting the documented 60s guarantee.
 
-    Surfaces stderr (populated by the caller's drain thread) on timeout
-    or early subprocess exit. Raises ``GatewaySpawnError`` on timeout,
-    early exit, or malformed payload. Returns the parsed READY-line dict.
+    Child exit during the wait is an IMMEDIATE failure carrying the stderr tail
+    (populated by the caller's drain thread), not a wait to the deadline. The
+    already-queued stdout is drained and scanned for READY first: a child that
+    printed READY and exited in the same breath did emit it, and reporting that
+    as "exited before READY" would be a wall-clock race rather than a verdict.
+
+    ``pump`` lets the caller keep the reader alive past this function (see
+    ``spawn_feature_gateway``, which hands it off to the bounded drain). When
+    omitted, one is created and owned here.
+
+    Raises ``GatewaySpawnError`` on timeout, early exit, or malformed payload.
+    Returns the parsed READY-line dict.
     """
     deadline = time.monotonic() + timeout
     stdout = proc.stdout
     if stdout is None:  # defensive — Popen always wires stdout when PIPE
         raise GatewaySpawnError("subprocess stdout is not piped")
 
-    sel = selectors.DefaultSelector()
-    sel.register(stdout, selectors.EVENT_READ)
+    if pump is None:
+        pump = _StdoutPump(stdout)
+        pump.start()
+
+    def _stderr_tail() -> str:
+        return b"".join(stderr_buffer).decode("utf-8", errors="replace")[-4000:]
+
+    def _scan(buffer: bytes) -> tuple[Optional[dict[str, Any]], bytes]:
+        """Pull whole lines off ``buffer``; return the READY payload if seen."""
+        while b"\n" in buffer:
+            line_bytes, buffer = buffer.split(b"\n", 1)
+            line = line_bytes.decode("utf-8", errors="replace").strip()
+            if line.startswith(READY_PREFIX):
+                return parse_ready_line(line), buffer
+        return None, buffer
+
     buf = b""
-    try:
-        while True:
-            if proc.poll() is not None:
-                stderr_text = b"".join(stderr_buffer).decode("utf-8", errors="replace")
-                raise GatewaySpawnError(
-                    f"gateway subprocess exited with code {proc.returncode} "
-                    f"before emitting {READY_PREFIX} line.\n"
-                    f"--- stderr (last) ---\n{stderr_text[-4000:]}"
-                )
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                stderr_text = b"".join(stderr_buffer).decode("utf-8", errors="replace")
-                raise GatewaySpawnError(
-                    f"gateway did not emit {READY_PREFIX} line within "
-                    f"{timeout:.1f}s. Override with KIROCREW_HARNESS_READY_TIMEOUT.\n"
-                    f"--- stderr (last) ---\n{stderr_text[-4000:]}"
-                )
-            # Cap each select() at 0.5 s so the deadline + poll() checks
-            # above run frequently even if the subprocess goes silent.
-            ready = sel.select(timeout=min(remaining, 0.5))
-            if not ready:
-                continue  # poll interval elapsed — re-check deadline & proc
-            chunk = stdout.read1(4096)  # type: ignore[attr-defined]
-            if not chunk:
-                # EOF on stdout. Without unregistering, the selector keeps
-                # reporting EOF as ready (EOF is permanently readable),
-                # ``read1`` keeps returning b"", and the loop spins at
-                # 100% CPU until the deadline fires. Unregister so the
-                # next ``sel.select()`` has nothing to poll and sleeps
-                # for its 0.5s timeout instead — the deadline + poll()
-                # checks at the top of the loop handle the rest.
-                sel.unregister(stdout)
-                continue
-            buf += chunk
-            while b"\n" in buf:
-                line_bytes, buf = buf.split(b"\n", 1)
-                line = line_bytes.decode("utf-8", errors="replace").strip()
-                if line.startswith(READY_PREFIX):
-                    return parse_ready_line(line)
-    finally:
-        sel.close()
+    while True:
+        if proc.poll() is not None:
+            # Scan whatever the reader captures up to EOF before declaring the
+            # exit premature (see the docstring's race note). Bounded: the child
+            # is already gone, so its write end is closed and EOF is imminent.
+            payload, buf = _scan(buf + pump.drain_until_eof(EXIT_DRAIN_SECONDS))
+            if payload is not None:
+                return payload
+            raise GatewaySpawnError(
+                f"gateway subprocess exited with code {proc.returncode} "
+                f"before emitting {READY_PREFIX} line.\n"
+                f"--- stderr (last) ---\n{_stderr_tail()}"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GatewaySpawnError(
+                f"gateway did not emit {READY_PREFIX} line within "
+                f"{timeout:.1f}s. Override with KIROCREW_HARNESS_READY_TIMEOUT.\n"
+                f"--- stderr (last) ---\n{_stderr_tail()}"
+            )
+        # Cap each wait at 0.5s so the deadline + poll() checks above run
+        # frequently even if the subprocess goes silent.
+        try:
+            chunk = pump.get(timeout=min(remaining, 0.5))
+        except queue.Empty:
+            continue  # poll interval elapsed — re-check deadline & proc
+        if chunk is None:
+            # EOF on stdout without READY. The child may still be alive (it can
+            # close stdout and keep running), so keep honouring the deadline and
+            # the exit check rather than failing here; the queue is empty from
+            # now on, so each iteration sleeps its 0.5s instead of spinning.
+            continue
+        payload, buf = _scan(buf + chunk)
+        if payload is not None:
+            return payload
 
 
 def _drain_stderr(stderr: IO[bytes], buffer: list[bytes]) -> None:
@@ -265,6 +445,13 @@ def terminate_pgid(
     wait: Optional[Callable[[float], object]] = None,
 ) -> None:
     """SIGTERM a process group by pid, escalate to SIGKILL after ``grace``.
+
+    POSIX ONLY. Process groups, ``setsid`` and ``killpg`` do not exist on
+    Windows; ``_terminate_process_group`` routes that platform through
+    ``platform_compat.kill_process_tree`` instead. Calling this on Windows
+    raises ``AttributeError`` from ``os.getpgid`` -- deliberately not guarded,
+    because a caller reaching here on Windows has the wrong teardown primitive
+    and should say so loudly.
 
     pid-based (no ``Popen`` handle required) so out-of-process supervisors —
     e.g. a ``stop`` script tearing down a detached gateway it did not itself
@@ -374,22 +561,58 @@ def terminate_pgid(
         )
 
 
+def _terminate_process_tree_windows(proc: subprocess.Popen[bytes]) -> None:
+    """Tear down the gateway's tree on Windows via ``taskkill /T /F``.
+
+    Windows has no ``setsid`` / ``killpg``, so ``terminate_pgid``'s whole
+    mechanism is unavailable; ``platform_compat.kill_process_tree`` is the
+    repo's one helper for this (see platform-compat.md). It walks the real
+    parent/child tree, which is what reaches the gateway's MCP servers and
+    kiro-cli children -- ``proc.terminate()`` would signal only the parent and
+    leave them holding the ephemeral port.
+
+    There is no graceful step to attempt first: ``taskkill /F`` is a hard
+    terminate, and Windows offers no SIGTERM equivalent deliverable to a child
+    that shares no console. The child therefore gets no shutdown budget on this
+    platform, which is acceptable for a throwaway test gateway and is why the
+    grace constant is only used for the reap below.
+    """
+    try:
+        platform_compat.kill_process_tree(proc.pid, platform_compat.SIGTERM)
+    except ProcessLookupError:
+        pass  # already gone between the poll above and here
+    except (PermissionError, OSError) as exc:
+        # A protected descendant or a transient access denial. Log rather than
+        # raise: teardown must not turn a passing test red, and the reap below
+        # still reports whether the parent actually died.
+        _LOGGER.warning("kill_process_tree(%d) failed during teardown: %s", proc.pid, exc)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=TERMINATE_GRACE_SECONDS)
+
+
 def _terminate_process_group(proc: subprocess.Popen[bytes]) -> None:
     """Tear down the gateway's whole process tree, then reap.
 
     The gateway spawns child processes (MCP servers, kiro-cli sessions,
     secretary). ``proc.terminate()`` only signals the parent;
     children can outlive it and hold the ephemeral port or cache files open.
-    Delegates the SIGTERM→SIGKILL group kill to ``terminate_pgid`` (shared
+
+    POSIX delegates the SIGTERM→SIGKILL group kill to ``terminate_pgid`` (shared
     with out-of-process supervisors), passing ``proc.wait`` as the
     exit-detection hook — handle-based detection returns the instant the
     child exits (even before it's reaped), so a graceful SIGTERM teardown
     doesn't burn the full grace window the way a pid poll would. Then
     ``proc.wait()`` reaps so the child doesn't linger as a zombie.
     ``TERMINATE_GRACE_SECONDS`` is read at call time so tests can patch it.
+
+    Windows takes ``_terminate_process_tree_windows`` instead: process groups
+    are a POSIX concept and the group primitives do not exist there.
     """
     if proc.poll() is not None:
         return  # already exited
+    if platform_compat.IS_WINDOWS:
+        _terminate_process_tree_windows(proc)
+        return
     terminate_pgid(
         proc.pid,
         grace=TERMINATE_GRACE_SECONDS,
@@ -515,17 +738,20 @@ def spawn_feature_gateway(
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            # New session = new process group. Lets us SIGTERM/SIGKILL the
-            # whole tree on teardown so child MCP servers / kiro-cli sessions
-            # don't outlive their parent and hold ports open.
-            start_new_session=True,
+            # Process-group isolation so teardown can reap the whole tree and
+            # child MCP servers / kiro-cli sessions don't outlive their parent
+            # holding ports open. The two kwargs are passed EXPLICITLY (never
+            # **unpacked) per platform-compat.md: on POSIX start_new_session
+            # calls setsid so killpg reaps the group and creationflags=0 is a
+            # no-op; on Windows there is no setsid and CREATE_NEW_PROCESS_GROUP
+            # is what makes the tree taskkill /T-reapable.
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
 
         # Drain stderr asynchronously into a list so the buffer can't fill
         # and deadlock the subprocess. Using a daemon thread is fine: it
         # exits when the process closes its stderr.
-        import threading
-
         stderr_buffer: list[bytes] = []
         if proc.stderr is not None:
             drainer = threading.Thread(
@@ -533,30 +759,48 @@ def spawn_feature_gateway(
             )
             drainer.start()
 
+        # ONE reader owns stdout for the whole run. It feeds the READY waiter
+        # first, then keeps draining into a bounded tail -- the READY loop stops
+        # consuming once it sees the sentinel, and without a continuing drain the
+        # gateway blocks on a full stdout pipe partway through a long run
+        # (per-turn logging fills the ~64KB buffer), stalling the event loop into
+        # connection-refused for every later request. A second thread on the same
+        # pipe would race this one for the same bytes, so the pump switches
+        # destinations instead of being replaced.
+        pump: Optional[_StdoutPump] = None
+        if proc.stdout is not None:
+            pump = _StdoutPump(proc.stdout)
+            pump.start()
+
         try:
-            ready = _wait_for_ready_line(proc, timeout=timeout, stderr_buffer=stderr_buffer)
-            # Drain stdout for the lifetime of the run too. The READY loop
-            # above stops reading stdout once it sees the sentinel, so without
-            # this the gateway blocks on a full stdout pipe buffer partway
-            # through a long run (per-turn logging fills the ~64KB pipe),
-            # stalling the event loop -> connection-refused for every later
-            # request. Mirrors the stderr drainer; reuses the same reader.
-            if proc.stdout is not None:
-                # Bounded ring buffer: drain the pipe (prevents the block-on-
-                # full-pipe deadlock) without retaining the whole multi-minute
-                # run's stdout. deque(maxlen=...) keeps only the last N chunks
-                # for post-mortem diagnostics of a failed run; older chunks are
-                # dropped. A plain ``[]`` (the accumulating _drain_stderr buffer)
-                # grew unbounded for the entire run while never being read.
-                stdout_tail: deque[bytes] = deque(maxlen=256)
-                stdout_drainer = threading.Thread(
-                    target=_drain_stderr, args=(proc.stdout, stdout_tail), daemon=True
-                )
-                stdout_drainer.start()
+            ready = _wait_for_ready_line(
+                proc, timeout=timeout, stderr_buffer=stderr_buffer, pump=pump
+            )
+            if pump is not None:
+                pump.handoff()
             port = int(ready["port"])
             token = str(ready["token"])
             url = f"http://localhost:{port}/?token={token}"
-            handle = GatewayHandle(url=url, port=port, token=token, home=home, proc=proc)
+
+            def _diagnostics() -> str:
+                err = b"".join(stderr_buffer).decode("utf-8", errors="replace")[-4000:]
+                out = ""
+                if pump is not None:
+                    out = pump.tail_text()[-2000:]
+                return (
+                    f"gateway pid {proc.pid} exit={proc.poll()!r}\n"
+                    f"--- stderr (last) ---\n{err}\n"
+                    f"--- stdout after READY (last) ---\n{out}"
+                )
+
+            handle = GatewayHandle(
+                url=url,
+                port=port,
+                token=token,
+                home=home,
+                proc=proc,
+                _diagnostics=_diagnostics,
+            )
             yield handle
         finally:
             _terminate_process_group(proc)

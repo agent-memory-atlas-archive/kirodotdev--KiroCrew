@@ -876,10 +876,10 @@ async def _await_cron_fire_time_gate(
 ) -> tuple[str | None, bool]:
     """Await the fire-time governance gate, bounded, returning ``(reason, starved)``.
 
-    The gate used to be awaited as a bare ``run_in_executor`` on the shared
-    governance pool, with no timeout of its own, INSIDE the wake deadline
-    ``_execute_with_timeout`` has already armed.  Two things followed, and a
-    review lane raised both:
+    A bare ``run_in_executor`` on the shared governance pool, with no timeout of
+    its own, INSIDE the wake deadline ``_execute_with_timeout`` has already armed,
+    is the shape to avoid here.  Two things follow from it, and a review lane
+    raised both:
 
     * that pool is paced by REMOTE senders, so an inbound burst put an unbounded
       FIFO backlog ahead of a cron gate; and
@@ -904,9 +904,9 @@ async def _await_cron_fire_time_gate(
     auto-pause a job that never ran a line.
     """
     budget = cron_gate_budget(effective_wake_budget(job))
-    # Default to RETAIN for exactly the duration of the await.  The marker used to
-    # be set only INSIDE the handler below -- that is, only when the await raised
-    # something that handler catches.  A recoverable event-loop stall can carry
+    # Default to RETAIN for exactly the duration of the await.  Setting the marker
+    # only INSIDE the handler below -- that is, only when the await raises
+    # something that handler catches -- is not enough.  A recoverable event-loop stall can carry
     # wall clock past the gate's own bounds AND the wake deadline, and the
     # ``asyncio.wait_for`` in ``_execute_with_timeout`` then cancels this coroutine
     # AT the await: no handler runs, the marker stays False, that timeout is caught
@@ -1124,10 +1124,10 @@ def claim_vet_bound(job: CronJob) -> float:
 def _claim_backstop(job: CronJob, subprocess_bound: int) -> float:
     """The inner ``run_in_cron_pool`` bound: subprocess + teardown + vet.
 
-    One budget covers all three serially, so each needs a term.  ``+ 5`` used to
-    be written here as a literal duplicate of
-    :data:`~kiro_crew.cron._SUBPROC_CLEANUP_ALLOWANCE_SECS`; reading the constant
-    keeps the teardown margin single-sourced, and adding
+    One budget covers all three serially, so each needs a term.  The teardown
+    term is read from
+    :data:`~kiro_crew.cron._SUBPROC_CLEANUP_ALLOWANCE_SECS` rather than written as
+    a literal ``+ 5`` so the margin stays single-sourced, and adding
     :func:`claim_vet_bound` stops the vet spending the teardown's share of it.
     """
     return subprocess_bound + _SUBPROC_CLEANUP_ALLOWANCE_SECS + claim_vet_bound(job)
@@ -2860,9 +2860,9 @@ class GatewayOrchestrator:
             # rather than importing ``agent.run_first_run_setup`` directly, so
             # first-run setup is genuinely extensible: an edition composes an
             # adapter that adds its own one-time provisioning on top. The
-            # ``DefaultAgentRuntime`` delegates to exactly the same
-            # ``agent.run_first_run_setup()`` this line used to call, so the
-            # standalone build is behaviorally identical (asserted in
+            # ``DefaultAgentRuntime`` delegates to exactly
+            # ``agent.run_first_run_setup()``, so the standalone build is
+            # behaviorally identical to calling it here directly (asserted in
             # test_cpp_wiring_standalone).
             #
             # ``safe_context_call`` keeps a transient adapter error from breaking
@@ -11549,12 +11549,17 @@ class GatewayOrchestrator:
                 dashboard_url = build_dashboard_url(
                     base_url, startup_token, local_only=self._local_only
                 )
-                for line in format_dashboard_urls(
+                # Off the loop: the Remote hint resolves the host's own name, and
+                # a name the resolver cannot answer (every hosted macOS runner)
+                # would otherwise sit on the loop for the lookup's bound.
+                url_lines = await asyncio.to_thread(
+                    format_dashboard_urls,
                     dashboard_url,
                     port=self._dashboard_port,
                     local_only=self._local_only,
                     has_custom_host=bool(self._configured_host),
-                ):
+                )
+                for line in url_lines:
                     print(line)
 
                 # Auto-open dashboard — skip on headless remote sessions

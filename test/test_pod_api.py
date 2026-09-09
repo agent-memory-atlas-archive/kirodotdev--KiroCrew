@@ -616,7 +616,7 @@ class TestPodPidAttestation:
     def test_windows_is_asked_the_same_question_as_every_other_host(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``port_owner`` used to refuse win32 outright, before consulting anything.
+        """``port_owner`` must not refuse win32 outright before consulting anything.
 
         That was unsatisfiable rather than strict: ``pod up`` mints a token and
         ``mint_token`` requires positive proof, so a healthy Windows pod could

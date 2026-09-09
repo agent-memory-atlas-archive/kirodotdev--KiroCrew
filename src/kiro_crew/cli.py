@@ -262,7 +262,24 @@ def _project_dir_file() -> Path:
 
 
 def _ensure_node(proj_dir: str = "") -> bool:
-    """Run ensure-node.sh to guarantee a supported Node. Returns True if node is OK."""
+    """Run ensure-node.sh to guarantee a supported Node. Returns True if node is OK.
+
+    Skipped on Windows, where it is not merely unhelpful but actively harmful.
+    ``ensure-node.sh`` is a POSIX shell script and the repo ships no Windows
+    equivalent, so the spawn resolves ``bash`` through ``PATH`` -- and on Windows
+    ``C:\\Windows\\System32\\bash.exe`` is WSL's launcher, so the call prints a
+    UTF-16 "Windows Subsystem for Linux has no installed distributions" banner into
+    whatever stdout it inherited and installs nothing. A pod gateway inherits its
+    wrapper's redirected stdout, so that banner lands in the pod's own log and
+    reads as pod output. ``env.ensure_node`` already returns None here for the same
+    reason; this is the second caller of the same script.
+
+    A Windows host gets its Node from the platform installer or a version manager,
+    which ``_node_ok`` already sees, so returning that answer is the whole
+    behaviour rather than a degraded one.
+    """
+    if platform_compat.IS_WINDOWS:
+        return _node_ok()
     script = None
     env_dir = os.environ.get("KIROCREW_PROJECT_DIR")
     for candidate in [

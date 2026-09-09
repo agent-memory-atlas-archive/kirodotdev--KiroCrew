@@ -20,6 +20,7 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -36,9 +37,7 @@ _BIND_ALL = "0.0.0.0"
 # reaches the dashboard on more than one of these names gets a separate, empty
 # settings bucket each time — settings appear to "reset". We canonicalize
 # navigations among this set onto a single host (see should_canonicalize_host).
-_CANONICALIZABLE_LOOPBACK_HOSTS = frozenset(
-    {"127.0.0.1", "::1", "localhost", "kirocrew.localhost"}
-)
+_CANONICALIZABLE_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "kirocrew.localhost"})
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +51,44 @@ def machine_hostname() -> str | None:
         return socket.gethostname()
     except Exception:
         return None
+
+
+#: Ceiling on the startup hostname lookup. The hint it feeds is cosmetic; the
+#: gateway's event loop is not.
+HOSTNAME_RESOLVE_TIMEOUT_SECS = 2.0
+
+
+def _resolve_hostname_bounded(host: str, timeout: float | None = None) -> str | None:
+    """``socket.gethostbyname(host)`` that gives up after *timeout* seconds.
+
+    ``gethostbyname`` has no timeout of its own and this runs on the event loop
+    during startup. On a host whose own name does not resolve -- every GitHub
+    macOS runner, whose ``Mac-NNNN.local`` name gets a multi-second mDNS
+    timeout -- the blocking call sat for 15+ seconds, the dashboard loop
+    watchdog read that as a stalled loop, and dumped-then-exited the gateway
+    right after ``KIROCREW_READY``. The first cross-OS boot matrix run is what
+    caught it; Linux runners resolve their hostname from ``/etc/hosts`` in
+    microseconds, so no Linux job ever could.
+
+    The lookup runs on a daemon thread and is abandoned, not cancelled, on
+    timeout: the resolver call cannot be interrupted, and a leaked daemon thread
+    that ends a few seconds later costs nothing, while a leaked block on the
+    loop costs the gateway.
+    """
+    if timeout is None:
+        timeout = HOSTNAME_RESOLVE_TIMEOUT_SECS
+    result: list[str] = []
+
+    def _lookup() -> None:
+        try:
+            result.append(socket.gethostbyname(host))
+        except Exception:
+            pass
+
+    worker = threading.Thread(target=_lookup, name="kc-hostname-resolve", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    return result[0] if result else None
 
 
 def is_loopback(host: str) -> bool:
@@ -394,12 +431,9 @@ def format_dashboard_urls(
     if local_only and not has_custom_host and not _is_remote:
         mh_local = machine_hostname()
         if mh_local and mh_local != "localhost":
-            try:
-                ip = socket.gethostbyname(mh_local)
-                if ip and ip != "127.0.0.1":
-                    lines.append(f"👻 Remote:    ssh -NL {port}:localhost:{port} {mh_local}")
-            except Exception:
-                pass
+            ip = _resolve_hostname_bounded(mh_local)
+            if ip and ip != "127.0.0.1":
+                lines.append(f"👻 Remote:    ssh -NL {port}:localhost:{port} {mh_local}")
 
     proxy = devspaces_proxy_url(port)
     if proxy and not local_only:

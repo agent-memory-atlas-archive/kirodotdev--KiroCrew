@@ -10,7 +10,7 @@ service-manager mechanics differ.
 no-elevation, disposable gateway supervised by the OS. ``sc.exe create`` needs
 ``SeCreateServiceNamePrivilege`` — an administrator right — and installs a
 machine-wide LocalSystem service, so it is the wrong fit twice over: a developer
-would have to elevate to test a worktree, and the pod would no longer run as the
+would have to elevate to test a worktree, and the pod would stop running as the
 user whose ``~/.kiro`` it is isolating from. ``schtasks.exe`` creates a task in
 the calling user's own namespace with no elevation, which is exactly the systemd
 ``--user`` / launchd ``gui/<uid>`` shape.
@@ -59,15 +59,21 @@ writes, which are locale-independent, cheaper (no subprocess), and more precise
 is used only for verbs whose *exit code* is the answer: ``/Create``, ``/Run``,
 ``/End``, ``/Delete``, ``/Query`` as an existence probe.
 
-**5. No cgroups — the resource ceiling is NOT enforced.** Same gap as macOS, for
-the same reason and with the same decision: the systemd unit's ``MemoryMax=4G``
-and ``CPUQuota=200%`` are kernel-enforced, a scheduled task has no equivalent,
-and emitting a weaker knob that reads as the guarantee is worse than stating its
-absence. (A Job object *could* bound the tree — ``sandbox.apply_windows_resource_ceiling``
-does exactly that for agent subprocesses — but it has to be applied by the
-process that spawns the tree, and a pod's tree is spawned by the worktree's own
-gateway, not by this backend. Wiring it is a follow-up, not a rename of this
-gap.)
+**5. No cgroups, so the ceiling is a Job object instead — and it IS enforced.**
+The systemd unit's ``MemoryMax=4G`` and ``CPUQuota=200%`` are kernel-enforced
+cgroup limits with no scheduled-task equivalent, so :func:`supervise_gateway`
+attaches a Windows Job object to the gateway instead, through
+:func:`kiro_crew.sandbox.apply_windows_resource_ceiling` — the same seam and the
+same ``resource_limits`` config the agent-subprocess path uses, so one operator
+setting governs both platforms. The child is created ``CREATE_SUSPENDED`` and
+resumed only after the job is attached, which is what makes it airtight rather
+than merely small: job membership covers a member's future descendants but not
+ones it already spawned. Two honest gaps remain. The process row is a LOOSER
+bound than the cgroup row (``ActiveProcessLimit`` counts processes where
+``TasksMax`` counts threads), and there is no CPU row at all, because a Job
+object's CPU rate control is a different mechanism from ``CPUQuota`` and is not
+wired here. So do not read this as parity with the systemd unit; read it as a
+real fork-bomb and memory ceiling where there was none. macOS still has neither.
 
 Every other isolation property is unchanged: own ``KIROCREW_HOME``, own derived
 port, no tunnel, ``--no-crons``, and the refusal to bind the live port.
@@ -75,6 +81,7 @@ port, no tunnel, ``--no-crons``, and the refusal to bind the live port.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import time
@@ -83,14 +90,18 @@ from pathlib import Path
 
 from kiro_crew.platform_compat import (
     CREATE_NEW_PROCESS_GROUP,
+    CREATE_SUSPENDED,
     IS_WINDOWS,
     SIGTERM,
     kill_process_tree_pinned,
+    pid_exists,
     process_start_time,
+    resume_process_main_thread,
     trusted_system_bin,
 )
-from kiro_crew.pod.config import PodConfig, environment_vars
+from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig, environment_vars
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
+from kiro_crew.sandbox import apply_windows_resource_ceiling
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Task Scheduler folder every pod task lives in. One folder per pod plane, so a
@@ -381,21 +392,24 @@ def task_exists(cfg: PodConfig, name: str) -> bool:
 def record_supervised_pid(cfg: PodConfig, name: str, pid: int) -> None:
     """Record *pid* as pod *name*'s gateway, bound to its start identity.
 
-    A bare pid is not an identity: a wrapper killed without running its cleanup
-    leaves the record behind, and Windows recycles pids. The creation-time token
-    is what lets :func:`supervised_pid` refuse a recycled number instead of
-    reporting an unrelated process as the pod.
+    A bare pid is not an identity: a wrapper terminated without running its
+    cleanup leaves the record behind, and Windows recycles pids. The
+    creation-time token is what lets :func:`supervised_pid` refuse a recycled
+    number instead of reporting an unrelated process as the pod.
 
-    Best-effort on the write: the gateway is already spawned by the time this
-    runs, so a failure here must degrade to "no record" (which reads as
-    inactive) rather than kill a booting pod.
+    **Raises on failure, because this record IS the pod's liveness.** Every
+    Windows reader of "is this pod running" resolves through it: with no record
+    ``supervised_pid`` answers None, ``is_active`` reports the pod down, and
+    ``stop`` skips both the tree kill and the still-alive guard, so it deletes
+    the task and the isolated HOME while the gateway is serving and reports
+    success. A silent degrade here therefore does not lose a diagnostic, it
+    fabricates a stopped pod, which is the fail-OPEN direction this backend
+    refuses everywhere else. :func:`supervise_gateway` catches the raise,
+    terminates the child it just spawned, and exits non-zero.
     """
     record = pid_record_path(cfg, name)
-    try:
-        record.parent.mkdir(parents=True, exist_ok=True)
-        record.write_text(f"{pid}\n{process_start_time(pid) or ''}\n", encoding="utf-8")
-    except OSError:
-        pass
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(f"{pid}\n{process_start_time(pid) or ''}\n", encoding="utf-8")
 
 
 def clear_supervised_pid(cfg: PodConfig, name: str) -> None:
@@ -420,7 +434,7 @@ def supervised_pid(cfg: PodConfig, name: str) -> int | None:
     """Pod *name*'s live gateway pid, PROVEN to still be that process, or ``None``.
 
     Fails CLOSED on every way of not knowing — no record, no recorded identity,
-    a host that will not report a creation time, or a token that no longer
+    a host that will not report a creation time, or a token that does not
     matches. Each of those must read as "this pod has no process", never as a
     pid a caller may go on to signal.
     """
@@ -545,6 +559,28 @@ def stop(
                 "pod is NOT zero-residue."
             ),
         )
+    unattributable = _unattributable_live_pid(cfg, name)
+    if unattributable is not None:
+        # A record whose pid is ALIVE but whose creation-time identity does not
+        # match is the one shape that reads as "stopped" while a process is
+        # serving. Deleting the task here hands the caller a rc=0 it would
+        # reclaim the HOME on, out from under that process. A record for a pid
+        # that is GONE is the ordinary hard-stop leftover and passes through.
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=ended.stdout or "",
+            stderr=(
+                f"pod {name!r} has a pid record at {pid_record_path(cfg, name)} "
+                f"naming pid {unattributable}, which is ALIVE but does not carry "
+                "the creation-time identity the record was written with. This pod "
+                "cannot be proven stopped, so its task and HOME were preserved. "
+                f"Inspect pid {unattributable} (its own start time against that "
+                "record's second line): end it by hand if it is this pod's "
+                "gateway, or delete the record if the pid has been recycled onto "
+                f"something else, then re-run `kirocrew pod down {name}`."
+            ),
+        )
     deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
     if deleted.returncode != 0 and task_exists(cfg, name):
         return subprocess.CompletedProcess(
@@ -569,6 +605,33 @@ def stop(
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=ended.stdout or "", stderr="")
 
 
+def _unattributable_live_pid(cfg: PodConfig, name: str) -> int | None:
+    """The recorded pid when it is ALIVE but cannot prove it is this pod's gateway.
+
+    ``supervised_pid`` collapses four different answers into ``None``: no record,
+    a junk record, a record with no creation-time token, and a token that does
+    not match the live process. The first three are the ordinary shapes of a pod
+    that is genuinely down, and the LAST one is too whenever the pid is gone --
+    a hard ``/End`` reaps the wrapper before its cleanup runs, so a stale record
+    naming a dead pid is the routine leftover.
+
+    The one dangerous shape is a record naming a pid that is still ALIVE and
+    still unattributable, which is what a fragment written by a failed record
+    write, or a pid recycled onto another process, looks like. There ``None``
+    from ``supervised_pid`` means "cannot tell", not "not running", and teardown
+    has to refuse rather than delete state a live process may own.
+
+    Returns that pid, or ``None`` when nothing is in that shape.
+    """
+    record = _read_pid_record(cfg, name)
+    if record is None:
+        return None
+    pid, _token = record
+    if pid <= 0 or supervised_pid(cfg, name) is not None:
+        return None
+    return pid if pid_exists(pid) else None
+
+
 def supervise_gateway(
     cfg: PodConfig, name: str, bin_path: Path, argv: list[str], env: dict[str, str]
 ) -> int:
@@ -588,18 +651,87 @@ def supervise_gateway(
     not reach the pod. Standard handles are deliberately INHERITED so the
     gateway's output lands in the log files the wrapper redirected — that is the
     journal on this platform.
+
+    **The resource ceiling is applied here, and this is the only place it can
+    be.** systemd caps a pod with ``MemoryMax``/``CPUQuota`` on the unit; a
+    scheduled task has no such field, so the Windows equivalent is a Job object,
+    which cannot be expressed as an argv prefix and has to be attached to a live
+    pid. The ordering below is what makes it airtight rather than merely small:
+    the child is created ``CREATE_SUSPENDED`` (it has executed no instructions,
+    so it provably has no descendants that could already have escaped the job),
+    the ceiling is attached, and only then is it resumed. That is the sequence
+    ``platform-compat.md`` names for race-free Job object assignment, and
+    :func:`kiro_crew.sandbox.apply_windows_resource_ceiling` reads the same
+    ``resource_limits`` config the cgroup path reads, so one operator setting
+    governs both platforms.
+
+    A ceiling that could not be installed does NOT fail the boot: that matches
+    how an unavailable cgroup scope is handled, and ``apply_job_limits`` has
+    already logged it as a SECURITY warning. A failed RESUME is the opposite --
+    the child is alive but frozen, so it is terminated rather than left to
+    masquerade as a running gateway, which is the policy
+    ``acp.client.finish_suspended_spawn`` implements for the same handshake.
+
+    A pid record that cannot be WRITTEN is fatal for the same reason, one step
+    later. That record is this platform's only liveness answer, so a gateway
+    running without one is a pod every reader calls stopped, and the first
+    ``pod down`` deletes its task and its isolated HOME while it serves. The
+    child is terminated with a pinned tree kill, no record is left behind, and
+    the exit names the path that could not be written.
     """
     proc = subprocess.Popen(  # noqa: S603 - argv is package-derived, never user text
         [str(bin_path), *argv],
         env=env,
-        creationflags=CREATE_NEW_PROCESS_GROUP,
+        creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED,
         close_fds=False,
     )
-    record_supervised_pid(cfg, name, proc.pid)
+    apply_windows_resource_ceiling(proc.pid)
+    if not resume_process_main_thread(proc.pid):
+        proc.kill()
+        proc.wait()
+        print(
+            "FATAL: the pod's gateway was created suspended so its resource "
+            "ceiling could be attached without a race, but it could not be "
+            "resumed, so it was terminated rather than left frozen."
+        )
+        return EXIT_REFUSED_UNRECOVERABLE
+    try:
+        record_supervised_pid(cfg, name, proc.pid)
+    except OSError as exc:
+        _terminate_unrecorded_child(proc)
+        # Best-effort, and only ever a PARTIAL record: the write above is the one
+        # that failed, so anything at that name is a fragment no reader may trust.
+        clear_supervised_pid(cfg, name)
+        print(
+            "FATAL: the pod's gateway started but its pid record could not be "
+            f"written at {pid_record_path(cfg, name)} ({exc}). That record is the "
+            "only thing that reports this pod alive on Windows, so the gateway was "
+            "terminated rather than left running as a pod every verb calls stopped "
+            "and `pod down` would reclaim underneath."
+        )
+        return EXIT_REFUSED_UNRECOVERABLE
     try:
         return proc.wait()
     finally:
         clear_supervised_pid(cfg, name)
+
+
+def _terminate_unrecorded_child(proc: "subprocess.Popen[bytes]") -> None:
+    """End a gateway that started but could not be recorded, tree and all.
+
+    The pinned tree kill first, because the gateway spawns its own children and
+    ``Popen.kill`` reaches only the process itself, which would leave exactly the
+    grandchildren the Job object ceiling exists to bound. The pin is what keeps a
+    recycled pid from being signalled. ``proc.kill`` then covers the case where no
+    creation-time token can be read, and the wait reaps whichever call landed.
+    """
+    token = process_start_time(proc.pid)
+    if token:
+        kill_process_tree_pinned(proc.pid, token, SIGTERM)
+    with contextlib.suppress(OSError):
+        proc.kill()
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        proc.wait(timeout=10)
 
 
 # ------------------------------------------------------------------------- #

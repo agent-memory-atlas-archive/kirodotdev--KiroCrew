@@ -1,6 +1,6 @@
 {
   "_comment": "Comments and docstrings that narrate change history, per file, as a match COUNT. The rule they break is in docs/system-specs/common/code-style.md (\"Comments explain the WHY\"); it predates any enforcement, so the tree is recorded here rather than rewritten in one pass. The gate requires every OTHER file to be clean and none of these counts to grow, so this list can only shrink. Do NOT add or raise an entry to make a red gate green: a new offender means the comment should state CURRENT behavior in present tense. Lower and prune with `python3 scripts/check_comment_history.py --write-baseline`, which never adds or raises one.",
-  "_total": 6970,
+  "_total": 6963,
   "files": {
     "src/kiro_crew/__main__.py": 1,
     "src/kiro_crew/acp/_dispatch.py": 8,
@@ -475,7 +475,7 @@
     "src/kiro_crew/platform/update_stepup.py": 1,
     "src/kiro_crew/platform/wheel_engine.py": 1,
     "src/kiro_crew/platform_compat.py": 17,
-    "src/kiro_crew/pod/runtime.py": 7,
+    "src/kiro_crew/pod/runtime.py": 4,
     "src/kiro_crew/pod/unit.py": 3,
     "src/kiro_crew/port_resolution.py": 1,
     "src/kiro_crew/portability.py": 4,
@@ -524,7 +524,7 @@
     "src/kiro_crew/slack/client.py": 1,
     "src/kiro_crew/slack/events.py": 4,
     "src/kiro_crew/slack/format.py": 2,
-    "src/kiro_crew/slack/gateway.py": 67,
+    "src/kiro_crew/slack/gateway.py": 63,
     "src/kiro_crew/slack/handler.py": 11,
     "src/kiro_crew/slack/interactions.py": 1,
     "src/kiro_crew/slack/outbound.py": 2,

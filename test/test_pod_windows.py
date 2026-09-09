@@ -25,7 +25,7 @@ import pytest
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import windows as win
-from kiro_crew.pod.config import PodConfig
+from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 requires_windows = pytest.mark.skipif(
@@ -604,7 +604,7 @@ def test_stop_pod_clears_the_recorded_result_so_a_reused_name_starts_clean(cfg, 
 def test_boot_supervises_instead_of_exec_on_windows(cfg, monkeypatch, tmp_path):
     """Windows has no exec: os.execve there spawns and terminates the caller.
 
-    Using it would change the pid (so main_pid could no longer name the process
+    Using it would change the pid (so main_pid would stop naming the process
     that bound the port) and let the task's own process exit while the gateway
     kept running orphaned, with Task Scheduler reporting the task finished.
     """
@@ -625,17 +625,138 @@ def test_boot_supervises_instead_of_exec_on_windows(cfg, monkeypatch, tmp_path):
         return FakeProc()
 
     monkeypatch.setattr(win.subprocess, "Popen", fake_popen)
+    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
+    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
+    # Popen a real query and fail on the fake's missing context-manager protocol.
+    # On Linux it reads /proc and the pin is a no-op.
+    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
+    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: True)
+    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: True)
     rc = win.supervise_gateway(
         cfg, "smoke", tmp_path / "kirocrew", ["gateway", "--no-crons"], {"A": "b"}
     )
     assert rc == 3
     assert seen["argv"][1:] == ["gateway", "--no-crons"]
-    # The POSIX analogue of start_new_session: a Ctrl+C in whatever console the
-    # task ran under must not reach the pod.
-    assert seen["flags"] == win.CREATE_NEW_PROCESS_GROUP
+    # The flag composition itself is pinned by
+    # test_the_ceiling_is_attached_while_the_gateway_is_still_suspended, which
+    # substitutes sentinels because both constants are 0 off win32.
+    assert seen["flags"] == win.CREATE_NEW_PROCESS_GROUP | win.CREATE_SUSPENDED
     # The record is dropped once the gateway exits, so a dead pod never attests.
     assert win.supervised_pid(cfg, "smoke") is None
     assert sys is not None  # keep the import meaningful for linters
+
+
+def test_the_ceiling_is_attached_while_the_gateway_is_still_suspended(cfg, monkeypatch, tmp_path):
+    """Order is the whole guarantee, so it is pinned rather than left to reading.
+
+    Job membership covers a member's FUTURE descendants, not ones it already
+    spawned, so attaching the ceiling to a RUNNING child leaves a window where a
+    grandchild escapes. A child created suspended has executed no instructions
+    and provably has no descendants, which closes that window by construction --
+    which only holds if the calls happen in this order.
+
+    The two creation flags are replaced with distinct sentinels for the duration:
+    both are literally ``0`` off win32, so asserting on their real values would
+    make this test vacuous on the matrix that actually runs it.
+    """
+    import os
+
+    order: list[str] = []
+    monkeypatch.setattr(win, "CREATE_NEW_PROCESS_GROUP", 0x200)
+    monkeypatch.setattr(win, "CREATE_SUSPENDED", 0x4)
+
+    class FakeProc:
+        pid = os.getpid()
+
+        def wait(self):
+            return 0
+
+    def fake_popen(argv, **kwargs):
+        assert kwargs["creationflags"] & win.CREATE_SUSPENDED, (
+            "the gateway must be created SUSPENDED, or the ceiling races the "
+            "descendants it is meant to bound"
+        )
+        assert (
+            kwargs["creationflags"] & win.CREATE_NEW_PROCESS_GROUP
+        ), "the pod must still be out of the task console's Ctrl+C group"
+        order.append("spawn")
+        return FakeProc()
+
+    monkeypatch.setattr(win.subprocess, "Popen", fake_popen)
+    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
+    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
+    # Popen a real query and fail on the fake's missing context-manager protocol.
+    # On Linux it reads /proc and the pin is a no-op.
+    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
+    monkeypatch.setattr(
+        win, "apply_windows_resource_ceiling", lambda pid: order.append("ceiling") or True
+    )
+    monkeypatch.setattr(
+        win, "resume_process_main_thread", lambda pid: order.append("resume") or True
+    )
+    assert win.supervise_gateway(cfg, "smoke", tmp_path / "kirocrew", ["gateway"], {}) == 0
+    assert order == ["spawn", "ceiling", "resume"]
+
+
+def test_a_gateway_that_cannot_be_resumed_is_killed_not_left_frozen(cfg, monkeypatch, tmp_path):
+    """A frozen child must never masquerade as a running gateway.
+
+    Same policy ``acp.client.finish_suspended_spawn`` implements for this
+    handshake: a failed resume leaves a process that is alive, answers nothing,
+    and would otherwise sit there until the boot timeout blamed the worktree.
+    """
+    import os
+
+    killed: list[str] = []
+
+    class FakeProc:
+        pid = os.getpid()
+
+        def kill(self):
+            killed.append("kill")
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(win.subprocess, "Popen", lambda argv, **kw: FakeProc())
+    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
+    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
+    # Popen a real query and fail on the fake's missing context-manager protocol.
+    # On Linux it reads /proc and the pin is a no-op.
+    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
+    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: True)
+    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: False)
+    rc = win.supervise_gateway(cfg, "smoke", tmp_path / "kirocrew", ["gateway"], {})
+    assert killed == ["kill"]
+    assert rc == EXIT_REFUSED_UNRECOVERABLE
+    # Nothing was recorded, so no reader can attest for a pod that never ran.
+    assert win.supervised_pid(cfg, "smoke") is None
+
+
+def test_a_missing_ceiling_does_not_fail_the_boot(cfg, monkeypatch, tmp_path):
+    """Matches how an unavailable cgroup scope is handled on the POSIX side.
+
+    ``apply_job_limits`` has already logged the miss as a SECURITY warning; a pod
+    that refuses to start because a ceiling could not be attached would be a
+    worse outcome than one that runs unbounded and says so in the log.
+    """
+    import os
+
+    class FakeProc:
+        pid = os.getpid()
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(win.subprocess, "Popen", lambda argv, **kw: FakeProc())
+    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
+    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
+    # Popen a real query and fail on the fake's missing context-manager protocol.
+    # On Linux it reads /proc and the pin is a no-op.
+    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
+    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: False)
+    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: True)
+    assert win.supervise_gateway(cfg, "smoke", tmp_path / "kirocrew", ["gateway"], {}) == 0
 
 
 # --------------------------------------------------------------------------

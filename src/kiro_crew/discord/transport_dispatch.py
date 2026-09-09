@@ -29,7 +29,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.config.sections import _clamp_pct
 from kiro_crew.discord.attachments import (
     append_attachment_context,
     process_discord_attachments,
@@ -98,8 +101,10 @@ from kiro_crew.stats import Stats
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from kiro_crew.config.live import ConfigChange
     from kiro_crew.context import ContextBuilder
     from kiro_crew.discord.client import DiscordClient, DiscordInteraction
+    from kiro_crew.discord.transport import DiscordTransport
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
 
@@ -233,7 +238,21 @@ class DiscordDispatcher:
         self.conv_log = conv_log
         self.approval_mode = approval_mode
         self.client: "DiscordClient | None" = None
+        # Set by maybe_start_discord after construction (same construction-cycle
+        # reason as ``client``); the config applier pushes reloaded authorization
+        # fields at it.
+        self.transport: "DiscordTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # dm_scope selects the session-key namespace, so adopting a new value
+        # mid-conversation would re-key a running DM. Read live, pinned per
+        # generation (see ``_dm_scope``).
+        self._dm_scope_at: dict[str, tuple[int, str]] = {}
+        # Held on self: live.subscribe keeps a bound method WEAKLY, so a
+        # subscription dropped here would be collected and the applier would
+        # silently stop firing.
+        self._config_sub = live.subscribe(
+            "discord", "messaging", callback=self._on_config_change, name="DiscordDispatcher"
+        )
         # The mid-turn queue receipt + the lock serializing it against the
         # end-of-turn drain, shared with Telegram via messaging/queue_receipt.py.
         self._queue = ReceiptQueue()
@@ -509,8 +528,8 @@ class DiscordDispatcher:
             self._conv.maybe_rotate(
                 scope_id,
                 time.time(),
-                idle_minutes=self.cfg.messaging.idle_reset_minutes,
-                daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+                idle_minutes=int(self._live_cfg().messaging.idle_reset_minutes),
+                daily_reset_hour=int(self._live_cfg().messaging.daily_reset_hour),
             )
         if monitor_session_key is not None:
             # The gateway authorized one exact conversation generation. Recheck
@@ -976,7 +995,7 @@ class DiscordDispatcher:
         """A message arrived mid-turn: steer the running turn or queue it."""
         assert self.client is not None
         channel_id = msg.conversation_id
-        mode = override_mode or self.cfg.messaging.queue_mode
+        mode = override_mode or str(self._live_cfg().messaging.queue_mode)
         if mode != "queue" and not msg.attachments:
             provider = self.sessions.get_provider(session_key)
             steer = getattr(provider, "steer", None)
@@ -1424,23 +1443,92 @@ class DiscordDispatcher:
     def _render_config(self) -> tuple[bool, bool]:
         """``(reactions_enabled, show_thinking)`` for the turn about to start.
 
-        Blocking (a config.json read plus schema validation), so callers run it
-        off the event loop.
+        May block (the fallback ``load()`` stats config.json and validates it),
+        so callers run it off the event loop.
 
-        Loaded fresh rather than taken from ``self.cfg``, which is the boot-time
+        Read live rather than taken from ``self.cfg``, which is the boot-time
         snapshot: an operator who turns the phase reactions off in the dashboard
-        expects the next message to be quiet, not the next restart. A failed load
+        expects the next message to be quiet, not the next restart. A failed read
         keeps the shipped defaults rather than failing the turn, because neither
         toggle is a security control: the loud default is the safe one to fall
         back to for reactions, and the quiet default is the safe one for
         reasoning.
         """
         try:
-            discord_cfg = KiroCrewConfig.load().discord
+            discord_cfg = self._live_cfg().discord
             return bool(discord_cfg.reactions_enabled), bool(discord_cfg.show_thinking)
         except Exception:
             logger.warning("discord: could not read the render toggles", exc_info=True)
             return True, False
+
+    # ── Live config ────────────────────────────────────────────────────────
+
+    def _live_cfg(self) -> "KiroCrewConfig":
+        """The config in force NOW, for a per-turn read.
+
+        The watcher's snapshot when it is armed, else a fingerprint-cached
+        ``load()`` (two stats on a hit), else the boot copy. Falling back to
+        ``self.cfg`` rather than raising keeps a turn running when the config
+        file is momentarily unreadable: a threshold or a render toggle is not an
+        authorization decision, and the boot value is the one the operator last
+        had in force.
+        """
+        try:
+            snap = live.snapshot()
+            if snap is not None:
+                return snap
+            return KiroCrewConfig.load()
+        except Exception:
+            logger.warning(
+                "discord: could not read live config; using the boot copy", exc_info=True
+            )
+            return self.cfg
+
+    def _soft_threshold(self) -> int:
+        """The context-nudge threshold from the live config.
+
+        Re-runs the loader's own clamp, because a reloaded value read straight
+        off the section can sit outside the valid range and either nudge on every
+        turn or never nudge at all. Discord has no hard threshold, so there is no
+        pair to order.
+        """
+        return _clamp_pct(int(getattr(self._live_cfg().discord, "soft_threshold_pct", 80)))
+
+    def _dm_scope(self, scope_id: str, gen: int) -> str:
+        """The dm_scope this scope's generation is keyed under.
+
+        Read live, but pinned for the life of a generation: dm_scope chooses the
+        session-key namespace, so picking up a new value between two turns of one
+        conversation would mint a different key and jump a running DM into
+        another session. ``!new``, the idle reset and the daily reset all advance
+        the generation, which is exactly the boundary where adopting the new
+        value is safe.
+        """
+        cached = self._dm_scope_at.get(scope_id)
+        if cached is not None and cached[0] == gen:
+            return cached[1]
+        scope = str(self._live_cfg().messaging.dm_scope)
+        self._dm_scope_at[scope_id] = (gen, scope)
+        return scope
+
+    def _on_config_change(self, change: "ConfigChange") -> None:
+        """Push reloaded ``discord`` authorization fields at the live transport.
+
+        Only the transport's frozen allow-lists (and its ``auto_thread`` switch)
+        need pushing; every other Discord field this dispatcher reads is read at
+        point of use. Fails closed on a degraded section: the previous rosters
+        stay in force rather than being rebuilt from a document the loader could
+        not parse.
+        """
+        if self.transport is None or not change.touched("discord"):
+            return
+        degraded = change.new.degraded_sections
+        if "discord" in degraded or DEGRADED_WHOLE_CONFIG in degraded:
+            logger.warning(
+                "discord: the reloaded config is degraded; keeping the previous allow-lists"
+            )
+            return
+        self.transport.reconfigure(change.new.discord)
 
     def _resolve_agent(self) -> str:
         return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
@@ -1457,7 +1545,7 @@ class DiscordDispatcher:
             self._resolve_agent(),
             thread_id or user_id,
             gen=gen,
-            dm_scope=("per-channel-peer" if thread_id else self.cfg.messaging.dm_scope),
+            dm_scope=("per-channel-peer" if thread_id else self._dm_scope(scope_id, gen)),
             chat_type=("group" if thread_id else "direct"),
         )
 
@@ -1487,7 +1575,7 @@ class DiscordDispatcher:
             channel="discord",
             agent=self._resolve_agent(),
             user_id=user_id,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self._live_cfg().messaging.dm_scope),
         )
 
     def _origin_mirror_link(self, channel_id: str) -> ChannelLink:
@@ -1730,7 +1818,7 @@ class DiscordDispatcher:
         (``session.autocompact_pct``).
         """
         pct = self.sessions.check_context_usage(session_key, provider)
-        soft_pct = self.cfg.discord.soft_threshold_pct
+        soft_pct = self._soft_threshold()
         if pct >= soft_pct and compact_unsupported_backend(provider):
             # Capability gate: the nudge advises !compact, which this
             # backend refuses — it compacts on its own as context fills, so

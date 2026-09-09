@@ -26,6 +26,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.feishu.client import CHAT_GROUP
 from kiro_crew.feishu.renderer import FeishuRenderer
 from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
@@ -49,9 +52,11 @@ from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
 
 if TYPE_CHECKING:
+    from kiro_crew.config.live import ConfigChange
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.context import ContextBuilder
     from kiro_crew.feishu.client import LarkClient, LarkInbound
+    from kiro_crew.feishu.transport import FeishuTransport
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
 
@@ -90,11 +95,89 @@ class FeishuDispatcher:
         self.approval_mode = approval_mode
         # Set by maybe_start_feishu after construction to avoid a cycle.
         self.client: "LarkClient | None" = None
+        # Set the same way; the config applier pushes reloaded authorization
+        # fields at it.
+        self.transport: "FeishuTransport | None" = None
         # Conversation state keyed by ROUTE rather than by sender: a group turn
         # must never share a bucket with the sender's private DM (see _route).
         # ``seed_fn`` recovers the highest generation already on disk so /new
         # advances past a stale one instead of resurrecting it after a restart.
         self._conv: ConversationState[tuple[str, str]] = ConversationState(seed_fn=self._seed_gen)
+        # dm_scope picks the session-key namespace, so it is pinned per
+        # generation rather than re-read mid-conversation (see ``_dm_scope``).
+        self._dm_scope_at: dict[tuple[str, str], tuple[int, str]] = {}
+        # Held on self: live.subscribe keeps a bound method WEAKLY.
+        self._config_sub = live.subscribe(
+            "feishu", "messaging", callback=self._on_config_change, name="FeishuDispatcher"
+        )
+
+    # ── Live config ───────────────────────────────────────────────────────
+
+    def _live_cfg(self) -> "KiroCrewConfig":
+        """The config in force NOW, for a per-turn read.
+
+        The watcher's snapshot when armed, else a fingerprint-cached ``load()``,
+        else the boot copy -- a threshold or a rotation window is not an
+        authorisation decision, so a momentarily unreadable file keeps the turn
+        running on the value the operator last had in force.
+        """
+        try:
+            snap = live.snapshot()
+            if snap is not None:
+                return snap
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            return KiroCrewConfig.load()
+        except Exception:
+            logger.warning("Feishu: could not read live config; using the boot copy", exc_info=True)
+            return self.cfg
+
+    def _thresholds(self) -> tuple[int, int]:
+        """``(soft, hard)`` context thresholds from the live config.
+
+        Runs the loader's own pair normalization, whose FLOOR is 1 rather than 0:
+        a 0% threshold reads as "always over" and would compact every turn, and
+        an inverted pair would make the soft nudge unreachable because
+        ``_maybe_notice`` tests ``pct >= hard`` first.
+        """
+        section = self._live_cfg().feishu
+        return _normalize_threshold_pair(
+            int(getattr(section, "soft_threshold_pct", 80)),
+            int(getattr(section, "hard_threshold_pct", 95)),
+        )
+
+    def _dm_scope(self, route: tuple[str, str], gen: int) -> str:
+        """The dm_scope this route's generation is keyed under.
+
+        Read live but pinned for the life of a generation, so a flip never
+        re-keys a running conversation into a different session. Pinned per
+        ROUTE, like every other piece of state here, so a group's scope cannot be
+        decided by a turn in the sender's DM.
+        """
+        cached = self._dm_scope_at.get(route)
+        if cached is not None and cached[0] == gen:
+            return cached[1]
+        scope = str(self._live_cfg().messaging.dm_scope)
+        self._dm_scope_at[route] = (gen, scope)
+        return scope
+
+    def _on_config_change(self, change: "ConfigChange") -> None:
+        """Push reloaded ``feishu`` authorization fields at the live transport.
+
+        Fails closed on a degraded section: ``allowed_open_ids`` authorises
+        nobody when empty, so rebuilding it from a document the loader could not
+        parse would lock out every intended sender.
+        """
+        if self.transport is None or not change.touched("feishu"):
+            return
+        degraded = change.new.degraded_sections
+        if "feishu" in degraded or DEGRADED_WHOLE_CONFIG in degraded:
+            logger.warning(
+                "Feishu: the reloaded config is degraded; keeping the previous allow-lists "
+                "and group gate"
+            )
+            return
+        self.transport.reconfigure(change.new.feishu)
 
     # ── Turn dispatch (transport's dispatch callback) ─────────────────────
 
@@ -133,13 +216,14 @@ class FeishuDispatcher:
 
         # Busy check, then rotation, then a re-derived key -- the ordering and
         # the reasons it matters live in messaging.pre_turn.
+        messaging = self._live_cfg().messaging
         session_key = await resolve_pre_turn(
             conv=self._conv,
             sessions=self.sessions,
             key=route,
             session_key_for=self._session_key,
-            idle_minutes=self.cfg.messaging.idle_reset_minutes,
-            daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            idle_minutes=messaging.idle_reset_minutes,
+            daily_reset_hour=messaging.daily_reset_hour,
             on_busy=lambda sk: self._handle_busy(inbound, sk),
         )
         if session_key is None:
@@ -320,18 +404,19 @@ class FeishuDispatcher:
             channel="feishu",
             agent=self._resolve_agent(),
             user_id=comp,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=self._dm_scope(route, 0),
             chat_type=slot,
         )
 
     def _session_key(self, route: tuple[str, str]) -> str:
         slot, comp = route
+        gen = self._conv.current_gen(route)
         return build_dm_session_key(
             "feishu",
             self._resolve_agent(),
             comp,
-            gen=self._conv.current_gen(route),
-            dm_scope=self.cfg.messaging.dm_scope,
+            gen=gen,
+            dm_scope=self._dm_scope(route, gen),
             chat_type=slot,
         )
 
@@ -372,7 +457,8 @@ class FeishuDispatcher:
         assert self.client is not None
         route = self._route(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
-        if pct >= self.cfg.feishu.soft_threshold_pct:
+        soft, hard = self._thresholds()
+        if pct >= soft:
             # Capability gate (#8156): no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
@@ -380,7 +466,7 @@ class FeishuDispatcher:
             if unsupported:
                 logger.debug("Feishu: context notice skipped — %s compacts itself", unsupported)
                 return
-        if pct >= self.cfg.feishu.hard_threshold_pct:
+        if pct >= hard:
             self._conv.clear_awaiting(route)
             try:
                 await provider.compact()
@@ -388,7 +474,7 @@ class FeishuDispatcher:
                 await self.client.send_reply(inbound.message_id, "🗜️ 上下文接近上限，已自动压缩。")
             except Exception:
                 logger.debug("Feishu hard-threshold compaction failed", exc_info=True)
-        elif pct >= self.cfg.feishu.soft_threshold_pct and not self._conv.is_awaiting(route):
+        elif pct >= soft and not self._conv.is_awaiting(route):
             # Latch before awaiting the send so a turn arriving while this
             # reply is in flight does not emit a duplicate notice.
             self._conv.set_awaiting(route)

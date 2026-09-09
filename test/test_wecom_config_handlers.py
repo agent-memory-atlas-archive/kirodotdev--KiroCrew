@@ -72,7 +72,7 @@ def test_save_persists_credentials_and_config(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.delenv("WECOM_BOT_ID", raising=False)
     monkeypatch.delenv("WECOM_SECRET", raising=False)
-    (status_body, env) = _client_put(
+    status_body, env = _client_put(
         mod,
         monkeypatch,
         tmp_path,
@@ -106,7 +106,7 @@ def test_save_rejects_whitespace_credentials(tmp_path: Path, monkeypatch) -> Non
     """A secret carrying inner whitespace fails before any write."""
     import kiro_crew.dashboard.handlers.messaging as mod
 
-    (status_body, env) = _client_put(mod, monkeypatch, tmp_path, {"bot_token": "two words"})
+    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token": "two words"})
     status, body = status_body
     assert status == 400
     assert "whitespace" in body["error"]
@@ -117,9 +117,7 @@ def test_save_rejects_invalid_userid(tmp_path: Path, monkeypatch) -> None:
     """Userids outside the WeCom charset fail closed, nothing persisted."""
     import kiro_crew.dashboard.handlers.messaging as mod
 
-    (status_body, _env) = _client_put(
-        mod, monkeypatch, tmp_path, {"allowed_user_ids": ["zhang san"]}
-    )
+    status_body, _env = _client_put(mod, monkeypatch, tmp_path, {"allowed_user_ids": ["zhang san"]})
     status, body = status_body
     assert status == 400
     assert "invalid WeCom userid" in body["error"]
@@ -133,9 +131,7 @@ def test_save_rejects_non_ascii_userid(tmp_path: Path, monkeypatch) -> None:
     import kiro_crew.dashboard.handlers.messaging as mod
 
     for bad in ("张三", "ｚｈａｎｇｓａｎ", "user\u200bname"):
-        (status_body, _env) = _client_put(
-            mod, monkeypatch, tmp_path, {"allowed_user_ids": [bad]}
-        )
+        status_body, _env = _client_put(mod, monkeypatch, tmp_path, {"allowed_user_ids": [bad]})
         status, body = status_body
         assert status == 400, bad
         assert "invalid WeCom userid" in body["error"]
@@ -159,7 +155,7 @@ def test_allowlist_preserves_display_names(tmp_path: Path, monkeypatch) -> None:
         ),
         encoding="utf-8",
     )
-    (status_body, _env) = _client_put(
+    status_body, _env = _client_put(
         mod, monkeypatch, tmp_path, {"allowed_user_ids": ["zhangsan", "wangwu"]}
     )
     status, _body = status_body
@@ -179,7 +175,7 @@ def test_clear_credentials(tmp_path: Path, monkeypatch) -> None:
     env.write_text(f"WECOM_BOT_ID={BOT_ID}\nWECOM_SECRET={SECRET}\n", encoding="utf-8")
     monkeypatch.setenv("WECOM_BOT_ID", BOT_ID)
     monkeypatch.setenv("WECOM_SECRET", SECRET)
-    (status_body, env) = _client_put(
+    status_body, env = _client_put(
         mod, monkeypatch, tmp_path, {"bot_token_clear": True, "bot_id_clear": True}
     )
     status, body = status_body
@@ -196,7 +192,7 @@ def test_clear_flag_must_be_strict_boolean(tmp_path: Path, monkeypatch) -> None:
     """Truthy non-boolean clear flags are rejected (no coercion surprises)."""
     import kiro_crew.dashboard.handlers.messaging as mod
 
-    (status_body, _env) = _client_put(mod, monkeypatch, tmp_path, {"bot_id_clear": "yes"})
+    status_body, _env = _client_put(mod, monkeypatch, tmp_path, {"bot_id_clear": "yes"})
     status, body = status_body
     assert status == 400
     assert "boolean" in body["error"]
@@ -207,7 +203,7 @@ def test_env_line_paste_is_stripped(tmp_path: Path, monkeypatch) -> None:
     import kiro_crew.dashboard.handlers.messaging as mod
 
     monkeypatch.delenv("WECOM_SECRET", raising=False)
-    (status_body, env) = _client_put(
+    status_body, env = _client_put(
         mod, monkeypatch, tmp_path, {"bot_token": f"WECOM_SECRET={SECRET}"}
     )
     status, _body = status_body
@@ -217,17 +213,21 @@ def test_env_line_paste_is_stripped(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_allow_all_users_save_and_strict_boolean(tmp_path: Path, monkeypatch) -> None:
-    """allow_all_users persists as a strict boolean; truthy strings rejected."""
+    """allow_all_users persists as a strict boolean; truthy strings rejected.
+
+    The flag is applied to the running transport by the config watcher, so the
+    save must NOT promise a restart the operator does not need.
+    """
     import kiro_crew.dashboard.handlers.messaging as mod
 
-    (status_body, _env) = _client_put(mod, monkeypatch, tmp_path, {"allow_all_users": True})
+    status_body, _env = _client_put(mod, monkeypatch, tmp_path, {"allow_all_users": True})
     status, body = status_body
     assert status == 200
-    assert body["restart_required"] is True
+    assert body["restart_required"] is False
     cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert cfg["wecom"]["allow_all_users"] is True
 
-    (status_body, _env) = _client_put(mod, monkeypatch, tmp_path, {"allow_all_users": "yes"})
+    status_body, _env = _client_put(mod, monkeypatch, tmp_path, {"allow_all_users": "yes"})
     status, body = status_body
     assert status == 400
     assert "boolean" in body["error"]
@@ -280,7 +280,7 @@ def test_restart_required_only_on_actual_change(tmp_path: Path, monkeypatch) -> 
         ),
         encoding="utf-8",
     )
-    (status_body, _env) = _client_put(
+    status_body, _env = _client_put(
         mod,
         monkeypatch,
         tmp_path,
@@ -296,9 +296,7 @@ def test_soft_threshold_bounds(tmp_path: Path, monkeypatch) -> None:
     import kiro_crew.dashboard.handlers.messaging as mod
 
     for bad in (0, 101, True, "80"):
-        (status_body, _env) = _client_put(
-            mod, monkeypatch, tmp_path, {"soft_threshold_pct": bad}
-        )
+        status_body, _env = _client_put(mod, monkeypatch, tmp_path, {"soft_threshold_pct": bad})
         status, body = status_body
         assert status == 400
         # A machine-readable code, not prose only: the dashboard renders `error`
@@ -373,9 +371,7 @@ def test_get_unconfigured_reports_needs_setup(tmp_path: Path, monkeypatch) -> No
     assert body["allowed_user_ids"] == []
 
 
-def test_clear_config_write_failure_does_not_leave_env_cleared(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_clear_config_write_failure_does_not_leave_env_cleared(tmp_path: Path, monkeypatch) -> None:
     """On a CLEAR-only path (no config changes), the env write runs via
     _write_env_off_loop.  If that write raises, .env must remain untouched —
     the credential stays fully present, never half-cleared."""
@@ -404,9 +400,7 @@ def test_clear_config_write_failure_does_not_leave_env_cleared(
     monkeypatch.delenv("WECOM_SECRET", raising=False)
 
 
-def test_set_config_write_failure_leaves_consistent_pair(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_set_config_write_failure_leaves_consistent_pair(tmp_path: Path, monkeypatch) -> None:
     """On a SET, config.json is written FIRST.  If it fails, .env is never
     touched — old credentials + old metadata, always a consistent pair.
     This mirrors the Teams and Webex config-first SET pattern.
@@ -447,12 +441,12 @@ def test_set_config_write_failure_leaves_consistent_pair(
     # CRITICAL: .env must be untouched — config write failed before the
     # handler reached _commit_env_wecom(), so both stores still hold originals.
     env_text = env.read_text(encoding="utf-8")
-    assert "old-bot-id" in env_text, (
-        "Config-first: .env must be untouched when config write fails (WECOM_BOT_ID)"
-    )
-    assert "old-secret" in env_text, (
-        "Config-first: .env must be untouched when config write fails (WECOM_SECRET)"
-    )
+    assert (
+        "old-bot-id" in env_text
+    ), "Config-first: .env must be untouched when config write fails (WECOM_BOT_ID)"
+    assert (
+        "old-secret" in env_text
+    ), "Config-first: .env must be untouched when config write fails (WECOM_SECRET)"
     assert BOT_ID not in env_text, ".env must not hold new bot_id when config write failed"
     assert SECRET not in env_text, ".env must not hold new secret when config write failed"
     monkeypatch.delenv("WECOM_BOT_ID", raising=False)

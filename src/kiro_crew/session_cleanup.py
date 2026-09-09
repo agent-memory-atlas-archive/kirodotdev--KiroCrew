@@ -115,6 +115,9 @@ class CleanupState:
     rss_max_mb: int = 0
     idle_sweep_enabled: bool = False
     idle_timeout: int = 0
+    # The (timeout_secs, watchdog_rss_max_mb) pair the policy was last derived
+    # from, as configured; transitions are logged only when it moves.
+    idle_policy_source: tuple[int, int] | None = None
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
     active_dashboard_slots: set[str] | None = None
@@ -408,16 +411,37 @@ class SessionCleanup:
         except Exception:
             self._deps.logger.exception("Cleanup loop: _stuck_turn_check crashed; continuing")
 
-    async def _cleanup_loop(self) -> None:
-        timeout = self._owner._cfg.session.timeout_secs
+    def _adopt_idle_policy(self) -> float:
+        """Re-derive the idle-sweep policy from the owner's CURRENT config.
+
+        Returns the tick interval. Called at loop start and again before every
+        sleep, so a ``session.timeout_secs`` or ``session.watchdog_rss_max_mb``
+        write reaches the loop on its next tick from any writer -- the values
+        are never frozen into the state for the loop's lifetime. The clamps are
+        the loader's: a timeout in (0, 60) becomes 60, a negative or non-int RSS
+        ceiling disables the check. Transitions are logged once, on change,
+        so a steady config costs the loop nothing but two attribute reads.
+        """
+        cfg = self._owner._cfg
+        timeout = cfg.session.timeout_secs
+        if not isinstance(timeout, int) or isinstance(timeout, bool):
+            timeout = 0
+        rss_cfg = getattr(cfg.session, "watchdog_rss_max_mb", 0)
+        rss_max = (
+            max(0, rss_cfg) if isinstance(rss_cfg, int) and not isinstance(rss_cfg, bool) else 0
+        )
+        changed = (timeout, rss_max) != self.state.idle_policy_source
+        self.state.idle_policy_source = (timeout, rss_max)
+
         if 0 < timeout < 60:
-            self._deps.logger.warning(
-                "session.timeout_secs=%d is below minimum 60; clamping to 60",
-                timeout,
-            )
+            if changed:
+                self._deps.logger.warning(
+                    "session.timeout_secs=%d is below minimum 60; clamping to 60",
+                    timeout,
+                )
             timeout = 60
         idle_sweep_enabled = timeout > 0
-        if not idle_sweep_enabled:
+        if not idle_sweep_enabled and changed:
             self._deps.logger.info(
                 "Idle session sweep disabled (session.timeout_secs=%d); "
                 "MCP/PID sweeps still run at default cadence",
@@ -425,7 +449,17 @@ class SessionCleanup:
             )
         self.state.idle_sweep_enabled = idle_sweep_enabled
         self.state.idle_timeout = timeout
-        interval = max(timeout // 6, 60) if idle_sweep_enabled else 300
+
+        if rss_max != self.state.rss_max_mb:
+            self._deps.logger.info(
+                "session.watchdog_rss_max_mb now %d (was %d)", rss_max, self.state.rss_max_mb
+            )
+            self.state.rss_max_mb = rss_max
+
+        return float(max(timeout // 6, 60) if idle_sweep_enabled else 300)
+
+    async def _cleanup_loop(self) -> None:
+        interval = self._adopt_idle_policy()
 
         # One reclaim pass at START, and deliberately NOT awaited here. Every
         # other sweep in this loop is housekeeping that can wait an interval, but
@@ -455,6 +489,12 @@ class SessionCleanup:
                 return
             except asyncio.TimeoutError:
                 pass
+
+            # Re-read the idle policy before the sweeps so this tick already
+            # honours a config write that landed during the sleep, and derive
+            # the NEXT sleep from it: a shortened timeout must not wait out the
+            # old, longer interval before it is felt.
+            interval = self._adopt_idle_policy()
 
             # Resolve through the facade so replacing the manager watchdog after
             # construction continues to affect the live cleanup task.

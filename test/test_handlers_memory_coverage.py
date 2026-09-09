@@ -189,9 +189,7 @@ class TestPreferencesProjectsHistory:
         loop_thread = threading.get_ident()
         write_threads: list[int] = []
         mem = MagicMock()
-        mem.write_preferences.side_effect = lambda _c: write_threads.append(
-            threading.get_ident()
-        )
+        mem.write_preferences.side_effect = lambda _c: write_threads.append(threading.get_ident())
         state = _make_state(memory=mem)
         req = _make_request(state, method="PUT", json_body={"content": "- new"})
         resp = await mem_mod.api_memory_preferences(req)
@@ -205,9 +203,7 @@ class TestPreferencesProjectsHistory:
         loop_thread = threading.get_ident()
         write_threads: list[int] = []
         mem = MagicMock()
-        mem.write_projects.side_effect = lambda _c: write_threads.append(
-            threading.get_ident()
-        )
+        mem.write_projects.side_effect = lambda _c: write_threads.append(threading.get_ident())
         state = _make_state(memory=mem)
         req = _make_request(state, method="PUT", json_body={"content": "## P"})
         resp = await mem_mod.api_memory_projects(req)
@@ -364,9 +360,9 @@ class TestRunConfigWriteCancellation:
             "the config lock was handed to the next writer while the twice-cancelled "
             "one's worker was still writing: %r" % (seen,)
         )
-        assert seen.index("worker-end") < seen.index("second-ran"), (
-            "the second writer entered before the worker finished: %r" % (seen,)
-        )
+        assert seen.index("worker-end") < seen.index(
+            "second-ran"
+        ), "the second writer entered before the worker finished: %r" % (seen,)
         assert cancelled, "the cancellation must propagate, not be swallowed"
 
     def test_an_uncancelled_call_returns_the_worker_result(self):
@@ -472,17 +468,19 @@ class TestMemorySettings:
 
     @pytest.mark.asyncio
     async def test_put_applies_to_running_consolidator(self, tmp_path: Path) -> None:
+        # The route pushes the reloaded config through the same ``reconfigure``
+        # seam the config watcher uses, so the answer is in force when it returns.
         cfg_path = tmp_path / "config.json"
         consolidator = MagicMock()
         state = _make_state(consolidator=consolidator)
         req = _make_request(state, method="PUT", json_body={"history_idle_hours": 3})
+        reloaded = _cfg(idle=3.0, migrated=True)
         with (
-            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg(idle=3.0, migrated=True)),
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=reloaded),
             patch(f"{_MOD}.config_path", return_value=cfg_path),
         ):
             assert (await mem_mod.api_memory_settings(req)).status == 200
-        assert consolidator._history_idle_secs == 3.0 * 3600
-        assert consolidator._migrated is True
+        consolidator.reconfigure.assert_called_once_with(reloaded)
 
 
 # ---------------------------------------------------------------------------
@@ -725,18 +723,14 @@ class TestSemanticEndpoints:
     @pytest.mark.asyncio
     async def test_write_rejects_invalid_json(self) -> None:
         state = _make_state(vector_store=_store())
-        req = _make_request(
-            state, method="PUT", json_body=_BadJSON(), session_key="dashboard:ui"
-        )
+        req = _make_request(state, method="PUT", json_body=_BadJSON(), session_key="dashboard:ui")
         assert (await mem_mod.api_memory_semantic_write(req)).status == 400
 
     @pytest.mark.asyncio
     async def test_write_requires_key_and_value(self) -> None:
         state = _make_state(vector_store=_store())
         for body in ({"value": "v"}, {"key": "k"}, {}):
-            req = _make_request(
-                state, method="PUT", json_body=body, session_key="dashboard:ui"
-            )
+            req = _make_request(state, method="PUT", json_body=body, session_key="dashboard:ui")
             resp = await mem_mod.api_memory_semantic_write(req)
             assert resp.status == 400
             assert _body(resp)["error"] == "key and value required"
@@ -2145,9 +2139,9 @@ class TestConfigWritesRunOffTheEventLoop:
             await first
         await asyncio.wait_for(second, timeout=10)
 
-        assert order.index("worker-end") < order.index("second-ran"), (
-            "the second writer entered before the first worker finished: %r" % (order,)
-        )
+        assert order.index("worker-end") < order.index(
+            "second-ran"
+        ), "the second writer entered before the first worker finished: %r" % (order,)
         assert first.cancelled(), "the cancellation must be re-raised, never swallowed"
 
     @pytest.mark.asyncio
@@ -2173,14 +2167,15 @@ class TestConfigWritesRunOffTheEventLoop:
         req = _make_request(state, method="PUT", json_body={})
         resp = await mem_mod.api_memory_settings(req)
 
-        assert resp.status == 200, (
-            "an empty body against a non-object memory section stopped being a "
-            "no-op: %r" % (resp.body,)
+        assert (
+            resp.status == 200
+        ), "an empty body against a non-object memory section stopped being a " "no-op: %r" % (
+            resp.body,
         )
         assert seen["write"] == [], "a no-op PUT rewrote the config"
-        assert json.loads(cfg.read_text(encoding="utf-8")) == {"memory": []}, (
-            "the malformed section was rewritten"
-        )
+        assert json.loads(cfg.read_text(encoding="utf-8")) == {
+            "memory": []
+        }, "the malformed section was rewritten"
 
 
 class TestNonObjectBodiesAcrossConvertedHandlers:

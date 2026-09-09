@@ -408,7 +408,10 @@ def test_config_save_persists_policy_and_preserves_other_sections(
         },
     )
     assert status == 200
-    assert body == {"ok": True, "restart_required": True}
+    # dm_policy, allowed_wa_ids and groups are pushed at the live transport by
+    # the dispatcher's config applier, and `enabled` restarts the channel in
+    # process -- none of them needs the gateway restarted.
+    assert body == {"ok": True, "restart_required": False}
     stored = json.loads(cfg_file.read_text(encoding="utf-8"))
     assert stored["slack"] == {"command": "kirocrew"}
     assert stored["agent"] == {"model": "auto"}

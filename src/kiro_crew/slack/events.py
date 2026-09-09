@@ -90,6 +90,7 @@ from kiro_crew.slack.handler import (
     set_owner_id,
     set_tracking_channels,
     set_yolo_mode,
+    slack_cfg,
 )
 from kiro_crew.slack.interactions import dispatch as dispatch_interactive
 from kiro_crew.slack.sessions_view import (
@@ -460,8 +461,7 @@ async def _handle_yolo(
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
         await respond(
-            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})"
-            f" — all tools auto-approved."
+            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
         )
     elif arg == "off":
         from kiro_crew.slack.handler import (
@@ -635,8 +635,8 @@ async def _handle_channel_cmd(
     channels = [
         {
             "channel_id": cid,
-            "activation": orch._cfg.channel_config(cid).activation,
-            "agent": orch._cfg.channel_config(cid).agent,
+            "activation": slack_cfg(orch).channel_config(cid).activation,
+            "agent": slack_cfg(orch).channel_config(cid).agent,
         }
         for cid in current_ids
     ]
@@ -755,16 +755,22 @@ async def _handle_restart(
     """Restart the gateway process (owner-only, requires systemd supervisor)."""
     if not is_owner(caller_id):
         sel().log_tool_invocation(
-            session_key="", source="slack", tool_name="/kirocrew restart",
-            outcome="denied", resources=f"user={caller_id}",
+            session_key="",
+            source="slack",
+            tool_name="/kirocrew restart",
+            outcome="denied",
+            resources=f"user={caller_id}",
         )
         await respond("⛔ Only the owner can restart the gateway.")
         return
 
     if not os.environ.get("INVOCATION_ID"):
         sel().log_tool_invocation(
-            session_key="", source="slack", tool_name="/kirocrew restart",
-            outcome="denied", resources=f"user={caller_id},reason=no_supervisor",
+            session_key="",
+            source="slack",
+            tool_name="/kirocrew restart",
+            outcome="denied",
+            resources=f"user={caller_id},reason=no_supervisor",
         )
         await respond(
             "⛔ Restart requires a process supervisor (systemd). "
@@ -773,8 +779,11 @@ async def _handle_restart(
         return
 
     sel().log_tool_invocation(
-        session_key="", source="slack", tool_name="/kirocrew restart",
-        outcome="approved", resources=f"user={caller_id}",
+        session_key="",
+        source="slack",
+        tool_name="/kirocrew restart",
+        outcome="approved",
+        resources=f"user={caller_id}",
     )
     try:
         await respond("♻️ Restarting gateway…")
@@ -814,9 +823,7 @@ async def _handle_restart(
             # NOT catch CancelledError (propagates to keep this 5s deadline
             # honest); a still-held lock from a pathological overrun is recovered
             # by the orphan reaper on next startup.
-            await asyncio.wait_for(
-                orch.sessions.close_all(drain_timeout=2.0), timeout=5.0
-            )
+            await asyncio.wait_for(orch.sessions.close_all(drain_timeout=2.0), timeout=5.0)
     except Exception:
         logger.debug("Session cleanup before restart failed", exc_info=True)
     # Flush the SEL audit queue: logging is async (background writer thread +
@@ -1003,12 +1010,12 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
             bool(_bot_id)
             and bool(_self_bot_id)
             and not _is_own_bot
-            and _bot_id in orch._cfg.slack.trusted_bot_ids
+            and _bot_id in slack_cfg(orch).slack.trusted_bot_ids
         )
         if _bot_id and not _from_trusted_bot:
-            if _is_own_bot and _bot_id in orch._cfg.slack.trusted_bot_ids:
+            if _is_own_bot and _bot_id in slack_cfg(orch).slack.trusted_bot_ids:
                 _deny_error = "own_bot_id_never_trusted"
-            elif not _self_bot_id and _bot_id in orch._cfg.slack.trusted_bot_ids:
+            elif not _self_bot_id and _bot_id in slack_cfg(orch).slack.trusted_bot_ids:
                 _deny_error = "trusted_bot_requires_verified_self_id"
             else:
                 _deny_error = "untrusted_bot"
@@ -1111,9 +1118,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
             # list (e.g. 100+ skills) would overflow and make views.publish fail
             # with invalid_arguments, breaking the whole Home tab. Mirrors the
             # cron block's jobs[:15] guard below.
-            def _capped_names_section(
-                label: str, names: list[str], budget: int = 2900
-            ) -> dict:
+            def _capped_names_section(label: str, names: list[str], budget: int = 2900) -> dict:
                 total = len(names)
                 prefix = f"*{label} ({total}):* "
                 suffix_room = 24  # reserve for "  _…and N more_"
@@ -1133,13 +1138,9 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 return {"type": "section", "text": {"type": "mrkdwn", "text": line}}
 
             if servers:
-                blocks.append(
-                    _capped_names_section("MCP Integrations", [s.name for s in servers])
-                )
+                blocks.append(_capped_names_section("MCP Integrations", [s.name for s in servers]))
             if skills:
-                blocks.append(
-                    _capped_names_section("Skills", [s["name"] for s in skills])
-                )
+                blocks.append(_capped_names_section("Skills", [s["name"] for s in skills]))
             if not servers and not skills:
                 blocks.append(
                     {
@@ -1233,7 +1234,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 sess_mgr = orch.sessions
                 # Read per-kind cap from config (default 5).
                 try:
-                    per_kind = orch._cfg.slack.home_tab_sessions_per_kind
+                    per_kind = slack_cfg(orch).slack.home_tab_sessions_per_kind
                     if not isinstance(per_kind, int) or per_kind < 1:
                         per_kind = _HOME_TAB_SESSIONS_PER_KIND
                 except (AttributeError, TypeError):
@@ -1520,7 +1521,9 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     user_match = re.search(r"<@([A-Z0-9]+)(?:\|([^>]+))?>", cmd_text)
     if user_match:
         _spawn_tracked(
-            _respond("⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack.")
+            _respond(
+                "⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack."
+            )
         )
         return
 
@@ -1529,9 +1532,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     if channel_match:
         channel_id = channel_match.group(1)
         channel_name = channel_match.group(2) or "Secret"
-        _spawn_tracked(
-            prompt_track_channel(orch.slack, orch._owner_id, channel_id, channel_name)
-        )
+        _spawn_tracked(prompt_track_channel(orch.slack, orch._owner_id, channel_id, channel_name))
         _spawn_tracked(_respond(f"📨 Track request sent for #{channel_name or channel_id}."))
         return
 
@@ -1559,9 +1560,7 @@ def _maybe_prompt_owner(orch: GatewayOrchestrator, event: dict) -> None:
 # cannot disagree about what is audio.
 
 
-def _voice_memo_context(
-    text: str, memos: int, transcribed: int, *, available: bool
-) -> str:
+def _voice_memo_context(text: str, memos: int, transcribed: int, *, available: bool) -> str:
     """*text* plus one visible note per voice memo that produced no words.
 
     A memo whose transcription is unavailable or failed used to be dropped in
@@ -1756,9 +1755,9 @@ async def _dispatch_queued(
     # path must keep taking it for its queued follow-ups (not silently fall back
     # to native). Review-mode channels stay on native (privacy gate), matching
     # the _route_message gate.
-    _activation = orch._cfg.channel_config(channel).activation
+    _activation = slack_cfg(orch).channel_config(channel).activation
     _use_transport = (
-        getattr(getattr(orch._cfg, "messaging", None), "use_transport", False) is True
+        getattr(getattr(slack_cfg(orch), "messaging", None), "use_transport", False) is True
         and _activation != ACTIVATION_REVIEW
     )
     try:
@@ -1905,23 +1904,17 @@ def _extract_blocks_text(blocks: list[dict]) -> str:
                         sub_els = child.get("elements", [])
                         if not isinstance(sub_els, list):
                             sub_els = []
-                        inline = "".join(
-                            _render_rich_text_element(el) for el in sub_els
-                        )
+                        inline = "".join(_render_rich_text_element(el) for el in sub_els)
                         if inline:
                             parts.append(f"- {inline}")
                 elif el_type == "rich_text_quote":
                     # Quote blocks: prefix with "> "
-                    inline = "".join(
-                        _render_rich_text_element(el) for el in child_els
-                    )
+                    inline = "".join(_render_rich_text_element(el) for el in child_els)
                     if inline:
                         parts.append(f"> {inline}")
                 else:
                     # rich_text_section, rich_text_preformatted
-                    inline = "".join(
-                        _render_rich_text_element(el) for el in child_els
-                    )
+                    inline = "".join(_render_rich_text_element(el) for el in child_els)
                     if inline:
                         parts.append(inline)
         elif block_type == "section":
@@ -1950,10 +1943,12 @@ def _extract_blocks_text(blocks: list[dict]) -> str:
 # NOTE: These are best-effort, undocumented, English-only Slack placeholder strings.
 # They may change or be localized — recovery is best-effort for non-English workspaces.
 # No fuzzy/structural detection is attempted (out of scope; would change behavior broadly).
-_SLACK_BLOCK_FALLBACKS = frozenset({
-    "This message contains interactive elements.",
-    "This content can't be displayed.",
-})
+_SLACK_BLOCK_FALLBACKS = frozenset(
+    {
+        "This message contains interactive elements.",
+        "This content can't be displayed.",
+    }
+)
 
 
 def _normalize_message_blocks(raw: list) -> list[dict]:
@@ -2115,13 +2110,13 @@ async def _route_message(
     #    under human supervision.
     _thread_key = f"{channel}:{thread_ts or msg_ts}"
     _turn_capped = from_trusted_bot and _trusted_bot_turns.count(_thread_key) >= max(
-        1, orch._cfg.slack.trusted_bot_turn_limit
+        1, slack_cfg(orch).slack.trusted_bot_turn_limit
     )
     _owner_authorized = is_allowed_user(sender_id)
     _trusted_bot_admitted = (
         from_trusted_bot
         and not _turn_capped
-        and orch._cfg.channel_config(channel).activation != ACTIVATION_REVIEW
+        and slack_cfg(orch).channel_config(channel).activation != ACTIVATION_REVIEW
     )
     _user_authorized = _owner_authorized or _trusted_bot_admitted
     if _user_authorized:
@@ -2136,7 +2131,7 @@ async def _route_message(
         logger.warning("Ignoring message from unauthorized user %s", sender_id)
         if not from_trusted_bot:
             _deny_error = "unauthorized sender"
-        elif orch._cfg.channel_config(channel).activation == ACTIVATION_REVIEW:
+        elif slack_cfg(orch).channel_config(channel).activation == ACTIVATION_REVIEW:
             _deny_error = "trusted_bot_denied_in_review_channel"
         else:
             _deny_error = "trusted_bot_turn_limit_reached"
@@ -2241,7 +2236,7 @@ async def _route_message(
     # `app_mention` event for the same msg_ts.  We must skip the plain
     # `message` event *without* marking it as seen so the subsequent
     # `app_mention` event is still processed.
-    ch_cfg = orch._cfg.channel_config(channel)
+    ch_cfg = slack_cfg(orch).channel_config(channel)
     activation = ch_cfg.activation
 
     if activation == ACTIVATION_OFF:
@@ -2583,6 +2578,7 @@ async def _route_message(
     #    (_handle_restart) which owns owner-check + supervisor guard, keeping
     #    a single source of truth for the restart logic. ──
     if clean_text.strip().lower() == "!restart":
+
         async def _restart_respond(text: str, **_kw: Any) -> None:
             if orch.slack:
                 await orch.slack.post_message(channel, text, thread_ts or msg_ts)
@@ -2708,7 +2704,7 @@ async def _route_message(
     # native handle_message; routing review-mode channels through native keeps
     # that guarantee intact rather than risking a partial re-implementation.
     _use_transport = (
-        getattr(getattr(orch._cfg, "messaging", None), "use_transport", False) is True
+        getattr(getattr(slack_cfg(orch), "messaging", None), "use_transport", False) is True
         and activation != ACTIVATION_REVIEW
     )
     if _use_transport:

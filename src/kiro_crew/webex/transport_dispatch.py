@@ -53,6 +53,9 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.config import live
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid, transcript_stem
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
@@ -98,11 +101,13 @@ from kiro_crew.webex.renderer import WebexRenderer, webex_display_safe
 from kiro_crew.webex.transport import ROOM_DIRECT, WEBEX_CAPABILITIES
 
 if TYPE_CHECKING:
+    from kiro_crew.config.live import ConfigChange
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
     from kiro_crew.webex.client import WebexClient
+    from kiro_crew.webex.transport import WebexTransport
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +236,21 @@ class WebexDispatcher:
         self.conv_log = conv_log
         self.approval_mode = approval_mode
         self.client: "WebexClient | None" = None
+        # Set by maybe_start_webex after construction (same construction-cycle
+        # reason as ``client``); the config applier pushes reloaded authorization
+        # fields at it.
+        self.transport: "WebexTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # dm_scope selects the session-key namespace, so adopting a new value
+        # mid-conversation would re-key a running DM. Read live, pinned per
+        # generation (see ``_dm_scope``).
+        self._dm_scope_at: dict[str, tuple[int, str]] = {}
+        # Held on self: live.subscribe keeps a bound method WEAKLY, so a
+        # subscription dropped here would be collected and the applier would
+        # silently stop firing.
+        self._config_sub = live.subscribe(
+            "webex", "messaging", callback=self._on_config_change, name="WebexDispatcher"
+        )
         self._queue = ReceiptQueue()
         # What the newest options card offered, per conversation. Owned HERE and
         # not by the renderer: that card is the last thing a turn sends, so every
@@ -251,7 +270,7 @@ class WebexDispatcher:
         in the room root. Webex threads are FLAT, so the inbound's ``parentId`` is
         already the root and there is no nesting to resolve.
         """
-        return inbound.parent_id if self.cfg.webex.reply_in_thread else ""
+        return inbound.parent_id if self._live_cfg().webex.reply_in_thread else ""
 
     async def _reply(
         self, inbound: "WebexInbound", text: str, *, self_minted: bool = False
@@ -422,8 +441,8 @@ class WebexDispatcher:
             sessions=self.sessions,
             key=route,
             session_key_for=self._session_key,
-            idle_minutes=self.cfg.messaging.idle_reset_minutes,
-            daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            idle_minutes=int(self._live_cfg().messaging.idle_reset_minutes),
+            daily_reset_hour=int(self._live_cfg().messaging.daily_reset_hour),
             on_busy=lambda sk: self._handle_busy(inbound, sk, body, override_mode),
         )
         if resolved_key is None:
@@ -578,7 +597,7 @@ class WebexDispatcher:
         if not self.sessions.is_busy(session_key):
             await self.handle_message(inbound)
             return
-        mode = override_mode or self.cfg.messaging.queue_mode
+        mode = override_mode or str(self._live_cfg().messaging.queue_mode)
         # Steer forwards TEXT ONLY, so steering a message that carries files would
         # acknowledge a fold while silently dropping every attachment. Queue it
         # instead — even under an explicit ``/steer`` — so the files reach the
@@ -808,7 +827,7 @@ class WebexDispatcher:
             self._resolve_agent(),
             route,
             gen=0,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self._live_cfg().messaging.dm_scope),
             chat_type=_chat_type_of(route),
         )
         return transcript_stem(bucket)
@@ -985,13 +1004,97 @@ class WebexDispatcher:
             return
         await self._reply(inbound, _APPROVAL_NOT_PENDING)
 
+    # ── Live config ────────────────────────────────────────────────────────
+
+    def _live_cfg(self) -> "KiroCrewConfig":
+        """The config in force NOW, for a per-turn read.
+
+        The watcher's snapshot when it is armed, else a fingerprint-cached
+        ``load()`` (two stats on a hit), else the boot copy. Falling back to
+        ``self.cfg`` rather than raising keeps a turn running when the config
+        file is momentarily unreadable: a threshold or a thread toggle is not an
+        authorization decision, and the boot value is the one the operator last
+        had in force.
+
+        ``_sender_allowed`` is the ONE authorization caller of this, and it is
+        deny-by-default against whichever roster it reads, so the boot fallback
+        can only ever be the roster the operator last had in force -- never an
+        empty one and never a wider one.
+        """
+        try:
+            snap = live.snapshot()
+            if snap is not None:
+                return snap
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            return KiroCrewConfig.load()
+        except Exception:
+            logger.warning("webex: could not read live config; using the boot copy", exc_info=True)
+            return self.cfg
+
+    def _thresholds(self) -> tuple[int, int]:
+        """``(soft, hard)`` context thresholds from the live config.
+
+        Re-runs the loader's own pair normalization, because reading the two
+        fields live without it can leave ``soft > hard`` and make the soft nudge
+        unreachable -- ``_maybe_notice`` tests ``pct >= hard`` first.
+        """
+        section = self._live_cfg().webex
+        return _normalize_threshold_pair(
+            int(getattr(section, "soft_threshold_pct", 80)),
+            int(getattr(section, "hard_threshold_pct", 95)),
+        )
+
+    def _dm_scope(self, route: str, gen: int) -> str:
+        """The dm_scope this route's generation is keyed under.
+
+        Read live, but pinned for the life of a generation: dm_scope chooses the
+        session-key namespace, so picking up a new value between two turns of one
+        conversation would mint a different key and jump a running DM into
+        another session. ``/new``, the idle reset and the daily reset all advance
+        the generation, which is exactly the boundary where adopting the new
+        value is safe.
+        """
+        cached = self._dm_scope_at.get(route)
+        if cached is not None and cached[0] == gen:
+            return cached[1]
+        scope = str(self._live_cfg().messaging.dm_scope)
+        self._dm_scope_at[route] = (gen, scope)
+        return scope
+
+    def _on_config_change(self, change: "ConfigChange") -> None:
+        """Push reloaded ``webex`` authorization fields at the live transport.
+
+        Webex keeps TWO copies of the email roster -- the transport's frozen set
+        and this dispatcher's own re-derivation for card presses, which do not
+        flow through ``receive``. The dispatcher copy is read at point of use, so
+        this applier only has to push the transport's; both therefore follow one
+        reload. Fails closed on a degraded section: the previous rosters stay in
+        force rather than being rebuilt from a document the loader could not
+        parse.
+        """
+        if self.transport is None or not change.touched("webex"):
+            return
+        degraded = change.new.degraded_sections
+        if "webex" in degraded or DEGRADED_WHOLE_CONFIG in degraded:
+            logger.warning(
+                "webex: the reloaded config is degraded; keeping the previous allow-lists"
+            )
+            return
+        self.transport.reconfigure(change.new.webex)
+
     def _sender_allowed(self, email: str) -> bool:
         """Whether *email* is on the channel's allow-list. Deny-by-default.
 
         Re-derived here rather than read off the transport because a press does
-        not flow through ``receive``; an empty allow-list authorizes nobody.
+        not flow through ``receive``; an empty allow-list authorizes nobody. Read
+        LIVE so a roster edit reaches a card press on the same reload that
+        reaches the inbound path, instead of leaving the two copies disagreeing
+        until a restart. A degraded read falls back to the boot roster, which is
+        the last one the operator had in force -- never a wider one.
         """
-        allowed = {e.lower() for e in (self.cfg.webex.allowed_emails or []) if e}
+        section = self._live_cfg().webex
+        allowed = {e.lower() for e in (getattr(section, "allowed_emails", None) or []) if e}
         return bool(email) and email.lower() in allowed
 
     def _bot_name(self) -> str:
@@ -1490,7 +1593,7 @@ class WebexDispatcher:
             self._resolve_agent(),
             route,
             gen=gen,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=self._dm_scope(route, gen),
             chat_type=_chat_type_of(route),
         )
 
@@ -1500,7 +1603,7 @@ class WebexDispatcher:
             channel="webex",
             agent=self._resolve_agent(),
             user_id=route,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self._live_cfg().messaging.dm_scope),
             chat_type=_chat_type_of(route),
         )
 
@@ -1534,7 +1637,8 @@ class WebexDispatcher:
         """
         route = _route_of(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
-        if pct >= self.cfg.webex.soft_threshold_pct:
+        soft_pct, hard_pct = self._thresholds()
+        if pct >= soft_pct:
             # Capability gate (#8156): no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
@@ -1542,7 +1646,7 @@ class WebexDispatcher:
             if unsupported:
                 logger.debug("Webex: context notice skipped — %s compacts itself", unsupported)
                 return
-        if pct >= self.cfg.webex.hard_threshold_pct:
+        if pct >= hard_pct:
             self._conv.clear_awaiting(route)
             ok, detail = await self._compact_provider(provider)
             await self._reply(
@@ -1554,7 +1658,7 @@ class WebexDispatcher:
                     "Reply `/new` to start fresh."
                 ),
             )
-        elif pct >= self.cfg.webex.soft_threshold_pct and not self._conv.is_awaiting(route):
+        elif pct >= soft_pct and not self._conv.is_awaiting(route):
             self._conv.set_awaiting(route)
             await self._reply(
                 inbound,

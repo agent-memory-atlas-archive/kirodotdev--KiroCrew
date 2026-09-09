@@ -37,7 +37,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.constants import CHANNEL_SEND_NAMESPACES
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.channel_folders import (
-    LIVE_RELOAD_FIELDS,
+    channel_restart_required,
     clean_session_folder,
     ensure_channel_folder,
     stored_folder_name,
@@ -3848,14 +3848,18 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
-    # command and enterprise IDs are read once at gateway startup; reactions
-    # and show_thinking are re-read per message, so only the former (plus any
-    # secret/owner change) need a restart to take effect.
-    boot_read = {"command", "allowed_enterprise_ids"}
+    # Only ``slack.command`` still needs a restart: it is registered in the Slack
+    # app manifest, so no local reload can make Slack route a new trigger. Every
+    # other slack.* field -- including the enterprise allow-list, which the
+    # gateway re-reads through its validated reader on a config change -- is
+    # applied live. A credential/owner write still needs one: those live in .env,
+    # which the config watcher does not watch.
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(boot_read & staged.keys()),
+            "restart_required": channel_restart_required(
+                "slack", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": verify_warning,
         }
     )
@@ -3892,10 +3896,6 @@ def _threshold_pct_rejection(body: dict[str, Any], key: str) -> tuple[str, str] 
 # in config.json under
 # the "discord" key. GET returns a masked preview + presence boolean; raw
 # token values are write-only (reset at the Developer Portal if ever needed).
-
-#: Discord fields the dispatcher re-reads per turn, so changing one takes
-#: effect on the next message rather than at the next restart.
-_DISCORD_LIVE_FIELDS = frozenset({"reactions_enabled", "show_thinking"})
 
 #: Loose shape check for Discord bot tokens: three dot-separated base64url
 #: segments (e.g. "MTA5...aBc.GhIjKl.MnOpQrStUvWxYz0123456789_-").
@@ -4148,7 +4148,7 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             applied.append("soft_threshold_pct")
 
     # Both render toggles are read per turn by the dispatcher, not at boot, so a
-    # change takes effect on the next message. `_DISCORD_LIVE_FIELDS` below keeps
+    # change takes effect on the next message. `channel_restart_required` keeps
     # `restart_required` honest about that; promising a restart the user does not
     # need is how a settings page trains people to restart for everything.
     for toggle in ("reactions_enabled", "show_thinking"):
@@ -4251,8 +4251,9 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates)
-            or bool(staged.keys() - LIVE_RELOAD_FIELDS - _DISCORD_LIVE_FIELDS),
+            "restart_required": channel_restart_required(
+                "discord", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": verify_warning,
         }
     )
@@ -4633,7 +4634,9 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required(
+                "telegram", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": verify_warning,
         }
     )
@@ -5311,7 +5314,7 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(set(applied) - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required("teams", applied, env_updates=env_updates),
             "verify_warning": verify_warning,
         }
     )
@@ -5639,7 +5642,7 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(set(applied) - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required("webex", applied, env_updates=env_updates),
             "verify_warning": verify_warning,
         }
     )
@@ -5889,7 +5892,7 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(set(applied) - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required("imessage", applied),
             "verify_warning": "",
         }
     )
@@ -6230,7 +6233,9 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required(
+                "wecom", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": "",
         }
     )
@@ -6741,7 +6746,9 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required(
+                "feishu", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": "",
         }
     )

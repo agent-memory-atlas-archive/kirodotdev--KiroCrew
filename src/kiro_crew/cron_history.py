@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,29 @@ class CronHistoryStore:
         self._enabled = False
         if not _defer_prepare:
             self.prepare()
+        # The caps above are copies of cron_history.*, so a config write reaches
+        # them only through reconfigure(). Held on self because the watcher keeps a
+        # bound method weakly.
+        self._config_sub = live.subscribe(
+            "cron_history", callback=self._on_config_change, name="CronHistoryStore"
+        )
+
+    def _on_config_change(self, change: object) -> None:
+        self.reconfigure(getattr(change, "new").cron_history)
+
+    def reconfigure(self, cron_history_cfg: object) -> None:
+        """Adopt new ``cron_history.*`` caps.
+
+        The caps only bound what the NEXT record write stores and what the next
+        trim keeps, so there is nothing to migrate: records already on disk keep
+        the shape they were written with, and the next trim applies the new
+        retention. ``cron_trace_cap_kb`` is re-multiplied here rather than copied,
+        because the attribute is in bytes.
+        """
+        self._summary_cap = int(getattr(cron_history_cfg, "cron_summary_cap"))
+        self._trace_cap = int(getattr(cron_history_cfg, "cron_trace_cap_kb")) * 1024
+        self._max_records_per_job = int(getattr(cron_history_cfg, "cron_max_records_per_job"))
+        self._max_index_records = int(getattr(cron_history_cfg, "cron_max_index_records"))
 
     @property
     def enabled(self) -> bool:
@@ -232,9 +256,9 @@ class CronHistoryStore:
     async def append(self, record: CronRunRecord) -> None:
         """Write record to job file and index."""
         # Cap fields
-        record.summary = record.summary[:self._summary_cap]
+        record.summary = record.summary[: self._summary_cap]
         if len(record.trace) > self._trace_cap:
-            record.trace = record.trace[:self._trace_cap] + "\n...[truncated]"
+            record.trace = record.trace[: self._trace_cap] + "\n...[truncated]"
 
         if not self._enabled:
             return
@@ -381,7 +405,7 @@ class CronHistoryStore:
             lines = job_path.read_text(encoding="utf-8").strip().splitlines()
             if len(lines) <= self._max_records_per_job:
                 return
-            keep = lines[-self._max_records_per_job:]
+            keep = lines[-self._max_records_per_job :]
             tmp = job_path.with_suffix(".tmp")
             wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(wfd, "w", encoding="utf-8") as f:
@@ -407,7 +431,7 @@ class CronHistoryStore:
                     continue
                 lines = p.read_text(encoding="utf-8").strip().splitlines()
                 if len(lines) > self._max_records_per_job:
-                    keep = lines[-self._max_records_per_job:]
+                    keep = lines[-self._max_records_per_job :]
                     tmp = p.with_suffix(".tmp")
                     wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                     with os.fdopen(wfd, "w", encoding="utf-8") as f:
@@ -416,7 +440,7 @@ class CronHistoryStore:
             if self._index_path.exists():
                 lines = self._index_path.read_text(encoding="utf-8").strip().splitlines()
                 if len(lines) > self._max_index_records:
-                    keep = lines[-self._max_index_records:]
+                    keep = lines[-self._max_index_records :]
                     tmp = self._index_path.with_suffix(".tmp")
                     wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                     with os.fdopen(wfd, "w", encoding="utf-8") as f:

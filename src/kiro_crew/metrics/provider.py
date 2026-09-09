@@ -193,16 +193,47 @@ _ATTR_OTHER = "other"
 # 30s, and any sample above the top bound has its percentile floored at that
 # bound.
 _FAST_BUCKETS_MS: list[float] = [
-    0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500,
-    1000, 2500, 5000, 10000, 30000, 60000,
+    0.5,
+    1,
+    2,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2500,
+    5000,
+    10000,
+    30000,
+    60000,
 ]
 
 # Milliseconds through ~1 minute — session startup and other cold-start work.
 # Sized for startup, which spans a 0.5ms set_model phase through 15-25s cold
 # spawns.
 _STARTUP_BUCKETS_MS: list[float] = [
-    1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000,
-    5000, 7500, 10000, 15000, 20000, 30000, 45000, 60000,
+    1,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2000,
+    3000,
+    5000,
+    7500,
+    10000,
+    15000,
+    20000,
+    30000,
+    45000,
+    60000,
 ]
 
 # One second through one hour — agent turns. A turn is an entire agent loop
@@ -211,9 +242,25 @@ _STARTUP_BUCKETS_MS: list[float] = [
 # multi-minute turn is not floored into an overflow bucket. Resolution is
 # deliberately densest between 1 and 10 minutes, where turns actually land.
 _TURN_BUCKETS_MS: list[float] = [
-    1000, 2500, 5000, 10000, 20000, 30000, 45000, 60000, 90000,
-    120000, 180000, 300000, 450000, 600000, 900000, 1200000,
-    1800000, 2700000, 3600000,
+    1000,
+    2500,
+    5000,
+    10000,
+    20000,
+    30000,
+    45000,
+    60000,
+    90000,
+    120000,
+    180000,
+    300000,
+    450000,
+    600000,
+    900000,
+    1200000,
+    1800000,
+    2700000,
+    3600000,
 ]
 
 # Watchdog idle-at-decision. The watchdog consults the oracle from
@@ -224,8 +271,23 @@ _TURN_BUCKETS_MS: list[float] = [
 # distribution is meant to tune. Sub-minute bounds exist because tests and
 # per-agent overrides can legitimately act earlier than the default 60s gate.
 _WATCHDOG_IDLE_BUCKETS_MS: list[float] = [
-    1000, 5000, 15000, 30000, 60000, 120000, 180000, 300000, 450000,
-    600000, 900000, 1800000, 3600000, 5400000, 7200000, 10800000, 14400000,
+    1000,
+    5000,
+    15000,
+    30000,
+    60000,
+    120000,
+    180000,
+    300000,
+    450000,
+    600000,
+    900000,
+    1800000,
+    3600000,
+    5400000,
+    7200000,
+    10800000,
+    14400000,
 ]
 
 # Sub-ms through one hour — a single tool round-trip. The widest span of any
@@ -235,9 +297,27 @@ _WATCHDOG_IDLE_BUCKETS_MS: list[float] = [
 # dominate the population by count, and the ceiling matches _TURN_BUCKETS_MS
 # because a tool call cannot outlive the turn that contains it.
 _TOOL_CALL_BUCKETS_MS: list[float] = [
-    0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500,
-    1000, 2500, 5000, 10000, 30000, 60000,
-    120000, 300000, 600000, 1800000, 3600000,
+    0.5,
+    1,
+    2,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2500,
+    5000,
+    10000,
+    30000,
+    60000,
+    120000,
+    300000,
+    600000,
+    1800000,
+    3600000,
 ]
 
 # One second through one week — session lifetime. Sessions are the only
@@ -249,9 +329,23 @@ _TOOL_CALL_BUCKETS_MS: list[float] = [
 # the short-lived teardown paths (unclaimed, destroyed) are a real population
 # whose distribution would otherwise collapse onto one boundary.
 _SESSION_BUCKETS_MS: list[float] = [
-    1000, 5000, 15000, 30000, 60000, 300000, 900000, 1800000,
-    3600000, 7200000, 14400000, 28800000, 43200000,
-    86400000, 172800000, 259200000, 604800000,
+    1000,
+    5000,
+    15000,
+    30000,
+    60000,
+    300000,
+    900000,
+    1800000,
+    3600000,
+    7200000,
+    14400000,
+    28800000,
+    43200000,
+    86400000,
+    172800000,
+    259200000,
+    604800000,
 ]
 
 # Instrument name -> boundaries. This map is the COMPLETE set of kirocrew
@@ -316,8 +410,22 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
 # overflow artifact `_HISTOGRAM_BUCKETS_MS` documents), and credit pricing is not
 # ours to hold still.
 _CREDIT_BUCKETS: list[float] = [
-    0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5,
-    10, 25, 50, 100, 250, 500, 1000, 2500,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2.5,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2500,
 ]
 
 # The same shape in dollars, one decade lower: a claude_code turn bills
@@ -329,8 +437,22 @@ _CREDIT_BUCKETS: list[float] = [
 # instead, and worth re-checking against real rows once a claude_code host
 # reports.
 _USD_BUCKETS: list[float] = [
-    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25,
-    0.5, 1, 2.5, 5, 10, 25, 50, 100,
+    0.001,
+    0.0025,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2.5,
+    5,
+    10,
+    25,
+    50,
+    100,
 ]
 
 # Non-duration histograms: instrument name -> boundaries, in the instrument's
@@ -543,9 +665,7 @@ def _resource_attributes() -> "dict[str, str | int]":
         machine = platform.machine().lower()
         attrs["host.arch"] = _ARCH_BY_MACHINE.get(machine, _ATTR_OTHER)
         runtime = platform.python_implementation().lower()
-        attrs["process.runtime.name"] = (
-            runtime if runtime in _KNOWN_RUNTIME_NAMES else _ATTR_OTHER
-        )
+        attrs["process.runtime.name"] = runtime if runtime in _KNOWN_RUNTIME_NAMES else _ATTR_OTHER
         # beacon.python_minor() owns the major.minor clamp and records why the
         # patch level is dropped; a second spelling here would be a rule with
         # two owners.
@@ -626,11 +746,7 @@ def _build_recorder() -> _Build:
     # the life of the process even though metrics are "disabled".
     started_readers: list = []
     try:
-        directory = (
-            Path(cfg.local_dir).expanduser()
-            if cfg.local_dir
-            else _default_metrics_dir()
-        )
+        directory = Path(cfg.local_dir).expanduser() if cfg.local_dir else _default_metrics_dir()
         started_readers.append(
             PeriodicExportingMetricReader(
                 JsonlMetricExporter(
@@ -922,10 +1038,7 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         exporter = OTLPMetricExporter(**kwargs)
         return PeriodicExportingMetricReader(
             exporter,
-            export_interval_millis=float(
-                getattr(cfg, "export_interval_seconds", 60)
-            )
-            * 1000.0,
+            export_interval_millis=float(getattr(cfg, "export_interval_seconds", 60)) * 1000.0,
         )
     except Exception:
         # Constructor errors may echo the credential-bearing endpoint in their
@@ -1102,9 +1215,7 @@ def _reap_readers_detached(readers: list) -> None:
             except Exception:  # noqa: BLE001 - best-effort cleanup
                 logger.debug("metric reader shutdown after init failure failed", exc_info=True)
 
-    threading.Thread(
-        target=_reap, name="kirocrew-telemetry-reap", daemon=True
-    ).start()
+    threading.Thread(target=_reap, name="kirocrew-telemetry-reap", daemon=True).start()
 
 
 def _take_provider_locked() -> Optional["_MeterProviderT"]:
@@ -1227,3 +1338,43 @@ def reset_for_testing() -> None:
     _wait_for_in_flight_consent_worker()
     with _lock:
         _ever_built = False
+
+
+#: The registered telemetry applier, kept so ``watch_config`` stays idempotent.
+_config_sub: object = None
+
+
+async def _on_config_change(change: object) -> None:
+    """Rebuild the recorder whenever anything under ``telemetry`` moves.
+
+    The consent worker re-resolves only ``enabled``, on a 30-second window, so
+    every other field in the section (``local_dir``, ``retention_days``,
+    ``max_total_mb``, ``export_interval_seconds``, ``otlp_endpoint``) was frozen
+    into the recorder at first use and stayed there for the process lifetime.
+    :func:`shutdown` drops the recorder and its provider, so the next metric call
+    rebuilds from the new values -- which is also the fast path for ``enabled``,
+    replacing the 30-second wait with an immediate apply.
+
+    Deliberately blunt: the section is small, a rebuild is bounded, and a config
+    write is rare, so comparing which field moved would buy nothing over
+    rebuilding once. ``shutdown`` flushes on the calling thread, so it runs in a
+    worker rather than on the event loop.
+    """
+    del change  # any telemetry.* change rebuilds; nothing to inspect
+    import asyncio
+
+    await asyncio.to_thread(shutdown)
+
+
+def watch_config() -> None:
+    """Register the telemetry applier on the process config watcher.
+
+    Idempotent per process: a second call is a no-op, so a re-entered boot path
+    cannot stack appliers that each rebuild the recorder.
+    """
+    global _config_sub
+    if _config_sub is not None:
+        return
+    from kiro_crew.config import live
+
+    _config_sub = live.subscribe("telemetry", callback=_on_config_change, name="telemetry")

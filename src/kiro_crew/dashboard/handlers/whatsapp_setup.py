@@ -11,6 +11,7 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig, update_config_locked
 from kiro_crew.dashboard.channel_folders import (
+    channel_restart_required,
     clean_session_folder,
     ensure_channel_folder,
     stored_folder_name,
@@ -147,7 +148,17 @@ async def whatsapp_config_save(request: web.Request) -> web.Response:
                     _folder_name,
                     relabel="session_folder" in body,
                 )
-    return web.json_response({"ok": True, "restart_required": True})
+    # Per FIELD, not a blanket True: the schema's `restart=True` marks are the one
+    # source of truth (`whatsapp.db_path` today). `enabled` and the other
+    # connection fields are applied by the gateway restarting the channel in
+    # process on the next config reload, so a save that touches them must not ask
+    # for a gateway restart either.
+    return web.json_response(
+        {
+            "ok": True,
+            "restart_required": channel_restart_required("whatsapp", body.keys()),
+        }
+    )
 
 
 async def whatsapp_qr_start(request: web.Request) -> web.Response:

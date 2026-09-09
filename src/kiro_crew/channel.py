@@ -606,6 +606,18 @@ class ChannelManager:
         self._CHANNELS_DIR = channels_dir or str(config_dir() / "channels")
         self._load_all()
 
+    def set_max_channels(self, value: int) -> None:
+        """Adopt a new ``agent.max_channels`` cap for channels created from now on.
+
+        Existing channels above a lowered cap stay open; the cap gates creation
+        only, exactly as the constructor value did.
+        """
+        self._max_channels = max(1, int(value))
+
+    def set_max_agents(self, value: int) -> None:
+        """Adopt a new ``agent.max_channel_agents`` cap for members added from now on."""
+        self._max_agents = max(1, int(value))
+
     def _save_channel(self, channel: Channel) -> None:
         """Persist channel state to disk.
 

@@ -602,6 +602,92 @@ Session keys are namespaced as `f"{channel_type}:{conversation_id}"` (`session_k
 
 `MessagingConfig.use_transport` (`config/loader.py`, default `True` in Kiro Crew; exposed in `config.json` under `messaging`) is the single switch. `slack/events.py::_route_message` checks `orch._cfg.messaging.use_transport`; when `True` it creates a task on `handle_message_transport` and skips the native `handle_message` monolith. (There is no challenge-redirect in this fork — Slack messages are processed inline.) Approval mode is resolved by `_resolve_approval_mode(orch)` (respects configured mode + operator YOLO/SafetyOverride TTL), and the per-channel `slack.channels.<id>.agent` override is passed through.
 
+## Live configuration
+
+Every channel setting that CAN take effect in a running gateway does, from any
+writer — the dashboard save, `kirocrew config set`, or an `$EDITOR` edit of
+`config.json`. One shape covers all eleven channels, and the shape is the same
+whether the value is an authorization roster, a per-turn threshold, or a socket
+parameter.
+
+**One watcher.** `src/kiro_crew/config/live.py` owns the single process-wide
+`ConfigWatch`: one background task, one fingerprint check per tick off the loop,
+one `KiroCrewConfig.load()` when it moves, one diff flattened to dotted leaf
+paths, and one sequential dispatch to subscribers on the loop. No channel polls
+`config.json` itself. Each dispatcher registers in its `__init__` —
+`live.subscribe("<channel>", "messaging", callback=self._on_config_change,
+name="<Channel>Dispatcher")` — and keeps the returned `Subscription` on `self`,
+because the watcher holds a bound method WEAKLY so a dispatcher a test builds and
+drops does not pin itself into the registry. The handler reads
+`change.touched(...)` / `change.under(prefix)` to decide what it owns.
+
+**Allow-lists are PUSHED, wholesale, and fail closed.** Each transport exposes
+`reconfigure(section)`: it rebuilds every authorization set with the SAME coercion
+its constructor applies (Telegram's user ids to strings and forum chat ids to
+ints, Discord's snowflake strings, Webex's lowercased emails, WeCom's
+`{userid, name}` flattening, Weixin's `_coerce_opaque_str_ids`, WhatsApp's
+`normalize_jid` and `_coerce_whatsapp_groups`, iMessage's `normalize_handle`,
+Teams' lowercased emails) and REPLACES the frozenset in one assignment, so an
+`authorize` running concurrently reads one consistent roster rather than a
+half-updated one. Discord's `_allowed_threads` is the one set that is UNIONED
+rather than replaced: a thread this process created at runtime is not in
+`config.json`, and dropping it would strand every follow-up the user sends into
+it, while a thread an operator REMOVES from the config is still dropped, so the
+reload narrows as intended. A field whose reloaded shape does not parse keeps the PREVIOUS
+value and logs at WARNING, and a `slack`/channel section the loader DISCARDED
+(`cfg.degraded_sections`) applies nothing under it: rebuilding a roster from a
+value the loader could not read would either lock out every intended sender or
+admit a room nobody approved. An empty list is a real value on the channels whose
+gate denies on empty (iMessage, Webex), because empty there means deny-all rather
+than unreadable. Every roster change is SEL-audited by COUNT — added, removed,
+resulting size — never by id, since the per-message admission decision is already
+audited where it is made. A transport that is not attached yet (`transport` is
+`None`, as in a dispatcher a test builds bare) makes the applier a no-op.
+
+**Per-turn values are read at the point of use.** Thresholds, `dm_scope`,
+`queue_mode`, `idle_reset_minutes`, `daily_reset_hour` and the render toggles are
+not pushed into anything: each dispatcher's `_live_cfg()` returns
+`live.snapshot()` when the watcher is armed, else a fingerprint-cached
+`KiroCrewConfig.load()` (two stats on a hit), else the boot copy. Falling back to
+the boot copy rather than raising keeps a turn running when `config.json` is
+momentarily unreadable — a threshold is not an authorization decision, and the
+boot value is the one the operator last had in force. Thresholds re-run the
+loader's own `_normalize_threshold_pair`, so a reloaded soft value above the hard
+one cannot make the soft nudge unreachable. `dm_scope` is read per conversation
+boundary, not mid-turn, so a scope change cannot re-key a session already
+running.
+
+**Connection fields restart ONE channel, in process.** A socket, a bot token or a
+bridge path cannot be swapped under a live connection, so the gateway reconnects
+just that channel instead of asking the operator to restart the process. Each
+bootable `ChannelDescriptor` declares its `boot_keys` (`messaging/registry.py`);
+when a reload names one of them, `GatewayOrchestrator.restart_channel` closes the
+old handle, re-runs that channel's hoist against the new config and a fresh
+credential read, re-checks the `channels` governance gate and the readiness
+badge, and starts the transport again. Slack is not in that loop — its socket is
+host-managed. See [slack-gateway](slack-gateway.md) § Live configuration.
+
+**`restart_required` is answered from schema metadata.** A channel save's
+response no longer guesses: `dashboard/channel_folders.py::channel_restart_required`
+asks `kiro_crew.config.schema.requires_restart(path)`, which reads the `restart`
+flag on that field's `_meta(...)` in `config/sections.py`. A field nothing marks
+is live, so the settings page tells the truth instead of promising a restart the
+user does not need — which is how a panel trains people to restart for
+everything. A `.env` write always reports `True`, because the credential file is
+not watched.
+
+**The exceptions**, and they are the whole list:
+
+- **`slack.command`** — the slash command is registered with Slack's app
+  manifest, so changing it here cannot re-register it. Marked `restart=True`.
+- **`whatsapp.db_path`** — the linked-device session store is opened once by the
+  `neonize` client. Marked `restart=True`.
+- **Credentials in `config_dir/.env`** — bot tokens, app passwords and secrets
+  are not in `config.json` and the watcher does not read that file, so a
+  credential save reports a restart even for a channel whose config fields are
+  all live. A channel whose token also lives in a legacy `config.json` fallback
+  restarts through `boot_keys` when that copy changes.
+
 ## Proactive sends (`send_message`'s `channel_type`)
 
 Everything above carries a REPLY: an inbound message arrives, a turn runs, its
@@ -802,7 +888,9 @@ Four properties are load-bearing:
   Topic inbound would refuse), **iMessage** (the handle IS the conversation,
   normalized both sides), **Weixin** (mirrors its `dm_policy`, and deliberately
   ignores the learned `_known_users` set so a peer who spoke once cannot outlive
-  its removal) and **WeCom** (defence in depth; it declares
+  its removal — `WeixinTransport.reconfigure` replaces `dm_policy` and
+  `allowed_user_ids` on a config reload, denying on an unknown policy value, so a
+  removal takes effect on the next send) and **WeCom** (defence in depth; it declares
   `supports_proactive_send=False`, so the ladder refuses it earlier). **Teams**
   reverse-maps through `_reachable_conversation`, the same predicate
   `resolve_configured_target` and `configured_targets` answer from, so "may I send
@@ -857,9 +945,9 @@ Four properties are load-bearing:
   **Webex** has the same two, and a group space is why: a **space** route is
   recognised by its conversation id being in `_allowed_rooms` while
   `allow_group_rooms` is still on — the same pair `room_permitted` gates inbound on,
-  so outbound is neither tighter nor looser. Both sets are frozen at construction
-  and the config PATCH reports `restart_required` for them, so flipping the switch
-  off or dropping a room revokes that space's proactive traffic from the next start —
+  so outbound is neither tighter nor looser. Both sets are replaced wholesale by
+  `WebexTransport.reconfigure` on a config reload, so flipping the switch
+  off or dropping a room revokes that space's proactive traffic on the next send —
   which is what matters, because a persisted link outlives the config that
   authorized it. This arm is load-bearing rather than a convenience: a space is keyed as a
   `forum` route on `(chat_id, thread_id)`, so `_session_principal` names nobody by
@@ -1826,8 +1914,10 @@ dashboard token auth.
   `verify_warning`. `<field>_clear` must be a strict boolean. Secrets land in
   `config_dir/.env` via atomic 0600 `mkstemp` + `os.replace`, and
   `os.environ` is synced afterward. Response `restart_required` is true for
-  actual env changes and boot-read config (`command`,
-  `allowed_enterprise_ids`); `reactions_enabled`/`show_thinking` apply live.
+  actual env changes and for `command`, the one Slack config field a running
+  gateway cannot apply (the slash command is registered with the app manifest);
+  every other field applies live, including `allowed_enterprise_ids`, which is
+  re-read through the validated `enterprise.reload_allowed_team_ids`.
   An empty `command` resets the slash command to the default.
 - `GET /api/slack/manifest` — public manifest template rendered with
   `?alias=` (default `kirocrew`, never `$USER`) plus Slack's one-click
@@ -2100,11 +2190,12 @@ like this transaction's own work.
   `show_thinking` are strict booleans. Secrets
   land in `config_dir/.env` (atomic 0600) with `os.environ`
   synced; non-secrets go to
-  `config.json` under `discord`. Every field except the two render toggles is
-  boot-read, so `restart_required` is true for any other actual change and
-  `_DISCORD_LIVE_FIELDS` holds those two out of it: the dispatcher re-reads them
-  per turn, and promising a restart the user does not need is how a settings page
-  trains people to restart for everything.
+  `config.json` under `discord`. Every field applies live, so
+  `restart_required` is false for a config-only save: the allow-lists are pushed
+  into the transport by `DiscordTransport.reconfigure` and the render toggles and
+  thresholds are re-read per turn, while a token change reconnects the Discord
+  channel alone rather than the gateway. Promising a restart the user does not
+  need is how a settings page trains people to restart for everything.
   Setting OR clearing the token also purges the legacy `discord.bot_token`
   field from `config.json`, and the commit order is config.json FIRST then
   `.env`, matching the Telegram and Webex saves: the gateway falls back to that
@@ -2348,9 +2439,11 @@ Slack settings API they are registered in the dashboard route block (NOT
   supergroup chat_ids are NEGATIVE (e.g. `-1001234567890`), so the validator
   accepts a leading minus (NOT the digits-only check used for
   `allowed_user_ids`) and rejects non-integer garbage.
-  Every Telegram field is boot-read (consumed in the orchestrator's
-  constructor), so `restart_required` is true for any actual change and only
-  for actual change.
+  Every Telegram config field applies live: `TelegramTransport.reconfigure`
+  replaces `allowed_user_ids` and `allowed_forum_chat_ids`, `allow_forum` and
+  `soft_threshold_pct` are read per turn, and a `bot_token` or `enabled` change
+  reconnects the Telegram channel alone. `restart_required` is therefore true
+  only for a `.env` credential write.
 
 ## Webex channel
 
@@ -2601,8 +2694,12 @@ neither interrupts a chunked reply.
   to `config.json` under `webex`, and any token set/clear purges the legacy
   `webex.bot_token` config fallback (config.json commits before .env so a
   crash between the two cannot resurrect the plaintext copy). Writes are
-  serialized under the repo-wide config lock. All fields are boot-read, so
-  `restart_required` is true on any actual change.
+  serialized under the repo-wide config lock. Every field applies live —
+  `WebexTransport.reconfigure` replaces `allowed_emails`, `allowed_room_ids` and
+  `allow_group_rooms`, the thresholds and `reply_in_thread` are read per turn,
+  `session_folder` is read where the session key is built, and a `bot_token` or
+  `enabled` change reconnects the Webex channel alone — so `restart_required` is
+  true only for a `.env` credential write.
 
 ## WeCom channel
 
@@ -3079,8 +3176,11 @@ single-delivery window, so answering one is a feature with its own design.
   back to `config.json` under `wecom`. `allow_all_users` must be a strict
   boolean. Secrets land in `config_dir/.env`
   (atomic 0600) with `os.environ` synced. Writes are serialized under the
-  repo-wide config lock. All fields are boot-read, so `restart_required` is
-  true on any actual change.
+  repo-wide config lock. Every config field applies live —
+  `WeComTransport.reconfigure` replaces `allowed_users` and `allow_all_users`, the
+  reset windows and thresholds are read per turn, and an `enabled` or `ws_url`
+  change reconnects the WeCom channel alone — so `restart_required` is
+  true only for a `.env` credential write.
 
 ## Microsoft Teams channel
 
@@ -3218,7 +3318,11 @@ Two paths besides an ordinary message keep that map honest, one per direction:
 **Security model.** `authorize` is deny-by-default against
 `teams.allowed_emails` (matching the UPN/email when Teams supplies one, else the
 AAD object id, since activities carry that more reliably); an empty allow-list
-authorizes nobody. **Personal-scope only, fail closed:** any non-`personal`
+authorizes nobody. `TeamsTransport.reconfigure` adopts a reloaded roster and
+updates all THREE copies from one applier — the transport's own set, the
+dispatcher's, and `TeamsSessionResume`, whose `owner_id` is re-derived — because a
+roster that lives in three places and is refreshed in one is a roster with two
+stale copies. **Personal-scope only, fail closed:** any non-`personal`
 conversation type is denied and audited BEFORE authorization, because a reply in a
 channel or group chat would expose tool output to members who are not on the
 allow-list. `MICROSOFT_APP_ID` / `MICROSOFT_APP_PASSWORD` /
@@ -3782,9 +3886,12 @@ actual Messages.app and reply to real people.
   `db_path` reject line breaks and NULs: they become `argv` of a spawned child
   (via `create_subprocess_exec`, never a shell), where a newline would corrupt
   the argument rather than be quoted. Writes go to `config.json` under
-  `imessage`, serialized under the repo-wide config lock. Every field except
-  `session_folder` is boot-read, so `restart_required` is true on any other
-  change.
+  `imessage`, serialized under the repo-wide config lock. Every field applies
+  live, so `restart_required` is false for this channel: `allowed_handles` is
+  replaced by `IMessageTransport.reconfigure` (an EMPTY list IS adopted — empty is
+  this transport's deny-all, not an unreadable value), the thresholds and
+  `session_folder` are read at the point of use, and a `db_path`, `cli_path`,
+  `service` or `enabled` change restarts the iMessage bridge alone.
 
 ## WhatsApp channel
 
@@ -3933,7 +4040,12 @@ its path only, because WhatsApp shows the recipient whatever `fileName` carries.
 (the default; only the linked account's own messages), `allowlist`, `open`, and
 `disabled`. An unrecognized value denies everyone. Groups are invisible
 unless configured per group, then gated by mode, mention and cooldown
-(`whatsapp/group_gate.py`).
+(`whatsapp/group_gate.py`). `WhatsAppTransport.reconfigure` adopts all three on a
+config reload: `dm_policy` (an unrecognized string is adopted, because
+`_dm_policy` denies what it does not recognize), `allowed_wa_ids`, and `groups`
+re-coerced through the loader's `_coerce_whatsapp_groups`. The `GroupGate` is
+rebuilt only when the coerced rules actually differ, because rebuilding it resets
+the unprompted-reply cooldown clock.
 
 **A stale group entry is reported once, at the first connect.** Groups are opt-in
 and matched by exact JID, so an entry the account cannot resolve (a hand-typed
@@ -4255,7 +4367,8 @@ lock: `receive` runs on the event loop (the WS thread hands off via
 by an `await`.
 
 **Security model.** `authorize` is deny-by-default against
-`feishu.allowed_open_ids` (frozen at construction); every denial is
+`feishu.allowed_open_ids`, which `FeishuTransport.reconfigure` replaces wholesale
+on a config reload (so does the group pair below); every denial is
 SEL-audited (`source="feishu"`). The Feishu app needs
 `im:message.p2p_msg:readonly` to receive direct-message events and
 `im:message:send_as_bot` to reply; enabling groups additionally needs

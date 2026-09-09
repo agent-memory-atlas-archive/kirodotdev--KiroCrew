@@ -236,6 +236,14 @@ class WorkflowService:
         """Effective (clamped) default wall-clock ceiling for runs of this service."""
         return self._timeout_secs
 
+    def set_timeout_secs(self, value: Optional[int]) -> None:
+        """Adopt a new default run ceiling for runs started from now on.
+
+        Clamped exactly like the constructor argument; a run already in flight
+        keeps the ceiling it started with.
+        """
+        self._timeout_secs = clamp_run_timeout(value)
+
     def _max_persisted_seq(self) -> int:
         """Highest wf_NNNNNN sequence among loaded runs (so new ids don't collide)."""
         hi = 0

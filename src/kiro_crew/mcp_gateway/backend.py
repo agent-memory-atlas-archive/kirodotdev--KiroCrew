@@ -62,7 +62,10 @@ from kiro_crew.mcp_gateway.image_budget import (
     parse_image_bearing_frame,
     rewrite_image_frame,
 )
-from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
+from kiro_crew.mcp_gateway.pool import (
+    READ_BUFFER_LIMIT_BYTES,
+    response_spill_threshold_bytes,
+)
 from kiro_crew.mcp_gateway.spill import maybe_spill_response
 from kiro_crew.mcp_gateway.tool_surface import ToolSurface, project_tool_surface
 from kiro_crew.security import redact
@@ -240,11 +243,13 @@ _JSONRPC_SERVER_ERROR = -32000
 # never had — so those are dropped instead. ``notifications/resources/updated``
 # is subscription-scoped, not request-scoped, and is routed by the
 # ``uri -> {stub_uuid}`` table instead (``Backend._resource_update_targets``).
-_GLOBAL_BROADCAST_NOTIFICATIONS: frozenset[str] = frozenset({
-    "notifications/tools/list_changed",
-    "notifications/prompts/list_changed",
-    "notifications/resources/list_changed",
-})
+_GLOBAL_BROADCAST_NOTIFICATIONS: frozenset[str] = frozenset(
+    {
+        "notifications/tools/list_changed",
+        "notifications/prompts/list_changed",
+        "notifications/resources/list_changed",
+    }
+)
 
 # MCP resource-subscription wire methods and the notification they scope.
 # ``notifications/resources/updated`` carries only a URI — no request id — so
@@ -694,8 +699,7 @@ class Backend:
     # these into one fresh forwarded subscribe (first parker as forwarder,
     # the rest as riders); a refusal means the server retained the lease, so
     # they join the still-live entry locally.
-    _lease_replacement_subscribes: dict[str, list[tuple[str, Any]]] = field(
-        default_factory=dict)
+    _lease_replacement_subscribes: dict[str, list[tuple[str, Any]]] = field(default_factory=dict)
     # Identity-capable servers only: the caller whose subscribe the server
     # GRANTED, keyed ``(uri, stub_uuid)`` and recorded at response time — the
     # only moment the grant principal is known for certain. A release for a
@@ -703,8 +707,7 @@ class Backend:
     # teardown, and never a last-writer map: a claim rekey after the grant
     # makes both identify the wrong principal and revoke a co-tenant's live
     # subscription). Dropped when the grant is released or the entry pruned.
-    _grant_callers: dict[tuple[str, str], "CallerContext"] = field(
-        default_factory=dict)
+    _grant_callers: dict[tuple[str, str], "CallerContext"] = field(default_factory=dict)
     # URIs whose upstream subscription is known RETAINED with no subscriber
     # left to route to — a gateway-originated release was refused. Updates for
     # these are dropped WITHOUT recording a hazard: the frames are a
@@ -910,7 +913,9 @@ class Backend:
         self.touch()
         logger.debug(
             "attach_stub pool=%s stub=%s refcount=%d",
-            self.pool_key.human_readable(), stub_uuid, self.refcount,
+            self.pool_key.human_readable(),
+            stub_uuid,
+            self.refcount,
         )
         return inbox
 
@@ -939,9 +944,7 @@ class Backend:
         # Bump FIRST, before any table work and any await: an in-flight
         # replay loop checks this between its writes, and the bump must be
         # visible from the moment the rekey is decided.
-        self._rekey_generation[stub_uuid] = (
-            self._rekey_generation.get(stub_uuid, 0) + 1
-        )
+        self._rekey_generation[stub_uuid] = self._rekey_generation.get(stub_uuid, 0) + 1
         # --- retract in-flight/parked subscribe transitions (commit all
         # table changes first, then reply; replies can re-enter via a
         # full-inbox detach) ---
@@ -1040,14 +1043,11 @@ class Backend:
                     evicted += 1
                     if not subscribers:
                         id_emptied.append(uri)
-            departed_keys = [
-                key for key in self._grant_callers if key[1] == stub_uuid
-            ]
+            departed_keys = [key for key in self._grant_callers if key[1] == stub_uuid]
             for uri, _stub in departed_keys:
                 grant_caller = self._grant_callers.pop((uri, stub_uuid))
                 shared = any(
-                    other != stub_uuid
-                    and self._grant_callers.get((uri, other)) == grant_caller
+                    other != stub_uuid and self._grant_callers.get((uri, other)) == grant_caller
                     for other in self._resource_subscriptions.get(uri, set())
                 )
                 if not shared:
@@ -1074,8 +1074,7 @@ class Backend:
         for reply_id in retract_replies:
             await self._reply_locally(stub_uuid, reply_id, error=rekey_error)
         for uri, release_caller in releases:
-            await self._release_upstream_subscriptions(
-                [uri], caller=release_caller)
+            await self._release_upstream_subscriptions([uri], caller=release_caller)
         return evicted
 
     async def detach_stub(self, stub_uuid: str) -> int:
@@ -1102,28 +1101,21 @@ class Backend:
         # otherwise be promoted — recording a phantom subscriber that blocks
         # the release and swallows updates.
         for uri in list(self._lease_pending_riders):
-            remaining = [
-                r for r in self._lease_pending_riders[uri] if r[0] != stub_uuid
-            ]
+            remaining = [r for r in self._lease_pending_riders[uri] if r[0] != stub_uuid]
             if remaining:
                 self._lease_pending_riders[uri] = remaining
             else:
                 del self._lease_pending_riders[uri]
         # Likewise a departing stub parked behind an in-flight release.
         for uri in list(self._lease_release_waiters):
-            remaining = [
-                r for r in self._lease_release_waiters[uri] if r[0] != stub_uuid
-            ]
+            remaining = [r for r in self._lease_release_waiters[uri] if r[0] != stub_uuid]
             if remaining:
                 self._lease_release_waiters[uri] = remaining
             else:
                 del self._lease_release_waiters[uri]
         # And a departing stub whose replacement subscribe is parked.
         for uri in list(self._lease_replacement_subscribes):
-            remaining = [
-                r for r in self._lease_replacement_subscribes[uri]
-                if r[0] != stub_uuid
-            ]
+            remaining = [r for r in self._lease_replacement_subscribes[uri] if r[0] != stub_uuid]
             if remaining:
                 self._lease_replacement_subscribes[uri] = remaining
             else:
@@ -1190,14 +1182,11 @@ class Backend:
                 emptied.append(uri)
         if self.supports_caller_identity:
             identity_releases: list[tuple[str, CallerContext]] = []
-            departed_keys = [
-                key for key in self._grant_callers if key[1] == stub_uuid
-            ]
+            departed_keys = [key for key in self._grant_callers if key[1] == stub_uuid]
             for uri, _stub in departed_keys:
                 grant_caller = self._grant_callers.pop((uri, stub_uuid))
                 shared = any(
-                    other != stub_uuid
-                    and self._grant_callers.get((uri, other)) == grant_caller
+                    other != stub_uuid and self._grant_callers.get((uri, other)) == grant_caller
                     for other in self._resource_subscriptions.get(uri, set())
                 )
                 if not shared:
@@ -1215,8 +1204,7 @@ class Backend:
                         self._orphaned_leases.pop()
                     self._orphaned_leases.add(uri)
             for uri, grant_caller in identity_releases:
-                await self._release_upstream_subscriptions(
-                    [uri], caller=grant_caller)
+                await self._release_upstream_subscriptions([uri], caller=grant_caller)
         else:
             to_release = []
             for uri in emptied:
@@ -1232,14 +1220,14 @@ class Backend:
                 await self._release_upstream_subscriptions(to_release)
         # Initialize-cache cleanup: if the departing stub was mid-wait for
         # a cached initialize reply, drop it from the pending list.
-        self._init_pending = [
-            entry for entry in self._init_pending if entry[0] != stub_uuid
-        ]
+        self._init_pending = [entry for entry in self._init_pending if entry[0] != stub_uuid]
         if self.refcount == 0:
             self.touch()  # start the idle clock fresh
         logger.debug(
             "detach_stub pool=%s stub=%s refcount=%d",
-            self.pool_key.human_readable(), stub_uuid, self.refcount,
+            self.pool_key.human_readable(),
+            stub_uuid,
+            self.refcount,
         )
         return self.refcount
 
@@ -1352,7 +1340,9 @@ class Backend:
                         if isinstance(_uri, str):
                             resource_uri = _uri
                 self._pending_requests[fid] = _PendingRequest(
-                    stub_uuid=stub_uuid, original_id=orig_id, method=str(method or ""),
+                    stub_uuid=stub_uuid,
+                    original_id=orig_id,
+                    method=str(method or ""),
                     t_start_ms=time.monotonic() * 1000.0,
                     progress_token=progress_token,
                     session_key=(caller.session_key if caller is not None else ""),
@@ -1375,9 +1365,11 @@ class Backend:
                 if isinstance(_cparams, dict) and "requestId" in _cparams:
                     orig_req = _cparams["requestId"]
                     cancel_fid = next(
-                        (f for f, pend in self._pending_requests.items()
-                         if pend.stub_uuid == stub_uuid
-                         and pend.original_id == orig_req),
+                        (
+                            f
+                            for f, pend in self._pending_requests.items()
+                            if pend.stub_uuid == stub_uuid and pend.original_id == orig_req
+                        ),
                         None,
                     )
                     if cancel_fid is not None:
@@ -1427,7 +1419,9 @@ class Backend:
         self._init_pending.append((stub_uuid, original_id))
         fid = self._next_forward_id()
         self._pending_requests[fid] = _PendingRequest(
-            stub_uuid="__init__", original_id=None, method="initialize",
+            stub_uuid="__init__",
+            original_id=None,
+            method="initialize",
             t_start_ms=time.monotonic() * 1000.0,
         )
         # Trust boundary: strip any stub-supplied caller identity from the
@@ -1520,7 +1514,8 @@ class Backend:
             inbox = self._stub_inboxes.get(stub_uuid)
         if inbox is not None:
             await self._enqueue_to_stub(
-                stub_uuid, inbox,
+                stub_uuid,
+                inbox,
                 (json.dumps(response, separators=(",", ":")) + "\n").encode("utf-8"),
             )
 
@@ -1561,7 +1556,9 @@ class Backend:
             self._init_state = "in_flight"
             fid = self._next_forward_id()
             self._pending_requests[fid] = _PendingRequest(
-                stub_uuid="__init__", original_id=None, method="initialize",
+                stub_uuid="__init__",
+                original_id=None,
+                method="initialize",
                 t_start_ms=time.monotonic() * 1000.0,
             )
             # Strip a stub-forged caller block from the respawn init forward
@@ -1599,9 +1596,7 @@ class Backend:
                 await self.shutdown()
             raise BackendGone(self._dead_reason) from exc
         if self._init_state != "ready":
-            raise BackendGone(
-                self._dead_reason or "backend initialize failed on respawn"
-            )
+            raise BackendGone(self._dead_reason or "backend initialize failed on respawn")
 
     def served_tool_surface(self, stub_uuid: str) -> Optional[ToolSurface]:
         """The tool set this backend told ``stub_uuid`` about.
@@ -1680,9 +1675,7 @@ class Backend:
             logger.debug("tool-surface probe could not attach", exc_info=True)
             return None
         try:
-            await self.forward_from_stub(
-                stub_uuid, frame, caller=caller, tenant_nonce=tenant_nonce
-            )
+            await self.forward_from_stub(stub_uuid, frame, caller=caller, tenant_nonce=tenant_nonce)
             deadline = time.monotonic() + timeout
             while True:
                 remaining = deadline - time.monotonic()
@@ -1714,9 +1707,7 @@ class Backend:
                     return None
                 return project_tool_surface(msg["result"])
         except (asyncio.TimeoutError, BackendGone, ConnectionError, OSError) as exc:
-            logger.info(
-                "tool-surface probe on pid=%s did not answer: %s", self.pid, exc
-            )
+            logger.info("tool-surface probe on pid=%s did not answer: %s", self.pid, exc)
             return None
         except Exception:  # pragma: no cover — defensive
             logger.warning("tool-surface probe raised", exc_info=True)
@@ -1796,7 +1787,8 @@ class Backend:
                 "error": {"code": -32000, "message": f"backend gone: {reason}"},
             }
             await self._enqueue_to_stub(
-                pending.stub_uuid, inbox,
+                pending.stub_uuid,
+                inbox,
                 (json.dumps(err, separators=(",", ":")) + "\n").encode("utf-8"),
             )
         # Preserve replay-target URIs BEFORE the clear: an in-flight replay
@@ -1812,9 +1804,9 @@ class Backend:
                 and pending.method == _RESOURCES_SUBSCRIBE_METHOD
                 and pending.resource_uri
             ):
-                self._gone_replay_uris.setdefault(
-                    pending.replay_stub, set()
-                ).add(pending.resource_uri)
+                self._gone_replay_uris.setdefault(pending.replay_stub, set()).add(
+                    pending.resource_uri
+                )
         self._pending_requests.clear()
         self._init_pending.clear()
         # Parked lease work is NOT in ``_pending_requests``: a rider waiting
@@ -1853,7 +1845,8 @@ class Backend:
                 "error": {"code": -32000, "message": f"backend gone: {reason}"},
             }
             await self._enqueue_to_stub(
-                parked_uuid, inbox,
+                parked_uuid,
+                inbox,
                 (json.dumps(err, separators=(",", ":")) + "\n").encode("utf-8"),
             )
 
@@ -1871,7 +1864,8 @@ class Backend:
                     if exc.partial:
                         logger.warning(
                             "backend pid=%s closed stdout mid-line (%d bytes)",
-                            self.pid, len(exc.partial),
+                            self.pid,
+                            len(exc.partial),
                         )
                     break
                 except asyncio.LimitOverrunError:
@@ -1898,17 +1892,18 @@ class Backend:
                             try:
                                 tail = await self.stdout.readuntil(b"\n")
                                 if len(oversize_head) < _OVERSIZE_KEEP:
-                                    oversize_head += tail[:_OVERSIZE_KEEP - len(oversize_head)]
+                                    oversize_head += tail[: _OVERSIZE_KEEP - len(oversize_head)]
                                 break
                             except asyncio.LimitOverrunError as exc:
                                 chunk = await self.stdout.readexactly(exc.consumed)
                                 if len(oversize_head) < _OVERSIZE_KEEP:
-                                    oversize_head += chunk[:_OVERSIZE_KEEP - len(oversize_head)]
+                                    oversize_head += chunk[: _OVERSIZE_KEEP - len(oversize_head)]
                     except (asyncio.IncompleteReadError, Exception):  # noqa: BLE001
                         pass
                     logger.warning(
                         "backend pid=%s dropped oversize stdout line (>%d bytes)",
-                        self.pid, READ_BUFFER_LIMIT_BYTES,
+                        self.pid,
+                        READ_BUFFER_LIMIT_BYTES,
                     )
                     # Fail the pending request so the waiting stub is not left
                     # dangling. Without this the heartbeat eventually kills the
@@ -1964,14 +1959,20 @@ class Backend:
                 # tool result doesn't balloon the shared daemon's memory or the
                 # agent's context. Offloaded to the maintenance executor (short
                 # filesystem I/O); a spill failure falls back to the raw line.
-                if len(line) > RESPONSE_SPILL_THRESHOLD_BYTES:
+                # The threshold is resolved per response rather than read from the
+                # import-time global, so a config change applies without restarting
+                # the daemon; one resolve serves both the test and the argument so
+                # a write mid-response cannot spill against one value and truncate
+                # against another.
+                spill_threshold = response_spill_threshold_bytes()
+                if len(line) > spill_threshold:
                     try:
                         line = await asyncio.get_running_loop().run_in_executor(
                             maintenance_executor(),
                             maybe_spill_response,
                             line,
                             self.pool_key.server_name,
-                            RESPONSE_SPILL_THRESHOLD_BYTES,
+                            spill_threshold,
                         )
                     except Exception:
                         logger.debug("spill-to-file failed; routing raw line", exc_info=True)
@@ -2011,7 +2012,8 @@ class Backend:
             if pending is None:
                 logger.warning(
                     "backend pid=%s response to unknown id=%r; dropping",
-                    self.pid, msg_id,
+                    self.pid,
+                    msg_id,
                 )
                 return
             if pending.t_start_ms:
@@ -2019,15 +2021,17 @@ class Backend:
                 # I/O offloaded to a thread) yields the shared stdout pump,
                 # adding head-of-line latency to co-pooled sessions whenever
                 # the metrics volume is slow. Schedule it off the hot path.
-                self._spawn_metric_task({
-                    "ts": int(time.time() * 1000),
-                    "method": pending.method,
-                    "dur_ms": round(time.monotonic() * 1000.0 - pending.t_start_ms, 3),
-                    "pool": self.pool_key.human_readable(),
-                    "pid": self.pid,
-                    "ok": "error" not in msg,
-                    "stub": pending.stub_uuid,
-                })
+                self._spawn_metric_task(
+                    {
+                        "ts": int(time.time() * 1000),
+                        "method": pending.method,
+                        "dur_ms": round(time.monotonic() * 1000.0 - pending.t_start_ms, 3),
+                        "pool": self.pool_key.human_readable(),
+                        "pid": self.pid,
+                        "ok": "error" not in msg,
+                        "stub": pending.stub_uuid,
+                    }
+                )
             if pending.stub_uuid == "__init__":
                 await self._on_upstream_initialize(msg)
                 return
@@ -2058,10 +2062,7 @@ class Backend:
                         # pending, so this is where a mid-replay disconnect is
                         # caught; granting the dead UUID would pin the lease
                         # to a stub that can never drain it.
-                        if (
-                            pending.replay_stub
-                            and pending.replay_stub in self._stub_inboxes
-                        ):
+                        if pending.replay_stub and pending.replay_stub in self._stub_inboxes:
                             granted.add(pending.replay_stub)
                         granted.update(rider_uuid for rider_uuid, _ in riders)
                         # Routing is committed BEFORE any reply is awaited: a
@@ -2070,8 +2071,9 @@ class Backend:
                         # local set afterwards would reinsert the detached
                         # UUID and route updates at a stub that is gone.
                         if granted:
-                            self._resource_subscriptions.setdefault(
-                                orphan_uri, set()).update(granted)
+                            self._resource_subscriptions.setdefault(orphan_uri, set()).update(
+                                granted
+                            )
                             self._orphaned_leases.discard(orphan_uri)
                             if (
                                 self.supports_caller_identity
@@ -2081,15 +2083,16 @@ class Backend:
                                 # A replayed identity grant is held by the
                                 # replay's caller — record it so a later
                                 # detach can release as the right principal.
-                                self._grant_callers[
-                                    (orphan_uri, pending.replay_stub)
-                                ] = pending.caller
+                                self._grant_callers[(orphan_uri, pending.replay_stub)] = (
+                                    pending.caller
+                                )
                         elif orphan_uri not in self._resource_subscriptions:
                             # A granted lease nobody wants: release on the
                             # spot, as the caller that took it (a replay's
                             # grant belongs to the replay's principal).
                             await self._release_upstream_subscriptions(
-                                [orphan_uri], caller=pending.caller)
+                                [orphan_uri], caller=pending.caller
+                            )
                         for rider_uuid, rider_id in riders:
                             await self._reply_locally(rider_uuid, rider_id, result={})
                     else:
@@ -2101,18 +2104,22 @@ class Backend:
                         # upstream, with every later update charged to the
                         # server as a hazard, so an unsettled verdict with
                         # nobody routed releases the lease on the spot.
-                        if error_obj is None and (
-                            orphan_uri not in self._resource_subscriptions
-                        ):
+                        if error_obj is None and (orphan_uri not in self._resource_subscriptions):
                             await self._release_upstream_subscriptions(
-                                [orphan_uri], caller=pending.caller)
+                                [orphan_uri], caller=pending.caller
+                            )
                         for rider_uuid, rider_id in riders:
                             await self._reply_locally(
-                                rider_uuid, rider_id,
-                                error=error_obj if isinstance(error_obj, dict) else {
-                                    "code": _JSONRPC_SERVER_ERROR,
-                                    "message": "resources/subscribe refused by server",
-                                },
+                                rider_uuid,
+                                rider_id,
+                                error=(
+                                    error_obj
+                                    if isinstance(error_obj, dict)
+                                    else {
+                                        "code": _JSONRPC_SERVER_ERROR,
+                                        "message": "resources/subscribe refused by server",
+                                    }
+                                ),
                             )
                 elif pending.method == _RESOURCES_UNSUBSCRIBE_METHOD and pending.resource_uri:
                     # A gateway-originated (or detach-orphaned) release
@@ -2139,10 +2146,8 @@ class Backend:
                             if not subscribers:
                                 del self._resource_subscriptions[_rel_uri]
                         for waiter_uuid, waiter_id in waiters:
-                            await self._reply_locally(
-                                waiter_uuid, waiter_id, result={})
-                        await self._drain_replacement_subscribes(
-                            _rel_uri, released=True)
+                            await self._reply_locally(waiter_uuid, waiter_id, result={})
+                        await self._drain_replacement_subscribes(_rel_uri, released=True)
                     else:
                         if _rel_uri not in self._resource_subscriptions:
                             while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
@@ -2151,18 +2156,22 @@ class Backend:
                         error_obj = msg.get("error")
                         for waiter_uuid, waiter_id in waiters:
                             await self._reply_locally(
-                                waiter_uuid, waiter_id,
-                                error=error_obj if isinstance(error_obj, dict) else {
-                                    "code": _JSONRPC_SERVER_ERROR,
-                                    "message": "resources/unsubscribe "
-                                               "refused by server",
-                                },
+                                waiter_uuid,
+                                waiter_id,
+                                error=(
+                                    error_obj
+                                    if isinstance(error_obj, dict)
+                                    else {
+                                        "code": _JSONRPC_SERVER_ERROR,
+                                        "message": "resources/unsubscribe " "refused by server",
+                                    }
+                                ),
                             )
-                        await self._drain_replacement_subscribes(
-                            _rel_uri, released=False)
+                        await self._drain_replacement_subscribes(_rel_uri, released=False)
                 return
             if pending.resource_uri and pending.method in (
-                _RESOURCES_SUBSCRIBE_METHOD, _RESOURCES_UNSUBSCRIBE_METHOD
+                _RESOURCES_SUBSCRIBE_METHOD,
+                _RESOURCES_UNSUBSCRIBE_METHOD,
             ):
                 await self._on_resource_subscription_response(pending, msg)
             # MCP Apps interception: a tools/call result carrying a ui://
@@ -2203,13 +2212,15 @@ class Backend:
                         # can carry tokens or presigned query parameters.
                         logger.debug(
                             "backend pid=%s dropping resources/updated for "
-                            "an orphaned lease (no hazard)", self.pid,
+                            "an orphaned lease (no hazard)",
+                            self.pid,
                         )
                     else:
                         logger.debug(
                             "backend pid=%s dropping resources/updated for a "
                             "URI no stub subscribed to (never routed by "
-                            "request id)", self.pid,
+                            "request id)",
+                            self.pid,
                         )
                         self._record_hazard(hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION)
                 return
@@ -2233,7 +2244,8 @@ class Backend:
                 logger.debug(
                     "backend pid=%s dropping unattributable request-scoped "
                     "notification %r (not broadcast to avoid cross-tenant leak)",
-                    self.pid, method,
+                    self.pid,
+                    method,
                 )
                 self._record_hazard(hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION)
             return
@@ -2319,7 +2331,8 @@ class Backend:
             logger.warning(
                 "hazard: server %r first exhibited %s while shared; the "
                 "MCP page will withdraw its recommendation",
-                name, code,
+                name,
+                code,
             )
 
     async def _fail_init(self, reason: str) -> None:
@@ -2351,7 +2364,8 @@ class Backend:
                 "error": {"code": -32000, "message": f"backend init failed: {reason}"},
             }
             await self._enqueue_to_stub(
-                stub_uuid, inbox,
+                stub_uuid,
+                inbox,
                 (json.dumps(err, separators=(",", ":")) + "\n").encode("utf-8"),
             )
 
@@ -2372,9 +2386,7 @@ class Backend:
             return
         result = response.get("result")
         if not isinstance(result, dict):
-            await self._fail_init(
-                f"initialize response missing/malformed result: {response!r}"
-            )
+            await self._fail_init(f"initialize response missing/malformed result: {response!r}")
             return
         self._init_result = result
         self._init_state = "ready"
@@ -2387,7 +2399,8 @@ class Backend:
         )
         logger.info(
             "backend pid=%s initialized supports_caller_identity=%s",
-            self.pid, self.supports_caller_identity,
+            self.pid,
+            self.supports_caller_identity,
         )
         # Forward exactly one synthetic
         # notifications/initialized to the backend now the handshake is
@@ -2423,7 +2436,9 @@ class Backend:
         except asyncio.QueueFull:
             logger.warning(
                 "backend pid=%s stub=%s inbox full (cap=%d); dropping slow stub",
-                self.pid, stub_uuid, _STUB_INBOX_MAXSIZE,
+                self.pid,
+                stub_uuid,
+                _STUB_INBOX_MAXSIZE,
             )
             await self.detach_stub(stub_uuid)
             return False
@@ -2434,7 +2449,8 @@ class Backend:
         if inbox is None:
             logger.debug(
                 "backend pid=%s response for detached stub=%s; dropping",
-                self.pid, stub_uuid,
+                self.pid,
+                stub_uuid,
             )
             return
         await self._enqueue_to_stub(
@@ -2498,11 +2514,11 @@ class Backend:
             # dictionary keys. Refuse locally before any table stores the
             # key; the URI itself is never logged.
             await self._reply_locally(
-                stub_uuid, original_id,
+                stub_uuid,
+                original_id,
                 error={
                     "code": _JSONRPC_SERVER_ERROR,
-                    "message": "resource URI exceeds the maximum supported "
-                               "length",
+                    "message": "resource URI exceeds the maximum supported " "length",
                 },
             )
             return True
@@ -2525,10 +2541,13 @@ class Backend:
                 logger.warning(
                     "backend pid=%s stub=%s at resource-subscription cap (%d); "
                     "refusing subscribe",
-                    self.pid, stub_uuid, _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
+                    self.pid,
+                    stub_uuid,
+                    _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
                 )
                 await self._reply_locally(
-                    stub_uuid, original_id,
+                    stub_uuid,
+                    original_id,
                     error={
                         "code": _JSONRPC_SERVER_ERROR,
                         "message": "resource subscription limit reached",
@@ -2548,11 +2567,12 @@ class Backend:
                 # cannot tell them apart. Refuse the resubscribe; the client
                 # retries once the unsubscribe settles.
                 await self._reply_locally(
-                    stub_uuid, original_id,
+                    stub_uuid,
+                    original_id,
                     error={
                         "code": _JSONRPC_SERVER_ERROR,
                         "message": "resources/unsubscribe for this URI is "
-                                   "still in flight; retry after it completes",
+                        "still in flight; retry after it completes",
                     },
                 )
                 return True
@@ -2561,8 +2581,7 @@ class Backend:
                 # own subscribe (the caller block is injected downstream).
                 return False
             if uri in self._lease_awaiting_grant:
-                self._lease_pending_riders.setdefault(uri, []).append(
-                    (stub_uuid, original_id))
+                self._lease_pending_riders.setdefault(uri, []).append((stub_uuid, original_id))
                 return True
             subscribers = self._resource_subscriptions.get(uri)
             if subscribers is not None and uri not in self._lease_awaiting_release:
@@ -2579,7 +2598,8 @@ class Backend:
                 # retained lease locally or takes a fresh one with a
                 # subscribe forwarded strictly AFTER the release settled.
                 self._lease_replacement_subscribes.setdefault(uri, []).append(
-                    (stub_uuid, original_id))
+                    (stub_uuid, original_id)
+                )
                 return True
             # First subscriber: forward to take the lease.
             self._lease_awaiting_grant.add(uri)
@@ -2608,12 +2628,10 @@ class Backend:
             if retracted_ids:
                 retract_error = {
                     "code": _JSONRPC_SERVER_ERROR,
-                    "message": "resources/subscribe retracted by a later "
-                               "unsubscribe",
+                    "message": "resources/subscribe retracted by a later " "unsubscribe",
                 }
                 for retracted_id in retracted_ids:
-                    await self._reply_locally(
-                        stub_uuid, retracted_id, error=retract_error)
+                    await self._reply_locally(stub_uuid, retracted_id, error=retract_error)
                 if stub_uuid not in self._resource_subscriptions.get(uri, set()):
                     # Nothing granted yet: the retract settles everything —
                     # the sentinelized pending releases any late grant, so
@@ -2638,8 +2656,7 @@ class Backend:
             # lease to the last sharer (same guard the detach path applies).
             grant_caller = self._grant_callers.get((uri, stub_uuid))
             if grant_caller is not None and any(
-                other != stub_uuid
-                and self._grant_callers.get((uri, other)) == grant_caller
+                other != stub_uuid and self._grant_callers.get((uri, other)) == grant_caller
                 for other in self._resource_subscriptions.get(uri, set())
             ):
                 self._grant_callers.pop((uri, stub_uuid), None)
@@ -2696,13 +2713,11 @@ class Backend:
             for _retracted_uuid, retracted_id in retracted:
                 await self._reply_locally(stub_uuid, retracted_id, error=retract_error)
             if forwarder_retracted:
-                await self._reply_locally(
-                    stub_uuid, forwarder_reply_id, error=retract_error)
+                await self._reply_locally(stub_uuid, forwarder_reply_id, error=retract_error)
             await self._reply_locally(stub_uuid, original_id, result={})
             return True
         parked_replacements = [
-            r for r in self._lease_replacement_subscribes.get(uri, [])
-            if r[0] == stub_uuid
+            r for r in self._lease_replacement_subscribes.get(uri, []) if r[0] == stub_uuid
         ]
         if parked_replacements:
             # This stub parked a replacement subscribe behind an in-flight
@@ -2713,8 +2728,7 @@ class Backend:
             # the cancellation error, then fall through — the routing
             # checks below answer the unsubscribe itself truthfully.
             remaining_repl = [
-                r for r in self._lease_replacement_subscribes[uri]
-                if r[0] != stub_uuid
+                r for r in self._lease_replacement_subscribes[uri] if r[0] != stub_uuid
             ]
             if remaining_repl:
                 self._lease_replacement_subscribes[uri] = remaining_repl
@@ -2722,12 +2736,10 @@ class Backend:
                 del self._lease_replacement_subscribes[uri]
             repl_retract_error = {
                 "code": _JSONRPC_SERVER_ERROR,
-                "message": "resources/subscribe retracted by a later "
-                           "unsubscribe",
+                "message": "resources/subscribe retracted by a later " "unsubscribe",
             }
             for _parked_uuid, parked_id in parked_replacements:
-                await self._reply_locally(
-                    stub_uuid, parked_id, error=repl_retract_error)
+                await self._reply_locally(stub_uuid, parked_id, error=repl_retract_error)
         subscribers = self._resource_subscriptions.get(uri)
         if subscribers is not None and stub_uuid not in subscribers:
             # A stub unsubscribing a URI it never held must not tear down a
@@ -2759,20 +2771,21 @@ class Backend:
                 # The URI is deliberately NOT logged: resource URIs can
                 # carry credentials.
                 logger.warning(
-                    "backend pid=%s stub=%s at release-waiter cap (%d); "
-                    "refusing unsubscribe",
-                    self.pid, stub_uuid, _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
+                    "backend pid=%s stub=%s at release-waiter cap (%d); " "refusing unsubscribe",
+                    self.pid,
+                    stub_uuid,
+                    _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
                 )
                 await self._reply_locally(
-                    stub_uuid, original_id,
+                    stub_uuid,
+                    original_id,
                     error={
                         "code": _JSONRPC_SERVER_ERROR,
                         "message": "resource subscription limit reached",
                     },
                 )
                 return True
-            self._lease_release_waiters.setdefault(uri, []).append(
-                (stub_uuid, original_id))
+            self._lease_release_waiters.setdefault(uri, []).append((stub_uuid, original_id))
             return True
         if subscribers is None:
             # Nothing tracked for this URI and no release in flight: there
@@ -2798,14 +2811,12 @@ class Backend:
             if self.supports_caller_identity:
                 # Per-stub grant: only the caller the server accepted routes.
                 if ok:
-                    self._resource_subscriptions.setdefault(uri, set()).add(
-                        pending.stub_uuid)
+                    self._resource_subscriptions.setdefault(uri, set()).add(pending.stub_uuid)
                     self._orphaned_leases.discard(uri)
                     if pending.caller is not None:
                         # Grant-time is the only moment the grant principal
                         # is certain; detach releases with this caller.
-                        self._grant_callers[(uri, pending.stub_uuid)] = (
-                            pending.caller)
+                        self._grant_callers[(uri, pending.stub_uuid)] = pending.caller
                 elif "error" not in msg:
                     # UNSETTLED verdict (neither result nor error): the
                     # subscribe may well have taken upstream, and recording
@@ -2813,8 +2824,7 @@ class Backend:
                     # updates that route nowhere. Release it as the caller
                     # that took it — the same fail-closed release the
                     # coalesced arms apply to malformed verdicts.
-                    await self._release_upstream_subscriptions(
-                        [uri], caller=pending.caller)
+                    await self._release_upstream_subscriptions([uri], caller=pending.caller)
                 return
             # Coalesced grant: the forwarder and every parked rider settle on
             # the server's one verdict — success grants all of them, refusal
@@ -2844,11 +2854,16 @@ class Backend:
                 await self._release_upstream_subscriptions([uri])
             for rider_uuid, rider_id in riders:
                 await self._reply_locally(
-                    rider_uuid, rider_id,
-                    error=error_obj if isinstance(error_obj, dict) else {
-                        "code": _JSONRPC_SERVER_ERROR,
-                        "message": "resources/subscribe refused by server",
-                    },
+                    rider_uuid,
+                    rider_id,
+                    error=(
+                        error_obj
+                        if isinstance(error_obj, dict)
+                        else {
+                            "code": _JSONRPC_SERVER_ERROR,
+                            "message": "resources/subscribe refused by server",
+                        }
+                    ),
                 )
             return
         # --- unsubscribe response ---
@@ -2891,11 +2906,16 @@ class Backend:
         error_obj = msg.get("error")
         for waiter_uuid, waiter_id in waiters:
             await self._reply_locally(
-                waiter_uuid, waiter_id,
-                error=error_obj if isinstance(error_obj, dict) else {
-                    "code": _JSONRPC_SERVER_ERROR,
-                    "message": "resources/unsubscribe refused by server",
-                },
+                waiter_uuid,
+                waiter_id,
+                error=(
+                    error_obj
+                    if isinstance(error_obj, dict)
+                    else {
+                        "code": _JSONRPC_SERVER_ERROR,
+                        "message": "resources/unsubscribe refused by server",
+                    }
+                ),
             )
         await self._drain_replacement_subscribes(uri, released=False)
 
@@ -2903,7 +2923,8 @@ class Backend:
         """URIs whose routing table names ``stub_uuid`` — the set a
         transparent respawn must replay onto the replacement backend."""
         routed = {
-            uri for uri, subscribers in self._resource_subscriptions.items()
+            uri
+            for uri, subscribers in self._resource_subscriptions.items()
             if stub_uuid in subscribers
         }
         # An in-flight replay has not committed routing yet (routing is
@@ -2925,7 +2946,10 @@ class Backend:
         return sorted(routed)
 
     async def replay_resource_subscriptions(
-        self, stub_uuid: str, uris: list[str], *,
+        self,
+        stub_uuid: str,
+        uris: list[str],
+        *,
         caller: Optional[CallerContext] = None,
     ) -> None:
         """Re-establish ``stub_uuid``'s subscriptions on a freshly respawned
@@ -2955,7 +2979,8 @@ class Backend:
             logger.debug(
                 "backend pid=%s skipping subscription replay for stub=%s: "
                 "identity-capable server and no caller context to inject",
-                self.pid, stub_uuid,
+                self.pid,
+                stub_uuid,
             )
             return
         replay_generation = self._rekey_generation.get(stub_uuid, 0)
@@ -2968,7 +2993,8 @@ class Backend:
                 # closed, the new owner subscribes on its own.
                 logger.debug(
                     "backend pid=%s stopping subscription replay for "
-                    "stub=%s: stub was rekeyed mid-replay", self.pid,
+                    "stub=%s: stub was rekeyed mid-replay",
+                    self.pid,
                     stub_uuid,
                 )
                 return
@@ -2985,27 +3011,28 @@ class Backend:
                 # no-ops on None), so it settles silently on the verdict.
                 subscribers = self._resource_subscriptions.get(uri)
                 if uri in self._lease_awaiting_grant:
-                    self._lease_pending_riders.setdefault(uri, []).append(
-                        (stub_uuid, None))
+                    self._lease_pending_riders.setdefault(uri, []).append((stub_uuid, None))
                     continue
                 if subscribers is not None and uri not in self._lease_awaiting_release:
                     subscribers.add(stub_uuid)
                     continue
                 if uri in self._lease_awaiting_release:
-                    self._lease_replacement_subscribes.setdefault(uri, []).append(
-                        (stub_uuid, None))
+                    self._lease_replacement_subscribes.setdefault(uri, []).append((stub_uuid, None))
                     continue
                 self._lease_awaiting_grant.add(uri)
             fid = self._next_forward_id()
             self._pending_requests[fid] = _PendingRequest(
-                stub_uuid=_RELEASE_STUB_SENTINEL, original_id=None,
-                method=_RESOURCES_SUBSCRIBE_METHOD, resource_uri=uri,
+                stub_uuid=_RELEASE_STUB_SENTINEL,
+                original_id=None,
+                method=_RESOURCES_SUBSCRIBE_METHOD,
+                resource_uri=uri,
                 replay_stub=stub_uuid,
                 caller=caller,
                 t_start_ms=time.monotonic() * 1000.0,
             )
             replay_msg: dict[str, Any] = {
-                "jsonrpc": "2.0", "id": fid,
+                "jsonrpc": "2.0",
+                "id": fid,
                 "method": _RESOURCES_SUBSCRIBE_METHOD,
                 "params": {"uri": uri},
             }
@@ -3033,12 +3060,11 @@ class Backend:
                         p.replay_stub = ""
                 # No URI in the line: resource URIs can carry credentials.
                 logger.debug(
-                    "backend pid=%s could not replay a resource "
-                    "subscription (write failed)", self.pid,
+                    "backend pid=%s could not replay a resource " "subscription (write failed)",
+                    self.pid,
                 )
                 raise BackendGone(
-                    "subscription replay write failed on the replacement "
-                    "backend"
+                    "subscription replay write failed on the replacement " "backend"
                 ) from exc
 
     async def _reply_locally(
@@ -3068,11 +3094,11 @@ class Backend:
         stub repeat one URI's subscribe unboundedly while the grant is in
         flight, growing the rider list without limit under a slow server."""
         confirmed = sum(
-            1 for subscribers in self._resource_subscriptions.values()
-            if stub_uuid in subscribers
+            1 for subscribers in self._resource_subscriptions.values() if stub_uuid in subscribers
         )
         in_flight = sum(
-            1 for p in self._pending_requests.values()
+            1
+            for p in self._pending_requests.values()
             if p.stub_uuid == stub_uuid
             and p.method == _RESOURCES_SUBSCRIBE_METHOD
             and p.resource_uri
@@ -3084,7 +3110,8 @@ class Backend:
         # unresponsive server would slip every cycle's pending out of its
         # count and grow the table without bound.
         sentinel_retained = sum(
-            1 for p in self._pending_requests.values()
+            1
+            for p in self._pending_requests.values()
             if p.stub_uuid == _RELEASE_STUB_SENTINEL
             and p.origin_stub == stub_uuid
             and p.method == _RESOURCES_SUBSCRIBE_METHOD
@@ -3104,9 +3131,7 @@ class Backend:
         )
         return confirmed + in_flight + sentinel_retained + parked + replacement
 
-    async def _drain_replacement_subscribes(
-        self, uri: str, *, released: bool
-    ) -> None:
+    async def _drain_replacement_subscribes(self, uri: str, *, released: bool) -> None:
         """Settle subscribes that parked while ``uri``'s release was in
         flight. On a CONFIRMED release the lease is gone, so the parkers
         take it afresh with ONE forwarded subscribe — first parker as the
@@ -3134,41 +3159,46 @@ class Backend:
         # error. The sentinel arm owns exactly this settle already.
         fid = self._next_forward_id()
         self._pending_requests[fid] = _PendingRequest(
-            stub_uuid=_RELEASE_STUB_SENTINEL, original_id=None,
-            method=_RESOURCES_SUBSCRIBE_METHOD, resource_uri=uri,
+            stub_uuid=_RELEASE_STUB_SENTINEL,
+            original_id=None,
+            method=_RESOURCES_SUBSCRIBE_METHOD,
+            resource_uri=uri,
             t_start_ms=time.monotonic() * 1000.0,
         )
         self._lease_awaiting_grant.add(uri)
         self._lease_pending_riders.setdefault(uri, []).extend(parked)
         try:
-            await _write_json_line(self.stdin, {
-                "jsonrpc": "2.0", "id": fid,
-                "method": _RESOURCES_SUBSCRIBE_METHOD,
-                "params": {"uri": uri},
-            })
+            await _write_json_line(
+                self.stdin,
+                {
+                    "jsonrpc": "2.0",
+                    "id": fid,
+                    "method": _RESOURCES_SUBSCRIBE_METHOD,
+                    "params": {"uri": uri},
+                },
+            )
         except Exception:
             # Backend going away: unwind and answer every parker — an id
             # silently dropped from the tables hangs in the client forever.
             self._pending_requests.pop(fid, None)
             self._lease_awaiting_grant.discard(uri)
-            remaining = [
-                r for r in self._lease_pending_riders.get(uri, [])
-                if r not in parked
-            ]
+            remaining = [r for r in self._lease_pending_riders.get(uri, []) if r not in parked]
             if remaining:
                 self._lease_pending_riders[uri] = remaining
             else:
                 self._lease_pending_riders.pop(uri, None)
             err = {
                 "code": _JSONRPC_SERVER_ERROR,
-                "message": "resources/subscribe could not be forwarded "
-                           "(backend going away)",
+                "message": "resources/subscribe could not be forwarded " "(backend going away)",
             }
             for parker_uuid, parker_id in parked:
                 await self._reply_locally(parker_uuid, parker_id, error=err)
 
     async def _release_upstream_subscriptions(
-        self, uris: list[str], *, caller: Optional[CallerContext] = None,
+        self,
+        uris: list[str],
+        *,
+        caller: Optional[CallerContext] = None,
     ) -> None:
         """Send a gateway-originated ``resources/unsubscribe`` for each URI
         whose last subscriber departed without unsubscribing. Best-effort: a
@@ -3182,8 +3212,10 @@ class Backend:
         for uri in uris:
             fid = self._next_forward_id()
             self._pending_requests[fid] = _PendingRequest(
-                stub_uuid=_RELEASE_STUB_SENTINEL, original_id=None,
-                method=_RESOURCES_UNSUBSCRIBE_METHOD, resource_uri=uri,
+                stub_uuid=_RELEASE_STUB_SENTINEL,
+                original_id=None,
+                method=_RESOURCES_UNSUBSCRIBE_METHOD,
+                resource_uri=uri,
                 t_start_ms=time.monotonic() * 1000.0,
             )
             if not self.supports_caller_identity:
@@ -3198,7 +3230,8 @@ class Backend:
                 # consulted there and setting it would only go stale.
                 self._lease_awaiting_release.add(uri)
             release_msg: dict[str, Any] = {
-                "jsonrpc": "2.0", "id": fid,
+                "jsonrpc": "2.0",
+                "id": fid,
                 "method": _RESOURCES_UNSUBSCRIBE_METHOD,
                 "params": {"uri": uri},
             }
@@ -3221,7 +3254,8 @@ class Backend:
                 # No URI in the line: resource URIs can carry credentials.
                 logger.debug(
                     "backend pid=%s could not release a resource "
-                    "subscription (backend going away)", self.pid,
+                    "subscription (backend going away)",
+                    self.pid,
                 )
                 continue
 
@@ -3360,7 +3394,8 @@ class Backend:
                     logger.info(
                         "mcp-apps: withheld %d app-only tool(s) from the agent's "
                         "listing for server=%s: %s",
-                        len(hidden.declared), self.pool_key.server_name,
+                        len(hidden.declared),
+                        self.pool_key.server_name,
                         ", ".join(hidden.declared),
                     )
                 if hidden.unreadable:
@@ -3373,7 +3408,8 @@ class Backend:
                         "mcp-apps: withheld %d tool(s) from the agent's listing "
                         "for server=%s because their _meta.ui.visibility could "
                         "not be read: %s",
-                        len(hidden.unreadable), self.pool_key.server_name,
+                        len(hidden.unreadable),
+                        self.pool_key.server_name,
                         ", ".join(hidden.unreadable),
                     )
                 if hidden:
@@ -3428,16 +3464,12 @@ class Backend:
             resource_uri = self._apps_declared_uris.get(pending.tool_name)
         if resource_uri is None:
             return False
-        task = asyncio.create_task(
-            self._fetch_and_deliver_ui(pending, msg, resource_uri)
-        )
+        task = asyncio.create_task(self._fetch_and_deliver_ui(pending, msg, resource_uri))
         self._apps_tasks.add(task)
         task.add_done_callback(self._apps_tasks.discard)
         return True
 
-    def _audit_visibility_withhold(
-        self, pending: _PendingRequest, hidden: WithheldTools
-    ) -> None:
+    def _audit_visibility_withhold(self, pending: _PendingRequest, hidden: WithheldTools) -> None:
         """SEL-audit a tools/list visibility withhold.
 
         Removing a tool from the agent's listing is an authorization decision
@@ -3464,9 +3496,7 @@ class Backend:
                 ),
             )
         except Exception:  # pragma: no cover — audit must never break delivery
-            logger.debug(
-                "SEL audit for tools/list visibility withhold failed", exc_info=True
-            )
+            logger.debug("SEL audit for tools/list visibility withhold failed", exc_info=True)
 
     async def _fetch_and_deliver_ui(
         self, pending: _PendingRequest, msg: dict[str, Any], resource_uri: str
@@ -3487,38 +3517,45 @@ class Backend:
             result = msg.get("result")
             structured = result.get("structuredContent") if isinstance(result, dict) else None
             content = result.get("content") if isinstance(result, dict) else None
-            spool_id = await asyncio.to_thread(write_spool, {
-                "server": self.pool_key.server_name,
-                "tool": pending.tool_name,
-                "session_key": pending.session_key,
-                # Exact-identity binding for the app→gateway callback: the
-                # callback resolves its backend EXCLUSIVELY by this digest, so
-                # an app can only ever call back into the same pool partition
-                # (same credentials/sandbox/approval identity) that produced
-                # it — never a co-pooled tenant's backend for the same server.
-                "pool_digest": self.storage_digest,
-                "html": html,
-                "csp": csp,
-                "permissions": permissions,
-                "structured_content": structured,
-                # Originating tools/call inputs + full result content, so the
-                # app initializes from its REAL state (SEP-1865 tool-input /
-                # tool-result notifications) instead of empty placeholders.
-                "tool_input": pending.tool_arguments,
-                "result_content": content if isinstance(content, list) else None,
-            })
+            spool_id = await asyncio.to_thread(
+                write_spool,
+                {
+                    "server": self.pool_key.server_name,
+                    "tool": pending.tool_name,
+                    "session_key": pending.session_key,
+                    # Exact-identity binding for the app→gateway callback: the
+                    # callback resolves its backend EXCLUSIVELY by this digest, so
+                    # an app can only ever call back into the same pool partition
+                    # (same credentials/sandbox/approval identity) that produced
+                    # it — never a co-pooled tenant's backend for the same server.
+                    "pool_digest": self.storage_digest,
+                    "html": html,
+                    "csp": csp,
+                    "permissions": permissions,
+                    "structured_content": structured,
+                    # Originating tools/call inputs + full result content, so the
+                    # app initializes from its REAL state (SEP-1865 tool-input /
+                    # tool-result notifications) instead of empty placeholders.
+                    "tool_input": pending.tool_arguments,
+                    "result_content": content if isinstance(content, list) else None,
+                },
+            )
             if isinstance(result, dict):
                 response["result"] = append_marker(result, spool_id)
             logger.info(
                 "mcp-apps: spooled ui resource %s for tool=%s server=%s id=%s",
-                resource_uri, pending.tool_name or "?",
-                self.pool_key.server_name, spool_id,
+                resource_uri,
+                pending.tool_name or "?",
+                self.pool_key.server_name,
+                spool_id,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort; deliver original
             logger.warning(
                 "mcp-apps: ui fetch/spool failed for %s (tool=%s); delivering "
                 "original response unmodified: %s",
-                resource_uri, pending.tool_name or "?", exc,
+                resource_uri,
+                pending.tool_name or "?",
+                exc,
             )
             response = dict(msg)
             response["id"] = pending.original_id
@@ -3535,8 +3572,11 @@ class Backend:
         fid = self._next_forward_id()
         fut: "asyncio.Future[dict[str, Any]]" = asyncio.get_running_loop().create_future()
         self._pending_requests[fid] = _PendingRequest(
-            stub_uuid=_APPS_STUB_SENTINEL, original_id=None, method="resources/read",
-            t_start_ms=time.monotonic() * 1000.0, apps_future=fut,
+            stub_uuid=_APPS_STUB_SENTINEL,
+            original_id=None,
+            method="resources/read",
+            t_start_ms=time.monotonic() * 1000.0,
+            apps_future=fut,
         )
         request = {
             "jsonrpc": "2.0",
@@ -3571,9 +3611,7 @@ class Backend:
             raise RuntimeError("resources/read contents[0] is not an object")
         mime = first.get("mimeType")
         if mime != MCP_APPS_MIME_TYPE:
-            raise RuntimeError(
-                f"unexpected mimeType {mime!r} (want {MCP_APPS_MIME_TYPE!r})"
-            )
+            raise RuntimeError(f"unexpected mimeType {mime!r} (want {MCP_APPS_MIME_TYPE!r})")
         text = first.get("text")
         if isinstance(text, str):
             html = text
@@ -3737,7 +3775,9 @@ class Backend:
                 )
                 logger.warning(
                     "backend pid=%s pool=%s %s; recycling",
-                    self.pid, self.pool_key.human_readable(), self._dead_reason,
+                    self.pid,
+                    self.pool_key.human_readable(),
+                    self._dead_reason,
                 )
                 await self._broadcast_backend_gone(self._dead_reason)
                 return "wedged"
@@ -3751,7 +3791,9 @@ class Backend:
                 )
                 logger.warning(
                     "backend pid=%s pool=%s %s; recycling",
-                    self.pid, self.pool_key.human_readable(), self._dead_reason,
+                    self.pid,
+                    self.pool_key.human_readable(),
+                    self._dead_reason,
                 )
                 await self._broadcast_backend_gone(self._dead_reason)
                 return "wedged"
@@ -3816,8 +3858,7 @@ class Backend:
         """
         # Collect in-flight requests for this stub (before detach clears them)
         in_flight = [
-            (fid, p) for fid, p in self._pending_requests.items()
-            if p.stub_uuid == stub_uuid
+            (fid, p) for fid, p in self._pending_requests.items() if p.stub_uuid == stub_uuid
         ]
         cancelled_ids: list[str] = []
         for fid, pending in in_flight:
@@ -3840,7 +3881,9 @@ class Backend:
         if cancelled_ids:
             logger.info(
                 "backend pid=%s: sent %d cancel notifications for stub=%s [ids: %s]",
-                self.pid, len(cancelled_ids), stub_uuid,
+                self.pid,
+                len(cancelled_ids),
+                stub_uuid,
                 ", ".join(cancelled_ids[:5]) + ("..." if len(cancelled_ids) > 5 else ""),
             )
         return cancelled_ids
@@ -3861,7 +3904,8 @@ class Backend:
             logger.info(
                 "backend pid=%s quarantined: has %d remaining co-tenants, "
                 "will recycle when drained",
-                self.pid, self.refcount,
+                self.pid,
+                self.refcount,
             )
             return False
         # No consumers left — hard kill the backend process
@@ -3890,15 +3934,12 @@ class Backend:
             except (ProcessLookupError, PermissionError, OSError):
                 # Tree already gone or not signalable — fall back to a
                 # pid-scoped kill, as this call site did before.
-                with contextlib.suppress(
-                    ProcessLookupError, PermissionError, OSError, ValueError
-                ):
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError, ValueError):
                     await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
             if recycled:
                 self._dead_reason = "recycled after last stub detached with in-flight work"
                 logger.info(
-                    "backend pid=%s recycled (killed): last stub detached with "
-                    "in-flight work",
+                    "backend pid=%s recycled (killed): last stub detached with " "in-flight work",
                     pid,
                 )
                 # SEL audit: SIGKILLing a pooled backend is a security-relevant
@@ -3937,7 +3978,8 @@ class Backend:
                 logger.warning(
                     "backend pid=%s did not exit within %.1fs after stdin close; "
                     "escalating to SIGKILL",
-                    self.process.pid, timeout,
+                    self.process.pid,
+                    timeout,
                 )
                 # Kill the whole process TREE, not just the launcher PID:
                 # on POSIX spawn uses start_new_session=True, so the backend is
@@ -4026,7 +4068,9 @@ async def spawn_backend(
     """
     logger.info(
         "spawning backend pool=%s command=%s args=%s",
-        pool_key.human_readable(), command, redact(" ".join(args)),
+        pool_key.human_readable(),
+        command,
+        redact(" ".join(args)),
     )
     # Positive-identity marker for the orphan sweep. Safe re: the pooled-backend
     # PoolKey invariant — the marker is a compile-time constant, so it is
@@ -4061,9 +4105,7 @@ async def spawn_backend(
     _declared_upper = {key.upper() for key in declared_temp_keys}
     if not _declared_upper:
         try:
-            backend_tmp = await asyncio.to_thread(
-                allocate_backend_tmp, pool_key.stable_hash()
-            )
+            backend_tmp = await asyncio.to_thread(allocate_backend_tmp, pool_key.stable_hash())
             spawn_env.update(tmp_env(backend_tmp))
         except OSError:
             logger.warning(
@@ -4229,7 +4271,8 @@ async def send_initialize(
     backend._init_state = "ready"
     logger.info(
         "backend pid=%s initialized; supports_caller_identity=%s",
-        backend.pid, backend.supports_caller_identity,
+        backend.pid,
+        backend.supports_caller_identity,
     )
     return result
 

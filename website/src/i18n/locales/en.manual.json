@@ -2867,6 +2867,11 @@
       "turn_on": "Turn this preview on",
       "screenshot_badge": "Screenshot",
       "is_on": "This preview is on — turning it off only hides it; nothing you made is lost"
+    },
+    "restartRequiredBadge": {
+      "label": "restart required",
+      "tooltip": "This setting cannot take effect in a running gateway. Restart the gateway to apply it.",
+      "schema_unavailable": "Could not load the settings schema, so restart hints are unavailable."
     }
   },
   "hooks": {
@@ -4269,7 +4274,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -4442,18 +4446,21 @@
         "save": "Save"
       },
       "kiroCrewCfgTab": {
+        "max_age_for_pooled_processes_0_disables_expiry": "Max age for pooled processes. 0 disables expiry.",
+        "number_of_pre_spawned_processes_0_disables": "Number of pre-spawned processes. 0 disables.",
+        "warm_pool_description": "Pre-spawn ACP CLI processes for instant session start.",
+        "enable_conductor_skill_for_multi_agent_orchestration": "Enable conductor skill for multi-agent orchestration.",
+        "agent_for_pool_processes_empty_uses_default_agent": "Agent for pool processes. Empty uses default agent.",
         "inherited_provider": "inherited ({{provider}})",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Ceiling on the auto-sized concurrent subagent count (only applies when Max Concurrent Subagents = 0). The host memory/CPU formula never exceeds this. Range 1–64. Default: 16.",
         "controls_how_many_subagents_can_run_concurrently": "Controls how many subagents can run concurrently and how many tool calls each subagent is allowed. Changes take effect on the next subagent spawn.",
         "default_agent": "default agent",
         "disabled": "Disabled",
-        "enable_conductor_skill_for_multi_agent_orchestra": "Enable conductor skill for multi-agent orchestration. Restart required.",
         "enabled": "Enabled",
         "maximum_subagents_running_at_once": "Maximum subagents running at once. 0 = auto-size from host memory/CPU (capped at {{cap}}). Default: 3.",
         "named_agent_definitions": "Named agent definitions that bind a {{label}}, workspace, and memory store together. Edit config.json to add or modify agents.",
         "named_memory_stores_with_optional_per_store_embe": "Named memory stores with optional per-store embedding overrides. Unset fields inherit from the top-level memory section.",
         "named_workspace_directories_each_agent_binds_to": "Named workspace directories. Each agent binds to one workspace.",
-        "restart_required_to_apply_changes": "{{description}} Restart required to apply changes.",
         "save": "Save",
         "saving": "Saving…",
         "tool_call_budget_per_subagent_1_1000_default_100": "Tool-call budget per subagent (1–1000). Default: 100."
@@ -4997,6 +5004,7 @@
         "slack_connection_failed_at_startup": "Slack connection failed at startup ({{error}}). Check network access to slack.com, then restart the gateway.",
         "slack_rejected_the_stored_tokens_invalid_auth_re": "Slack rejected the stored tokens (invalid_auth). Replace them below, then restart the gateway.",
         "tokens_are_saved_but_not_yet_active_restart_the": "Tokens are saved but not yet active. Restart the gateway to connect.",
+        "verified_and_saved": "Verified with Slack and saved.",
         "verified_with_slack_and_saved_restart_the_gatewa": "Verified with Slack and saved. Restart the gateway to connect.",
         "where_to_find_the_app_token": "Where to find the app token",
         "where_to_find_the_bot_token": "Where to find the bot token",
@@ -5018,6 +5026,7 @@
         "shared_channels": "Shared channels",
         "soft_context_threshold_must_be_a_number_between": "Soft context threshold must be a number between 1 and 100",
         "start_the_channel_at_gateway_startup": "Start the {{channel}} channel at gateway startup (requires a bot token).",
+        "verified_and_saved": "Verified with {{channel}} and saved.",
         "verified_with_channel_and_saved": "Verified with {{channel}} and saved. Restart the gateway to connect.",
         "where_to_find_the_bot_token": "Where to find the bot token",
         "where_to_find_the_credential": "Where to find the {{label}}",
@@ -5542,6 +5551,7 @@
         "saved_restart_the_gateway_to_apply": "Saved. Restart the gateway to apply.",
         "saving": "Saving…",
         "settings_are_saved_but_the_channel_is_not_runnin": "Settings are saved but the channel is not running. Restart the gateway to connect.",
+        "verified_and_saved": "Verified with Webex and saved.",
         "verified_with_webex_and_saved_restart_the_gatewa": "Verified with Webex and saved. Restart the gateway to connect.",
         "where_to_find_the_bot_token": "Where to find the bot token",
         "empty_allowlist_hint": "No allowed emails: the bot rejects every message. Add your Webex account email below.",

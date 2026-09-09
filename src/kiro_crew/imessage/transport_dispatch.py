@@ -27,6 +27,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.imessage.client import redact_handle
 from kiro_crew.imessage.commands import HELP_TEXT, ConversationState, parse_command
@@ -46,10 +49,12 @@ from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
 
 if TYPE_CHECKING:
+    from kiro_crew.config.live import ConfigChange
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history import ConversationLog
     from kiro_crew.imessage.client import IMessageClient, IMessageInbound
+    from kiro_crew.imessage.transport import IMessageTransport
     from kiro_crew.session import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -87,7 +92,97 @@ class IMessageDispatcher:
         self.conv_log = conv_log
         self.approval_mode = approval_mode
         self.client: "IMessageClient | None" = None
+        # Set by maybe_start_imessage after construction (the client<->transport
+        # construction cycle forbids doing it here); the config applier pushes
+        # the reloaded allow-list at it.
+        self.transport: "IMessageTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # dm_scope selects the session-key namespace, so adopting a new value
+        # mid-conversation would re-key a running chat. Cached per generation and
+        # refreshed only at a conversation boundary (see ``_dm_scope``).
+        self._dm_scope_at: dict[str, tuple[int, str]] = {}
+        # Held on self: live.subscribe keeps a bound method WEAKLY, so a
+        # subscription dropped here would be collected and the applier would
+        # silently stop firing.
+        self._config_sub = live.subscribe(
+            "imessage", "messaging", callback=self._on_config_change, name="IMessageDispatcher"
+        )
+
+    # -- Live config ---------------------------------------------------------
+
+    def _live_cfg(self) -> "KiroCrewConfig":
+        """The config in force NOW, for a per-turn read.
+
+        The watcher's snapshot when it is armed, else a fingerprint-cached
+        ``load()`` (two stats on a hit), else the boot copy. Falling back to
+        ``self.cfg`` rather than raising keeps a turn running when the config
+        file is momentarily unreadable -- a threshold or a rotation window is
+        not an authorization decision, and the boot value is the one the
+        operator last had in force.
+        """
+        try:
+            snap = live.snapshot()
+            if snap is not None:
+                return snap
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            return KiroCrewConfig.load()
+        except Exception:
+            logger.warning(
+                "imessage: could not read live config; using the boot copy", exc_info=True
+            )
+            return self.cfg
+
+    def _thresholds(self) -> tuple[int, int]:
+        """``(soft, hard)`` context thresholds from the live config.
+
+        Re-runs the loader's own pair normalization, because reading the two
+        fields live without it can leave ``soft > hard`` and make the soft nudge
+        unreachable -- ``_maybe_notice`` tests ``pct >= hard`` first.
+        """
+        section = self._live_cfg().imessage
+        return _normalize_threshold_pair(
+            int(getattr(section, "soft_threshold_pct", 80)),
+            int(getattr(section, "hard_threshold_pct", 95)),
+        )
+
+    def _dm_scope(self, handle: str, gen: int) -> str:
+        """The dm_scope this conversation's generation is keyed under.
+
+        Read live, but pinned for the life of a generation: dm_scope chooses the
+        session-key namespace, so picking up a new value mid-conversation would
+        mint a different key and jump a running chat into another session. A
+        ``/new``, an idle reset and a daily reset all advance the generation,
+        which is exactly the boundary where adopting the new value is safe.
+        """
+        cached = self._dm_scope_at.get(handle)
+        if cached is not None and cached[0] == gen:
+            return cached[1]
+        scope = str(self._live_cfg().messaging.dm_scope)
+        self._dm_scope_at[handle] = (gen, scope)
+        return scope
+
+    def _on_config_change(self, change: "ConfigChange") -> None:
+        """Push a reloaded ``imessage.allowed_handles`` at the live transport.
+
+        Only the transport's frozen allow-list needs pushing; every other
+        iMessage field this dispatcher reads is read at point of use.
+        ``imessage.service`` and ``imessage.db_path`` stay boot-only in this
+        object -- the bridge client binds both at construction, so the channel
+        registry restarts the channel in process for those instead.
+
+        Fails closed on a degraded section: the previous roster stays in force
+        rather than being rebuilt from a document the loader could not parse.
+        """
+        if self.transport is None or not change.touched("imessage"):
+            return
+        degraded = change.new.degraded_sections
+        if "imessage" in degraded or DEGRADED_WHOLE_CONFIG in degraded:
+            logger.warning(
+                "imessage: the reloaded config is degraded; keeping the previous allow-list"
+            )
+            return
+        self.transport.reconfigure(change.new.imessage)
 
     # -- Advisory delivery ---------------------------------------------------
 
@@ -146,8 +241,8 @@ class IMessageDispatcher:
             sessions=self.sessions,
             key=handle,
             session_key_for=self._session_key,
-            idle_minutes=self.cfg.messaging.idle_reset_minutes,
-            daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            idle_minutes=self._live_cfg().messaging.idle_reset_minutes,
+            daily_reset_hour=self._live_cfg().messaging.daily_reset_hour,
             on_busy=lambda sk: self._handle_busy(inbound, sk),
         )
         if session_key is None:
@@ -261,7 +356,7 @@ class IMessageDispatcher:
             self._resolve_agent(),
             handle,
             gen=gen,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=self._dm_scope(handle, gen),
         )
 
     def _seed_gen(self, handle: str) -> int:
@@ -270,7 +365,7 @@ class IMessageDispatcher:
             channel="imessage",
             agent=self._resolve_agent(),
             user_id=handle,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self._live_cfg().messaging.dm_scope),
         )
 
     def _persist_turn(
@@ -311,7 +406,8 @@ class IMessageDispatcher:
         assert self.client is not None
         handle = inbound.handle
         pct = self.sessions.check_context_usage(session_key, provider)
-        if pct >= self.cfg.imessage.soft_threshold_pct:
+        soft, hard = self._thresholds()
+        if pct >= soft:
             # Capability gate (#8156): no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
@@ -319,7 +415,7 @@ class IMessageDispatcher:
             if unsupported:
                 logger.debug("imessage: context notice skipped — %s compacts itself", unsupported)
                 return
-        if pct >= self.cfg.imessage.hard_threshold_pct:
+        if pct >= hard:
             self._conv.clear_awaiting(handle)
             try:
                 await provider.compact()
@@ -330,7 +426,7 @@ class IMessageDispatcher:
                 )
             except Exception:
                 logger.debug("imessage hard-threshold compaction failed", exc_info=True)
-        elif pct >= self.cfg.imessage.soft_threshold_pct and not self._conv.is_awaiting(handle):
+        elif pct >= soft and not self._conv.is_awaiting(handle):
             self._conv.set_awaiting(handle)
             await self._notify(
                 handle,

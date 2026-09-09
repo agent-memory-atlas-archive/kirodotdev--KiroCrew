@@ -37,7 +37,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import CRED_WEIXIN_TOKEN, KiroCrewConfig, config_path, env_path
 from kiro_crew.dashboard.channel_folders import (
-    LIVE_RELOAD_FIELDS,
+    channel_restart_required,
     clean_session_folder,
     ensure_channel_folder,
     stored_folder_name,
@@ -333,7 +333,9 @@ async def weixin_qr_status(request: web.Request) -> web.Response:
 
     token = resp.get("bot_token", "")
     base_url = resp.get("baseurl") or ILINK_BASE_URL
-    account_id = resp.get("ilink_bot_id") or resp.get("account_id") or resp.get("ilink_user_id") or ""
+    account_id = (
+        resp.get("ilink_bot_id") or resp.get("account_id") or resp.get("ilink_user_id") or ""
+    )
     if not token or not account_id:
         await client.close()
         _SESSIONS.pop(session_id, None)
@@ -360,14 +362,14 @@ async def weixin_qr_status(request: web.Request) -> web.Response:
         # A corrupt config.json or an un-restrictable credential file must NOT be
         # reported as a successful sign-in.
         logger.exception("weixin: failed to persist QR sign-in")
-        return web.json_response(
-            {"error": "persist_failed", "detail": str(exc)[:200]}, status=500
-        )
+        return web.json_response({"error": "persist_failed", "detail": str(exc)[:200]}, status=500)
     finally:
         await client.close()
         _SESSIONS.pop(session_id, None)
 
-    logger.info("weixin: QR login confirmed; account_id=%s persisted. Restart to connect.", account_id[:8])
+    logger.info(
+        "weixin: QR login confirmed; account_id=%s persisted. Restart to connect.", account_id[:8]
+    )
     return web.json_response({"status": "confirmed", "connected": True, "account_id": account_id})
 
 
@@ -478,16 +480,18 @@ async def weixin_config_save(request: web.Request) -> web.Response:
             _state = request.app.get("state")
             if _state is not None:
                 await ensure_channel_folder(
-                    _state, "weixin", _folder_name,
+                    _state,
+                    "weixin",
+                    _folder_name,
                     relabel="session_folder" in body,
                 )
 
-    # Every weixin field is read once in the orchestrator's constructor —
-    # except session_folder, which the channel-slot reconciler re-reads live, so
-    # a save that only changes it does not ask the user to restart.
+    # Per field: session_folder is re-read live by the channel-slot reconciler,
+    # and the connection fields (token, account_id, base_url, enabled) are what a
+    # restart is actually for.
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(set(body) - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required("weixin", body.keys()),
         }
     )

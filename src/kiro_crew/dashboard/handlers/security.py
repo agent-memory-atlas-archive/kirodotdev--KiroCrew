@@ -430,9 +430,7 @@ def _reload_live_hooks(request: web.Request, denied_state: dict) -> None:
     replaced from *denied_state* (the keystone file's new content). Best-effort:
     a missing context builder (e.g. in a unit test harness) is a no-op.
     """
-    import dataclasses
-
-    from kiro_crew.hooks import HooksConfig
+    from kiro_crew.hooks import HooksConfig, splice_denied_commands
 
     try:
         state = request.app["state"]
@@ -440,22 +438,13 @@ def _reload_live_hooks(request: web.Request, denied_state: dict) -> None:
         manager = getattr(builder, "hooks", None)
         if manager is None:
             return
-        # Reparse ONLY the opt-out fields from the keystone state and splice them
-        # onto the live config so the flat hook keys (auto_replies, transforms,
-        # auto_approve_tools, …) are not lost.
-        parsed = HooksConfig.from_dict({"denied_commands": denied_state})
+        # Splice ONLY the opt-out fields from the keystone state onto the live config
+        # so the flat hook keys (auto_replies, transforms, auto_approve_tools, …) are
+        # not lost. Same helper the config.json hooks reload uses from the other
+        # side, so neither write reverts the other's half.
         current = getattr(manager, "_config", None)
-        if isinstance(current, HooksConfig):
-            manager.reload(
-                dataclasses.replace(
-                    current,
-                    denied_commands_disabled_ids=parsed.denied_commands_disabled_ids,
-                    denied_commands_disable_all=parsed.denied_commands_disable_all,
-                    denied_commands_user_added=parsed.denied_commands_user_added,
-                )
-            )
-        else:
-            manager.reload(parsed)
+        base = current if isinstance(current, HooksConfig) else HooksConfig()
+        manager.reload(splice_denied_commands(base, denied_state))
     except Exception:
         logger.warning(
             "failed to hot-reload HookManager after denied-commands change", exc_info=True
@@ -1013,6 +1002,7 @@ async def _preflight_agent_config_mutable() -> None:
     config lock during the write. It only ensures the common, already-detectable
     failures are reported before anything is stopped.
     """
+
     def _check() -> None:
         path = config_path()
         if path.is_file():
@@ -1063,6 +1053,7 @@ async def _mutate_agent_config(mutate) -> None:
     lock so a concurrent writer cannot slip a corrupt file in between the check
     and the load.
     """
+
     def _read_modify_write() -> None:
         path = config_path()
 
@@ -1247,7 +1238,11 @@ async def api_trusted_app_grant(request: web.Request) -> web.Response:
         # Compare even when one side is empty: an app changing between a local
         # install and a repository-backed source is also a changed consent scope.
         if consent_repository != repository:
-            reason = "missing_repository" if repository and not consent_repository else "repository_changed"
+            reason = (
+                "missing_repository"
+                if repository and not consent_repository
+                else "repository_changed"
+            )
             _audit(request, operation=op, outcome="denied", resources=f"{name}={reason}")
             return web.json_response(
                 {
@@ -1304,9 +1299,7 @@ async def api_trusted_app_grant(request: web.Request) -> web.Response:
             await _mutate_agent_config(_mutate)
         except ConfigCorruptError as exc:
             _audit(request, operation=op, outcome="denied", resources=f"{name}=config_corrupt")
-            return web.json_response(
-                {"error": str(exc), "code": "config_corrupt"}, status=409
-            )
+            return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)
         except TrustSettingOverlayOwned as exc:
             # 409, not 200: writing config.json here changes NOTHING while the
             # overlay owns the setting, and a success response would tell the
@@ -1343,9 +1336,7 @@ async def api_trusted_app_grant(request: web.Request) -> web.Response:
         )
 
         def _undo(agent_raw: dict) -> None:
-            agent_raw["apps_trusted"] = [
-                a for a in _trusted_list_raw(agent_raw) if a != name
-            ]
+            agent_raw["apps_trusted"] = [a for a in _trusted_list_raw(agent_raw) if a != name]
             repositories = _trusted_repositories_raw(agent_raw)
             repositories.pop(name, None)
             agent_raw["apps_trusted_local"] = [
@@ -1427,9 +1418,7 @@ async def api_trusted_app_revoke(request: web.Request) -> web.Response:
             await _preflight_agent_config_mutable()
         except ConfigCorruptError as exc:
             _audit(request, operation=op, outcome="denied", resources=f"{name}=config_corrupt")
-            return web.json_response(
-                {"error": str(exc), "code": "config_corrupt"}, status=409
-            )
+            return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)
         except TrustSettingOverlayOwned as exc:
             _audit(request, operation=op, outcome="denied", resources=f"{name}=overlay_owned")
             return web.json_response(
@@ -1513,9 +1502,7 @@ async def api_trusted_app_revoke(request: web.Request) -> web.Response:
                     disabled = bool(await _run_off_loop(lambda: disable_app(name).ok))
 
         def _mutate(agent_raw: dict) -> None:
-            agent_raw["apps_trusted"] = [
-                a for a in _trusted_list_raw(agent_raw) if a != name
-            ]
+            agent_raw["apps_trusted"] = [a for a in _trusted_list_raw(agent_raw) if a != name]
             repositories = _trusted_repositories_raw(agent_raw)
             repositories.pop(name, None)
             agent_raw["apps_trusted_local"] = [
@@ -1527,9 +1514,7 @@ async def api_trusted_app_revoke(request: web.Request) -> web.Response:
             await _mutate_agent_config(_mutate)
         except ConfigCorruptError as exc:
             _audit(request, operation=op, outcome="denied", resources=f"{name}=config_corrupt")
-            return web.json_response(
-                {"error": str(exc), "code": "config_corrupt"}, status=409
-            )
+            return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)
         except TrustSettingOverlayOwned as exc:
             # 409, not 200: writing config.json here changes NOTHING while the
             # overlay owns the setting, and a success response would tell the
@@ -1550,9 +1535,7 @@ async def api_trusted_app_revoke(request: web.Request) -> web.Response:
         outcome="ok",
         resources=f"{name} was_granted={was_granted} disabled={disabled}",
     )
-    return await _trusted_apps_response(
-        {"disabled": disabled, "warnings": teardown_warnings}
-    )
+    return await _trusted_apps_response({"disabled": disabled, "warnings": teardown_warnings})
 
 
 async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
@@ -1606,9 +1589,7 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
             await _preflight_agent_config_mutable()
         except ConfigCorruptError as exc:
             _audit(request, operation=op, outcome="denied", resources="config_corrupt")
-            return web.json_response(
-                {"error": str(exc), "code": "config_corrupt"}, status=409
-            )
+            return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)
         except TrustSettingOverlayOwned as exc:
             _audit(request, operation=op, outcome="denied", resources="overlay_owned")
             return web.json_response(
@@ -1633,9 +1614,7 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
         await _mutate_agent_config(_mutate)
     except ConfigCorruptError as exc:
         _audit(request, operation=op, outcome="denied", resources="config_corrupt")
-        return web.json_response(
-            {"error": str(exc), "code": "config_corrupt"}, status=409
-        )
+        return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)
     except TrustSettingOverlayOwned as exc:
         # 409, not 200: writing config.json here changes NOTHING while the
         # overlay owns the setting, and a success response would tell the
@@ -1810,9 +1789,7 @@ async def _stop_apps_running_on_blanket_trust(
                 was_enabled = bool(record.get("enabled"))
                 if require_enabled and not was_enabled:
                     continue
-                swept = await teardown_app_runtime(
-                    name, record, withdrawing_trust=True
-                )
+                swept = await teardown_app_runtime(name, record, withdrawing_trust=True)
                 for note in (*swept.warnings, *swept.failures):
                     logger.warning("blanket-trust teardown of %r: %s", name, note)
                 if not swept.ok:

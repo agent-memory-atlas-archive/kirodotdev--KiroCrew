@@ -930,6 +930,150 @@ purely to keep the kiro spec schema-clean; nothing in the fork resolves it.
 all times — after install, refresh, and any dashboard edit — or kiro-cli drops
 the agent and silently falls back to default.
 
+## Live config: one watcher, one applier registry
+
+`config/live.py` is the single mechanism by which a write to `config.json`
+reaches the objects that already copied a value out of it. Before it, a
+long-lived object built at boot (a session manager's idle timeout, a channel
+transport's allow-list, a workflow ceiling) kept its boot copy forever unless the
+particular writer happened to know that copy existed — so `kirocrew config set`,
+a dashboard save and an `$EDITOR` edit each hot-applied a *different* subset of
+fields, and every other field was silently inert until the next restart.
+
+Three parts, each deliberately singular:
+
+**One poll.** `ConfigWatch` runs one background task that compares
+`loader._config_fingerprint()` (mtime_ns + size + mode of `config.json` and
+`config.local.json`) every `DEFAULT_POLL_INTERVAL_SECS` (2s, floored at 0.05).
+The two `stat` calls run in `asyncio.to_thread`, never on the loop. Nothing else
+in the gateway polls `config.json`.
+
+**One kick.** An in-process writer does not wait for the tick: it calls
+`live.notify_config_written()`, which sets a force flag and wakes the poll
+through `call_soon_threadsafe`. The force flag matters independently of the
+wake — the fingerprint is mtime-based, and a coarse filesystem clock can make a
+write invisible to it, so a kicked cycle reloads whether or not the fingerprint
+moved. Safe from any thread and a no-op in a process with no watcher (the CLI).
+
+**One reload, one diff, one dispatch.** A cycle performs exactly one
+`KiroCrewConfig.load()` off the loop, so the `publish_*` snapshots the loader
+maintains ride along rather than needing a second reader. Old and new documents
+are flattened to dotted leaf paths (`flatten_config`; lists and empty dicts are
+leaves, because every list-typed field is a whole value whose consumers rebuild
+from the full list) and diffed (`diff_config_docs`). The new config is adopted
+*before* dispatch so an applier reading `live.snapshot()` sees it, and the
+PRE-load fingerprint is recorded so a write landing mid-read leaves it unequal to
+the file and the next tick reloads. Cycles are serialized by a lock, so the diff
+is always old-vs-newer and an applier never sees an out-of-order pair.
+
+### The applier registry
+
+`live.subscribe(*prefixes, callback=..., name=...)` is the only sanctioned place
+for work a gateway does in response to a config write. Rules the registry keeps:
+
+- **Prefix-scoped.** An applier fires only when a changed path is one of its
+  prefixes or lies under one (whole dotted segments: `agents` is not under
+  `agent`). No prefixes means every reload — a catch-all, and a review smell.
+- **Registration order is dispatch order**, so an applier may depend on one
+  registered before it (a rebuild before the consumer that reads it).
+- **Sync or async**, awaited if awaitable.
+- **A raising applier cannot starve the rest.** Each call is guarded; the failure
+  is logged at ERROR with the applier's NAME and dispatch continues.
+- **A bound method is held weakly** (`weakref.WeakMethod`), so a manager
+  discarded by a test or a provider reload falls out of the registry on its own.
+  A free function or lambda is held strongly — it has no owner to outlive.
+- **Values are never logged, only changed paths**: `to_dict()` carries channel
+  tokens and the diff sees them.
+- **`cancel()` is the removal verb** (there is no `close()`), and is idempotent.
+
+A load that raises keeps the previous snapshot, records `last_error`, dispatches
+nothing, and retries on the next tick. A load that *succeeds degraded* (a torn
+section parsed to its defaults, named in `degraded_sections`) does dispatch: the
+watcher does not refuse on the applier's behalf, because whether a default is
+safe is a property of the consumer. A fail-closed applier — every channel
+allow-list — reads `change.new.degraded_sections` and keeps its previous
+authorization state; a plain one (a timeout, a log level) adopts the default,
+which is the correct answer for it.
+
+Where appliers live: an applier owned by a long-lived object registers in that
+object's constructor (session manager, subagent manager, each channel
+dispatcher). Only the ones whose holder is `DashboardState`, or that must rebuild
+agent artifacts, live in `server.py::_register_config_watch` —
+`agent.provider`, `agent.role_models.background`,
+`agent.workflow_run_timeout_secs` (→ `WorkflowService.set_timeout_secs`),
+`agent.max_channels` / `agent.max_channel_agents` (→ `ChannelManager` setters),
+and `agent.log_level` (→ `handlers/updates.py::apply_log_level_from_config`).
+That function must be called before `runner.setup()` freezes the signal lists;
+the watcher itself starts in `on_startup`, because it needs the running loop, and
+stops in `on_cleanup`.
+
+### `restart=True` is the single source of restart truth
+
+`ConfigEntry.requires_restart` in `config/schema.py` is the ONE statement of
+which fields a running gateway cannot adopt. It is emitted into the schema API as
+`requiresRestart` only when true (absent means hot), and `requires_restart(path)`
+resolves it through ancestors, so a marked container covers keys the schema never
+enumerates (`mcp_gateway.stub_servers.<name>`, `agent.jail.<key>`).
+
+Consequences, and they are the point:
+
+- A request handler keeps **no list of boot-only keys**. The dashboard's PUT
+  computes `restart_required` as
+  `_changed_paths_need_restart(changed)` over the schema, and the old
+  `_STARTUP_READ_AGENT_KEYS` ladder is gone.
+- The hint is computed over paths whose value actually **moved**. The dashboard
+  sends every setting on each save, so "was applied" is not "was changed" — an
+  untouched `restart=True` field must not make a live edit claim a restart.
+- Adding a hot-appliable field is a schema change plus an applier, never a
+  handler edit. Marking a field `restart=True` is the admission that no applier
+  exists for it.
+- **Review checklist for a new field.** An unmarked field is a UI-visible
+  promise ("this applied live"), and nothing mechanical ties that promise to
+  code. So a PR that adds a config field must name, in its description, one of:
+  the `live.subscribe` applier that adopts it, the point-of-use read
+  (`live.snapshot()` at the call site) that makes construction-time capture
+  irrelevant, or the `restart=True` mark. A field with none of the three is the
+  silently-inert bug this design exists to kill, now with the settings UI
+  affirming that the value took effect.
+- **A reload that can widen approvals is audited.** `HookManager` follows
+  `hooks.*` live, and `config.json` is writable by an auto-approved agent shell,
+  so its applier SEL-logs an `auto_approve_tools` / `auto_approve_sources` /
+  `auto_approve_subagent_*` change (`hook_manager.reconfigure`,
+  `auto_approve_changed`, counts and flag names only) the way the channel
+  transports audit an allow-list reload. Governance still caps the resulting
+  set; the audit closes the gap between "widened at a restart" and "widened in
+  two seconds, mid-session, with no trace".
+
+Currently marked: `agent.jail`, `agent.dangerously_skip_permissions`,
+`dashboard.url`, `dashboard.tailscale.*`, `dashboard.restore_sessions`,
+`dashboard.restore_window_minutes`, `dashboard.surface_channel_sessions`,
+`dashboard.cautious_boot`, `dashboard.auto_open_browser`, `tunnel.*`,
+`instances.*`, `mcp_gateway.stub_servers`.
+
+### Which write paths kick the watcher
+
+Every door onto `config.json` ends at `notify_config_written()`, so the dashboard,
+the CLI and an `$EDITOR` save all reach the hot-apply path identically. A writer
+that forgets the kick is one setting that stays silently inert until the poll
+happens to notice — which is the bug class this closes.
+
+| Write path | Where |
+|---|---|
+| `update_config_locked` | `config/loader.py` — the required path for new mutations; skips the kick when the mutate returns `None` (no write) |
+| `KiroCrewConfig.save()` | `config/loader.py` |
+| `_persist_config_migration` | `config/loader.py` — a boot migration is a config write like any other |
+| `refresh_config_meta_stamp` | `config/loader.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |
+| `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`; the per-channel savers and the STT PUT reach the file through here, bypassing the loader's writers |
+
+A handler that must answer only after the new value is in force calls
+`ConfigWatch.refresh_now()` (`handlers/core.py::_hot_apply_after_write`), which
+forces one cycle and is a no-op before the watcher is started.
+
+Tests: `test/test_config_live.py` (diff, registry, lifecycle, fingerprint,
+dispatch order and scope, every write path, the schema/handler agreement, the
+`server.py` appliers) and `test/test_channels_c_hot_reload.py` (the per-channel
+appliers and their fail-closed degrade refusals).
+
 ## Schema
 
 ```python

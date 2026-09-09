@@ -323,9 +323,11 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
 
 def _get_forward_callback() -> str:
     """Return the configured forward-to-agent callback ID, or empty if disabled."""
-    if not _orch or not _orch._cfg:
+    if not _orch:
         return ""
-    return _orch._cfg.slack.forward_to_agent_callback
+    from kiro_crew.slack.handler import slack_cfg
+
+    return slack_cfg(_orch).slack.forward_to_agent_callback
 
 
 async def _handle_message_shortcut(payload: dict) -> None:
@@ -1044,13 +1046,14 @@ async def _refresh_channels_modal(view_id: str) -> None:
     if not _orch or not _orch.slack:
         return
     from kiro_crew.slack.blocks import channels_modal
+    from kiro_crew.slack.handler import slack_cfg
 
     current_ids = sorted(_orch._tracking_channels)
     channels = [
         {
             "channel_id": cid,
-            "activation": _orch._cfg.channel_config(cid).activation,
-            "agent": _orch._cfg.channel_config(cid).agent,
+            "activation": slack_cfg(_orch).channel_config(cid).activation,
+            "agent": slack_cfg(_orch).channel_config(cid).agent,
         }
         for cid in current_ids
     ]
@@ -1076,9 +1079,12 @@ async def _handle_ch_activation(payload: dict, action: dict) -> None:
 
     await run_config_write(_persist_channel_config, cid, activation=new_mode)
     if _orch:
-        from kiro_crew.config.loader import KiroCrewConfig
+        # In place, never a rebind: ``_orch._cfg`` is the object the handler
+        # module and every dispatcher hold, so rebinding it here would leave
+        # them on the stale one.
+        from kiro_crew.slack.handler import _reload_orch_cfg
 
-        _orch._cfg = KiroCrewConfig.load()
+        _reload_orch_cfg()
     sel().log_api_access(
         caller=caller,
         operation="slack.channel_activation_change",
@@ -1104,9 +1110,12 @@ async def _handle_ch_agent(payload: dict, action: dict) -> None:
 
     await run_config_write(_persist_channel_config, cid, agent=new_agent)
     if _orch:
-        from kiro_crew.config.loader import KiroCrewConfig
+        # In place, never a rebind: ``_orch._cfg`` is the object the handler
+        # module and every dispatcher hold, so rebinding it here would leave
+        # them on the stale one.
+        from kiro_crew.slack.handler import _reload_orch_cfg
 
-        _orch._cfg = KiroCrewConfig.load()
+        _reload_orch_cfg()
     logger.info("Channel %s agent changed to %s", cid, new_agent or "default")
     sel().log_api_access(
         caller=caller,
@@ -1470,7 +1479,11 @@ def _options_block_id(payload: dict, action: dict | None = None) -> str | None:
             return bid
     values = (payload.get("state") or {}).get("values") or {}
     for block_id, vals in values.items():
-        if isinstance(vals, dict) and OPTIONS_CHECKBOXES_ACTION in vals and isinstance(block_id, str):
+        if (
+            isinstance(vals, dict)
+            and OPTIONS_CHECKBOXES_ACTION in vals
+            and isinstance(block_id, str)
+        ):
             return block_id
     return None
 
@@ -1928,8 +1941,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     async with options_edit_lock(channel, msg_ts):
         if not claim_options_answer(channel, msg_ts):
             logger.debug(
-                "options click: control %s/%s was already answered; dropping the "
-                "duplicate",
+                "options click: control %s/%s was already answered; dropping the " "duplicate",
                 channel,
                 msg_ts,
             )
@@ -2110,9 +2122,7 @@ async def _handle_allowlist(
             return
         _orch._allowed_users.add(new_user_id)
         set_allowed_users(_orch._allowed_users)
-        await run_config_write(
-            persist_allowed_user, new_user_id, name=display_name
-        )
+        await run_config_write(persist_allowed_user, new_user_id, name=display_name)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.allowlist.approve",
@@ -2190,9 +2200,7 @@ async def _handle_track_channel(
         _orch._tracking_channels.add(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
         _probe_tracked_channel_scope({target_channel_id})
-        await run_config_write(
-            persist_tracking_channel, target_channel_id, name=channel_name
-        )
+        await run_config_write(persist_tracking_channel, target_channel_id, name=channel_name)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.approve",
@@ -2209,9 +2217,7 @@ async def _handle_track_channel(
         # Remove from in-memory set and persisted config
         _orch._tracking_channels.discard(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
-        await run_config_write(
-            persist_tracking_channel, target_channel_id, remove=True
-        )
+        await run_config_write(persist_tracking_channel, target_channel_id, remove=True)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.deny",
@@ -3179,7 +3185,9 @@ async def _handle_tool_approval(
 # ---------------------------------------------------------------------------
 
 # Shown when a non-authorized user clicks a review-mode button.
-_REVIEW_AUTH_DENIED_MSG = "⚠️ Only the bot owner or the user who requested this draft can act on it."
+_REVIEW_AUTH_DENIED_MSG = (
+    "⚠️ Only the bot owner or the user who requested this draft can act on it."
+)
 
 
 async def _delete_review_placeholder(channel: str, thread_ts: str) -> None:

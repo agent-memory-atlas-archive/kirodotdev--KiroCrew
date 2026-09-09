@@ -421,6 +421,93 @@ Messages arriving while a session is busy are queued with ⏳ reaction and drain
 
 `start_pool()` creates the background session for cron/heartbeat. Chat sessions cold-start on first message — no warm pool, no MCP reset hack.
 
+## Live configuration
+
+`GatewayOrchestrator` is the process's channel host, so it owns two config
+appliers, registered in `_register_config_appliers` on the shared `ConfigWatch`
+(`config/live.py`). The `Subscription` objects are kept on `self._config_subs`
+because the watcher holds a bound method WEAKLY — an orchestrator a test builds and
+discards must not pin itself into the registry. See
+[messaging](messaging.md) § Live configuration for the shape every channel shares.
+
+### The hoist is one function per channel
+
+Boot reads each channel's enable flag, credentials and options out of the config
+and onto the orchestrator (`_wecom_enabled`, `_telegram_bot_token`, and so on)
+before `_start_channel_transports` runs. That work is one
+`_hoist_<channel>(cfg, creds)` per channel — `_hoist_wecom`, `_hoist_telegram`,
+`_hoist_weixin`, `_hoist_whatsapp`, `_hoist_feishu`, `_hoist_discord`,
+`_hoist_webex`, `_hoist_imessage`, `_hoist_teams` — called from `__init__` in
+roster order. One function per channel is what makes a reconnect possible at all:
+`restart_channel` re-runs exactly one of them against a fresh config instead of
+re-deriving every channel's state, so restarting Telegram cannot disturb Discord.
+
+### `restart_channel(channel_type, *, cfg=None)`
+
+The in-process equivalent of a gateway restart for ONE channel, in boot's order:
+bounded close of the old handle (`registry.shutdown_tasks`), drop the handle and
+its legacy `_<channel>_client` mirror, re-run that channel's hoist against `cfg`
+plus a fresh credential read off the loop, re-evaluate the `channels` governance
+gate and the readiness badge, then `desc.start(orch)` and store the new handle. A
+channel whose new config disables it, leaves it uncredentialed, or is denied by
+policy ends CLOSED with its badge explaining why — exactly as it would after a
+real restart.
+
+The channel's section on `self._cfg` is replaced with `cfg`'s, because the
+`maybe_start_*` factories and the dispatchers they build read their allow-lists
+and options from `orch._cfg.<channel>`; without that the restarted transport would
+authorize against the boot-time roster. Serialized by `_channel_restart_lock`, so
+two writes inside one poll interval cannot interleave a close with a start.
+
+`_on_channel_config_change` decides when to call it: a channel restarts only when
+a changed path names one of its descriptor's `boot_keys`
+(`registry.changed_boot_keys`, `messaging/registry.py`). Live fields of the same
+section — allow-lists, thresholds, render toggles — are applied by that channel's
+own applier without a reconnect, so a change touching only them leaves the socket
+alone. Before `_channel_transports_started` the applier is a no-op, because the
+boot loop starts every channel from the hoist and a restart there would race it.
+
+### The Slack applier
+
+Slack is deliberately NOT in the restart loop. Its socket client is owned by
+`_connect_slack` under the `channels` governance gate (a deny must DROP the
+client), and its tokens live in the credential store rather than `config.json`, so
+no `slack.*` write can change the connection. `_on_slack_config_change`
+(subscribed on `slack` + `messaging`) reconciles everything else in place:
+
+- `slack.tracking_channels` / `slack.open_channels` → the orchestrator's sets AND
+  the `handler` module globals, mutated IN PLACE so the Slack-native modal, which
+  edits those same set objects, and a CLI write converge on one set rather than
+  two that disagree.
+- `slack.channels` / `slack.dm_activation` / `messaging.*` / `trusted_bot_*` /
+  `home_tab_sessions_per_kind` / `forward_to_agent_callback` → the shared config
+  object every Slack read reaches through `handler.slack_cfg()`, updated
+  section-by-section in place so `orch._cfg` and `handler._orch_cfg` cannot
+  diverge.
+- `slack.reactions` → `handler.refresh_phase_emojis`, which rebuilds `_PHASE_EMOJIS`
+  in place; the four read sites call `phase_emojis()` rather than the module global,
+  so a reaction rename lands on the next status update.
+- `slack.observe_*` → the live `ChannelHistory` caps, and observe-mode registration
+  follows the new channel activations.
+- `slack.allowed_enterprise_ids` → `enterprise.reload_allowed_team_ids` off the
+  loop, which re-runs the VALIDATED `_load_allowed_team_ids` rather than a raw
+  read, fails closed on a degraded file, SEL-audits the change, and no-ops before
+  the workspace is validated. Never widening from an unvalidated load is the point:
+  this list is what keeps another Grid workspace out.
+
+Fail closed as a whole: when the loader DISCARDED the `slack` section
+(`degraded_sections`) nothing under it is applied, the previous sets stay in force,
+and the change is logged by PATH only — a `slack` section contains tokens, so no
+applier logs a value. A change to `slack.trusted_bot_ids`, `open_channels` or
+`tracking_channels` is SEL-audited as its own event, because those sets widen who
+may drive a turn; the per-message admission decision is still audited where it is
+made.
+
+`slack.command` is the one Slack field marked `restart=True` in
+`config/sections.py`: the slash command is registered with Slack's app manifest, so
+no in-process apply can change it. No channel CONNECTION field is marked, because
+`restart_channel` applies those without a process restart.
+
 ## Subagent & Cron Acknowledgment
 
 Subagent completion and cron execution results post to both dashboard (WebSocket) and Slack (DM with ack button). Shared `ack_button()` helper in `interactions.py` handles button replacement:

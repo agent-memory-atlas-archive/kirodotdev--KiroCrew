@@ -87,6 +87,7 @@ class SessionLifecycleOwner(Protocol):
     _warm_pool: asyncio.Queue[tuple[Any, float]]
     _pool_size: int
     _pool_agent: str
+    _pool_ttl_secs: int
     _pool_cwd: str
     _pool_started: bool
     _pool_health_task: asyncio.Task[Any] | None
@@ -259,10 +260,16 @@ class SessionLifecycleService:
     def _on_recycled(self, callback: _RecycleCallback | None) -> None:
         self.state.on_recycled = callback
 
-    async def refresh_defaults(self) -> None:
-        """Adopt config changes that only affect new sessions."""
+    async def refresh_defaults(self, cfg: Any = None) -> None:
+        """Adopt config changes that only affect new sessions.
+
+        ``cfg`` is an already-loaded config -- the config watcher hands in the
+        one it just loaded so the apply needs no second read. ``None`` loads
+        here, off-loop, for the request-handler callers.
+        """
         owner = self._owner
         logger = self._deps.logger
+        constants = self._deps.constants()
         async with owner._pool_fill_lock:
             # Loaded OFF the event loop, and INSIDE the fill lock. Both halves
             # are load-bearing:
@@ -282,10 +289,24 @@ class SessionLifecycleService:
             # method exists to prevent. Holding the lock across both makes
             # read-then-install atomic per refresh, and costs only that
             # serialization: the load still never touches the loop.
-            cfg = await asyncio.to_thread(self._deps.load_config)
+            if cfg is None:
+                cfg = await asyncio.to_thread(self._deps.load_config)
             async with owner._lock:
                 owner._cfg = cfg
                 owner._provider_factory = self._deps.build_provider_factory(cfg)
+                # The warm pool's shape is config too: size, agent, cwd and TTL
+                # are captured into WarmPoolState at construction, so a refresh
+                # that rebuilt the factory but left them alone kept spawning the
+                # OLD pool size and agent, and the TTL was never re-adopted by
+                # any path. Same clamp as WarmSessionPool._state_from_owner.
+                owner._pool_size = min(constants.max_pool, max(0, cfg.session.pool_size))
+                owner._pool_agent = cfg.session.pool_agent or getattr(
+                    cfg.agent,
+                    "default_agent",
+                    "",
+                )
+                owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
+                owner._pool_cwd = self._deps.default_project_dir()
                 while not owner._warm_pool.empty():
                     try:
                         provider, _ = owner._warm_pool.get_nowait()

@@ -4,6 +4,7 @@ Provider-agnostic bounded pool of long-lived workers (CC or ACP).
 Knowledge extraction and URL fetch use separate instances of this pool so their
 workload policies and session state remain isolated.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ from typing import Optional
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.sandbox import (
@@ -43,11 +45,13 @@ except ImportError:
 try:
     from kiro_crew.session_pid import register_protected_pid, unregister_protected_pid
 except Exception:  # pragma: no cover - standalone / test fallback
+
     def register_protected_pid(pid: int) -> None:  # type: ignore[misc]
         return None
 
     def unregister_protected_pid(pid: int) -> None:  # type: ignore[misc]
         return None
+
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +170,7 @@ def _get_idle_ttl(config: Optional[dict] = None) -> float:
     value falls back to the default rather than silently disabling the reaper.
     """
     data = _read_config() if config is None else config
-    value = _section(data, "knowledge").get(
-        "pool_idle_ttl_secs", DEFAULT_IDLE_TTL_SECS
-    )
+    value = _section(data, "knowledge").get("pool_idle_ttl_secs", DEFAULT_IDLE_TTL_SECS)
     if isinstance(value, bool):
         return DEFAULT_IDLE_TTL_SECS
     if isinstance(value, (int, float)) and value >= 0:
@@ -182,9 +184,7 @@ def _get_pool_size(config: Optional[dict] = None) -> int:
     Reads ``knowledge.extraction_pool_size`` (default 3, clamped 1–10).
     """
     data = _read_config() if config is None else config
-    value = _section(data, "knowledge").get(
-        "extraction_pool_size", DEFAULT_POOL_SIZE
-    )
+    value = _section(data, "knowledge").get("extraction_pool_size", DEFAULT_POOL_SIZE)
     if isinstance(value, bool):
         return DEFAULT_POOL_SIZE
     if isinstance(value, int) and 1 <= value <= 10:
@@ -205,8 +205,7 @@ def _normalize_effort(value: object) -> Optional[str]:
 def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
     """Select the highest advertised effort no higher than ``requested``."""
     supported_levels = {
-        level for level in supported
-        if isinstance(level, str) and is_valid_effort(level)
+        level for level in supported if isinstance(level, str) and is_valid_effort(level)
     }
     if not supported_levels:
         # An advertised option without a usable level is treated like a lazy
@@ -214,7 +213,8 @@ def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
         return requested
     requested_index = EFFORT_LEVELS.index(requested)
     eligible = [
-        level for level in EFFORT_LEVELS
+        level
+        for level in EFFORT_LEVELS
         if level in supported_levels and EFFORT_LEVELS.index(level) <= requested_index
     ]
     return eligible[-1] if eligible else None
@@ -321,7 +321,11 @@ class AcpWorker(Worker):
             register_protected_pid(pid)
         else:
             self._protected_pid = None
-        logger.info("AcpWorker: ready (agent=%s, pid=%s)", AGENT_NAME, getattr(self._client, '_pid', 'unknown'))
+        logger.info(
+            "AcpWorker: ready (agent=%s, pid=%s)",
+            AGENT_NAME,
+            getattr(self._client, "_pid", "unknown"),
+        )
 
     async def _apply_effort(self) -> None:
         """Apply the requested effort without breaking provider-default fallback.
@@ -359,8 +363,7 @@ class AcpWorker(Worker):
             effective = _select_effort_level(requested, supported)
             if effective is None:
                 logger.warning(
-                    "AcpWorker: no supported effort at or below %s; "
-                    "using provider default",
+                    "AcpWorker: no supported effort at or below %s; " "using provider default",
                     requested,
                 )
                 return
@@ -455,10 +458,14 @@ class CCWorker(Worker):
             self._claude_bin,
             "-p",
             "--verbose",
-            "--model", "haiku",
-            "--input-format", "stream-json",
-            "--output-format", "stream-json",
-            "--permission-mode", "bypassPermissions",
+            "--model",
+            "haiku",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--permission-mode",
+            "bypassPermissions",
         ]
         # Optional URL-fetch tool. Empty by default (no built-in remote fetch on a
         # vanilla machine). Users can opt in by setting KIROCREW_KNOWLEDGE_FETCH_TOOLS
@@ -519,10 +526,7 @@ class CCWorker(Worker):
             await self._spawn()
         assert self._proc is not None and self._proc.stdin is not None
 
-        msg = json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": prompt}
-        })
+        msg = json.dumps({"type": "user", "message": {"role": "user", "content": prompt}})
         self._proc.stdin.write((msg + "\n").encode())
         await self._proc.stdin.drain()
 
@@ -601,10 +605,21 @@ class LLMPool:
         *,
         effort: Optional[str] = None,
         use_config_pool_size: bool = True,
+        track_config_pool_size: Optional[bool] = None,
     ):
         self._pool_size = pool_size
         self._effort = _normalize_effort(effort)
         self._use_config_pool_size = use_config_pool_size
+        # Whether a LATER write to knowledge.extraction_pool_size retargets this
+        # pool. Separate from use_config_pool_size, which only governs the read
+        # inside start(): a caller that seeds pool_size from that key itself (the
+        # extraction pool) disables the start() read yet still wants to follow the
+        # key, while a caller with a fixed width (the URL-fetch pool, size 1) must
+        # not be resized by an unrelated setting. Defaults to following whenever
+        # start() would have read the key.
+        self._track_config_pool_size = (
+            use_config_pool_size if track_config_pool_size is None else track_config_pool_size
+        )
         self._semaphore = asyncio.Semaphore(pool_size)
         self._workers: list[Worker] = []
         self._available: asyncio.Queue[int] = asyncio.Queue()
@@ -624,6 +639,58 @@ class LLMPool:
         # Kept visible so a concurrent shutdown() that cancels the reaper can
         # still drain any workers it abandoned.
         self._reaping_workers: Optional[list[Worker]] = None
+        # `_idle_ttl` / `_pool_size` are read from config in start(), so a config
+        # write reaches them only through reconfigure(). Held on self because the
+        # watcher keeps a bound method weakly.
+        self._config_sub = live.subscribe(
+            "knowledge.pool_idle_ttl_secs",
+            "knowledge.extraction_pool_size",
+            callback=self._on_config_change,
+            name="LLMPool",
+        )
+
+    async def _on_config_change(self, change: object) -> None:
+        await self.reconfigure()
+
+    async def reconfigure(self) -> None:
+        """Adopt a new idle TTL and, at the next idle boundary, a new pool size.
+
+        The TTL is applied immediately: it is compared against a timestamp on each
+        reaper tick, so replacing it changes when the pool next scales to zero. The
+        reaper is (re-)armed or left to exit accordingly -- switching the TTL from 0
+        to a positive value on a started pool starts a reaper that was never
+        created, and switching it to 0 lets the running one stop reaping.
+
+        The pool SIZE is not resized in place. Each worker holds a long-lived
+        billed session and a resize mid-ingest would either kill a worker with a
+        chunk in flight or spawn one nobody waits for, so the new size is picked up
+        at the next idle boundary: the semaphore that ``_maybe_scale_to_zero``
+        installs is built from ``_pool_size``, and the respawn on the next
+        ``acquire`` uses it. An ingest already running keeps the width it started
+        with. Only a pool that TRACKS the config key follows it -- a pool given a
+        fixed width by its caller (the URL-fetch pool) keeps that width.
+
+        A reaper already running keeps its original poll interval; only the
+        comparison it makes is live, so a shortened TTL takes effect within one
+        tick of the old interval rather than instantly.
+        """
+        config = await asyncio.to_thread(_read_config)
+        async with self._start_lock:
+            self._config = config
+            self._idle_ttl = _get_idle_ttl(config)
+            if self._track_config_pool_size:
+                self._pool_size = _get_pool_size(config)
+            if not self._started:
+                # The semaphore was sized at construction. A pool that has not
+                # started yet holds no worker, so it can be resized in place --
+                # and it MUST be, or the permits stay at the constructor's width
+                # while start() spawns the new, smaller worker count and admits
+                # more acquires than there are workers (a QueueEmpty on the
+                # extraction path). The TTL needs no arming: start() reads it.
+                self._semaphore = asyncio.Semaphore(self._pool_size)
+                return
+            if self._idle_ttl > 0 and self._reaper_task is None:
+                self._reaper_task = asyncio.create_task(self._idle_reaper())
 
     @property
     def provider_type(self) -> str:
@@ -643,15 +710,13 @@ class LLMPool:
             # fallback default), so callers that pass a specific pool_size to the
             # constructor are not overridden.
             configured_size = _get_pool_size(config)
-            explicit = "extraction_pool_size" in (_section(
-                config, "knowledge") if config else {})
-            if (
-                self._use_config_pool_size
-                and explicit
-                and configured_size != self._pool_size
-            ):
+            explicit = "extraction_pool_size" in (_section(config, "knowledge") if config else {})
+            if self._use_config_pool_size and explicit and configured_size != self._pool_size:
                 self._pool_size = configured_size
-                self._semaphore = asyncio.Semaphore(configured_size)
+            # The permit count is derived from the width the workers are spawned
+            # at below, whichever path set it (constructor, config override, or a
+            # tracked reload before this start), so the two cannot disagree.
+            self._semaphore = asyncio.Semaphore(self._pool_size)
             self._idle_ttl = _get_idle_ttl(config)
             self._config = config
             try:
@@ -675,7 +740,8 @@ class LLMPool:
                 self._reaper_task = asyncio.create_task(self._idle_reaper())
             logger.info(
                 "LLMPool started: %d workers, provider=%s",
-                self._pool_size, self._provider_type,
+                self._pool_size,
+                self._provider_type,
             )
 
     async def _create_worker(self) -> Worker:
@@ -816,7 +882,8 @@ class LLMPool:
             self._reaping_workers = None
         logger.info(
             "LLMPool: scaled to zero after %.0fs idle (%d workers freed)",
-            self._idle_ttl, len(workers),
+            self._idle_ttl,
+            len(workers),
         )
         return True
 
@@ -861,8 +928,9 @@ class LLMPool:
             await worker.reset_conversation()
         except Exception:
             logger.warning(
-                "LLMPool: worker %d conversation reset failed; will be replaced on "
-                "next acquire", idx, exc_info=True,
+                "LLMPool: worker %d conversation reset failed; will be replaced on " "next acquire",
+                idx,
+                exc_info=True,
             )
 
     async def send_batch(self, prompts: list[str], timeout: float = DEFAULT_TIMEOUT) -> list[str]:

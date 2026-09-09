@@ -34,6 +34,9 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
@@ -55,11 +58,13 @@ from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 from kiro_crew.weixin.turn_renderer import WeixinRenderer
 
 if TYPE_CHECKING:
+    from kiro_crew.config.live import ConfigChange
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
     from kiro_crew.weixin.client import ContextTokenStore, TypingTicketCache, WeixinClient
+    from kiro_crew.weixin.transport import WeixinTransport
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +99,7 @@ _COMPACT_NOTHING = "ℹ️ 当前没有可压缩的对话。"
 _COMPACT_DONE = "🗜️ 已压缩上下文。"
 _COMPACT_FAILED = "⚠️ 压缩失败，请重试。"
 #: This surface speaks Chinese; the wording translates
-#: ``messaging.commands.compact_unsupported_reply`` (#8156).
+#: ``messaging.commands.compact_unsupported_reply``.
 _COMPACT_AUTO_MANAGED = "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。"
 
 
@@ -130,7 +135,83 @@ class WeixinDispatcher:
         self.conv_log = conv_log
         self.approval_mode = approval_mode
         self.client: "WeixinClient | None" = None
+        # Set by maybe_start_weixin after construction; the config applier pushes
+        # reloaded authorization fields at it.
+        self.transport: "WeixinTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # dm_scope picks the session-key namespace, so it is pinned per
+        # generation rather than re-read mid-conversation (see ``_dm_scope``).
+        self._dm_scope_at: dict[str, tuple[int, str]] = {}
+        # Held on self: live.subscribe keeps a bound method WEAKLY.
+        self._config_sub = live.subscribe(
+            "weixin", "messaging", callback=self._on_config_change, name="WeixinDispatcher"
+        )
+
+    # ── Live config ────────────────────────────────────────────────────────
+
+    def _live_cfg(self) -> "KiroCrewConfig":
+        """The config in force NOW, for a per-turn read.
+
+        The watcher's snapshot when armed, else a fingerprint-cached ``load()``,
+        else the boot copy -- a rotation window or a threshold is not an
+        authorization decision, so a momentarily unreadable file keeps the turn
+        running on the value the operator last had in force.
+        """
+        try:
+            snap = live.snapshot()
+            if snap is not None:
+                return snap
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            return KiroCrewConfig.load()
+        except Exception:
+            logger.warning("weixin: could not read live config; using the boot copy", exc_info=True)
+            return self.cfg
+
+    def _thresholds(self) -> tuple[int, int]:
+        """``(soft, hard)`` context thresholds from the live config.
+
+        Re-runs the loader's pair normalization: read live without it, an
+        inverted pair makes the soft nudge unreachable because ``_maybe_notice``
+        tests ``pct >= hard`` first.
+        """
+        section = self._live_cfg().weixin
+        return _normalize_threshold_pair(
+            int(getattr(section, "soft_threshold_pct", 80)),
+            int(getattr(section, "hard_threshold_pct", 95)),
+        )
+
+    def _dm_scope(self, user_id: str, gen: int) -> str:
+        """The dm_scope this conversation's generation is keyed under.
+
+        Read live but pinned for the life of a generation, so a flip never
+        re-keys a running DM into a different session; ``/new``, the idle reset
+        and the daily reset all advance the generation and adopt the new value.
+        """
+        cached = self._dm_scope_at.get(user_id)
+        if cached is not None and cached[0] == gen:
+            return cached[1]
+        scope = str(self._live_cfg().messaging.dm_scope)
+        self._dm_scope_at[user_id] = (gen, scope)
+        return scope
+
+    def _on_config_change(self, change: "ConfigChange") -> None:
+        """Push reloaded ``weixin`` authorization fields at the live transport.
+
+        Fails closed on a degraded section: with ``dm_policy`` deny-by-default,
+        rebuilding the roster from a document the loader could not parse would
+        lock out every intended sender, so the previous values stay in force.
+        """
+        if self.transport is None or not change.touched("weixin"):
+            return
+        degraded = change.new.degraded_sections
+        if "weixin" in degraded or DEGRADED_WHOLE_CONFIG in degraded:
+            logger.warning(
+                "weixin: the reloaded config is degraded; keeping the previous allow-list "
+                "and dm_policy"
+            )
+            return
+        self.transport.reconfigure(change.new.weixin)
 
     # ── Turn dispatch (transport's dispatch callback) ──────────────────────
 
@@ -185,10 +266,10 @@ class WeixinDispatcher:
         attachment_temp_paths: list[str] = []
         # Captured BEFORE ingestion, which clears ``inbound.attachments`` and
         # inlines the temp paths into the text. The durable inbound spool needs
-        # both originals (issue #2217): the count is what tells the restart
+        # both originals: the count is what tells the restart
         # notice this turn carried media that was not carried over, and the
         # pre-ingestion text is what the notice quotes -- the ingested form
-        # holds paths to files that no longer exist.
+        # holds paths to files that do not survive a restart.
         original_text = text
         original_attachments = len(inbound.attachments or ())
         if inbound.attachments:
@@ -272,9 +353,9 @@ class WeixinDispatcher:
         """Session acquisition + turn dispatch for one already-ingested message.
 
         ``original_text`` / ``original_attachments`` are the pre-ingestion values,
-        which this frame can no longer recover: ingestion clears
+        which this frame cannot recover: ingestion clears
         ``inbound.attachments`` and rewrites the text with temp paths that are gone
-        after a restart. They exist for the durable inbound spool (issue #2217).
+        after a restart. They exist for the durable inbound spool.
         """
         assert self.client is not None
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
@@ -285,11 +366,12 @@ class WeixinDispatcher:
             await self._handle_busy(inbound, session_key)
             return
 
+        messaging = self._live_cfg().messaging
         self._conv.maybe_rotate(
             user_id,
             time.time(),
-            idle_minutes=self.cfg.messaging.idle_reset_minutes,
-            daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            idle_minutes=messaging.idle_reset_minutes,
+            daily_reset_hour=messaging.daily_reset_hour,
         )
         session_key = self._session_key(user_id)
         conversation_id = f"weixin:{user_id}"
@@ -312,7 +394,7 @@ class WeixinDispatcher:
             ChannelTurn(
                 channel_type="weixin",
                 session_key=session_key,
-                # Durable inbound spool (issue #2217): the peer id IS the reply
+                # Durable inbound spool: the peer id IS the reply
                 # target on this DM-only channel, and the reply's context_token
                 # is already persisted off-loop, so the restart notice can land.
                 # ``original_text`` with NO fallback to the ingested ``text``: the
@@ -463,7 +545,7 @@ class WeixinDispatcher:
             self._resolve_agent(),
             user_id,
             gen=gen,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=self._dm_scope(user_id, gen),
         )
 
     def _seed_gen(self, user_id: str) -> int:
@@ -472,7 +554,7 @@ class WeixinDispatcher:
             channel="weixin",
             agent=self._resolve_agent(),
             user_id=user_id,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=self._dm_scope(user_id, 0),
         )
 
     def _persist_turn(
@@ -517,10 +599,9 @@ class WeixinDispatcher:
         an additional safety net.
         """
         pct = self.sessions.check_context_usage(session_key, provider)
-        hard = getattr(self.cfg.weixin, "hard_threshold_pct", 95)
-        soft = getattr(self.cfg.weixin, "soft_threshold_pct", 80)
+        soft, hard = self._thresholds()
         if pct >= soft:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
@@ -555,7 +636,7 @@ class WeixinDispatcher:
             if provider is None:
                 await self._say(user_id, _COMPACT_NOTHING)
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational, never an error.

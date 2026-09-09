@@ -54,7 +54,9 @@ if os.name == "nt":
 # ── Hypothesis profiles ─────────────────────────────────────────────────
 # Default (CI): fast iteration.  Run ``HYPOTHESIS_PROFILE=thorough python -m pytest``
 # for deeper coverage.
-settings.register_profile("default", max_examples=20, suppress_health_check=[HealthCheck.too_slow], deadline=None)
+settings.register_profile(
+    "default", max_examples=20, suppress_health_check=[HealthCheck.too_slow], deadline=None
+)
 settings.register_profile("thorough", max_examples=100)
 settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
 
@@ -152,11 +154,7 @@ if platform_compat.IS_WINDOWS:
     # bypasses collect_ignore. One file, two readers, no drift.
     _ignore_listfile = os.path.join(os.path.dirname(__file__), "windows-collect-ignore.txt")
     with open(_ignore_listfile, encoding="utf-8") as _fh:
-        collect_ignore = [
-            name
-            for name in (ln.split("#", 1)[0].strip() for ln in _fh)
-            if name
-        ]
+        collect_ignore = [name for name in (ln.split("#", 1)[0].strip() for ln in _fh) if name]
 
 
 def make_escaping_link(inside: pathlib.Path, outside: pathlib.Path) -> str:
@@ -349,6 +347,25 @@ def _release_source_corpus_after_module():
 
 
 @pytest.fixture(autouse=True)
+def _drop_live_config_snapshot():
+    """Leave no primed live-config snapshot behind for the next test.
+
+    ``kiro_crew.config.live`` keeps ONE process-global watcher, and every
+    point-of-use reader (``SkillsLoader._max_triggered_now``, the channel
+    dispatchers' ``_live_cfg``) prefers its snapshot over the config it was
+    constructed with. A test that primes it and does not reset therefore sets the
+    live config for every later test on the same xdist worker -- measured as a
+    ``max_triggered`` of 0 leaking into ``test_explain_for_skill`` from an
+    unrelated module. The reset is a lock and a ``None`` store, so it costs the
+    ~57k tests that never prime nothing measurable.
+    """
+    yield
+    from kiro_crew.config import live
+
+    live.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_aim_skills_dir(_floor_monkeypatch):
     """Prevent SkillsLoader from discovering edition-contributed skill roots.
 
@@ -441,9 +458,7 @@ def pytest_handlecrashitem(crashitem, report, sched) -> None:
     _crash_victims.append(str(crashitem))
 
 
-def _format_abandoned_run_report(
-    crashes: list[tuple[str, str]], victims: list[str]
-) -> str:
+def _format_abandoned_run_report(crashes: list[tuple[str, str]], victims: list[str]) -> str:
     """Build the terminal report for a run abandoned after worker crashes.
 
     Wording is deliberately non-causal: worker replacement is routine here
@@ -1011,16 +1026,29 @@ class MockSlackClient(SlackClientOps):
         self._fetch_message_result: str | None = None
         self._fetch_thread_replies_result: list[dict] = []
 
-    async def post_message(self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None):
+    async def post_message(
+        self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None
+    ):
         ts = f"{self._next_ts}.000000"
         self._next_ts += 1
         self.actions.append(
-            ("post", {"channel": channel, "text": text, "thread_ts": thread_ts, "ts": ts,
-                      "unfurl_links": unfurl_links, "unfurl_media": unfurl_media})
+            (
+                "post",
+                {
+                    "channel": channel,
+                    "text": text,
+                    "thread_ts": thread_ts,
+                    "ts": ts,
+                    "unfurl_links": unfurl_links,
+                    "unfurl_media": unfurl_media,
+                },
+            )
         )
         return ts
 
-    async def post_blocks(self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None):
+    async def post_blocks(
+        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
+    ):
         ts = f"{self._next_ts}.000000"
         self._next_ts += 1
         self.actions.append(
@@ -1056,7 +1084,18 @@ class MockSlackClient(SlackClientOps):
         return f"D{user_id}"
 
     async def post_ephemeral(self, channel, user_id, text, blocks=None, thread_ts=None):
-        self.actions.append(("ephemeral", {"channel": channel, "user_id": user_id, "text": text, "blocks": blocks, "thread_ts": thread_ts}))
+        self.actions.append(
+            (
+                "ephemeral",
+                {
+                    "channel": channel,
+                    "user_id": user_id,
+                    "text": text,
+                    "blocks": blocks,
+                    "thread_ts": thread_ts,
+                },
+            )
+        )
 
     async def views_publish(self, user_id, view):
         self.actions.append(("views_publish", {"user_id": user_id, "view": view}))
@@ -1082,7 +1121,9 @@ class MockSlackClient(SlackClientOps):
         )
 
     async def start_stream(self, channel, thread_ts, initial_text=None, team_id=None, user_id=None):
-        if not getattr(self, "_stream_enabled", False) or getattr(self, "_start_stream_fails", False):
+        if not getattr(self, "_stream_enabled", False) or getattr(
+            self, "_start_stream_fails", False
+        ):
             return None
         ts = f"{self._next_ts}.000000"
         self._next_ts += 1
@@ -1137,8 +1178,20 @@ class MockSlackClient(SlackClientOps):
         self.actions.append(("fetch_message", {"channel": channel, "ts": ts}))
         return self._fetch_message_result
 
-    async def fetch_thread_replies(self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True) -> list[dict]:
-        self.actions.append(("fetch_thread_replies", {"channel": channel, "thread_ts": thread_ts, "limit": limit, "warn_on_pagination": warn_on_pagination}))
+    async def fetch_thread_replies(
+        self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True
+    ) -> list[dict]:
+        self.actions.append(
+            (
+                "fetch_thread_replies",
+                {
+                    "channel": channel,
+                    "thread_ts": thread_ts,
+                    "limit": limit,
+                    "warn_on_pagination": warn_on_pagination,
+                },
+            )
+        )
         return self._fetch_thread_replies_result
 
 
@@ -1357,9 +1410,7 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 
     real_check = subagent.check_memory_available
 
-    def _pinned_check(
-        min_gb: float | None = None, path: str | None = None
-    ) -> tuple[bool, float]:
+    def _pinned_check(min_gb: float | None = None, path: str | None = None) -> tuple[bool, float]:
         if path is None:
             return (True, _HEALTHY_AVAILABLE_GB)
         if min_gb is None:

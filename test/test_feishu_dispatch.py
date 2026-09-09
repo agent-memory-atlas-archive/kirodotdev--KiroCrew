@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import inspect
 from types import SimpleNamespace
 
@@ -214,6 +216,29 @@ def _cfg(default_agent: str = "", approval_mode: str = "interactive", **kw):
             queue_mode="steer",
         ),
     )
+
+
+@contextlib.contextmanager
+def _live_messaging(**messaging_kw):
+    """Prime the process config watcher with ``messaging.*`` overrides.
+
+    ``dm_scope``, ``idle_reset_minutes`` and ``daily_reset_hour`` are read at
+    point of use from the live snapshot, so a test that exercises one of them
+    has to put the value in the LIVE config, not only in the dispatcher's boot
+    copy. Resets the watcher on exit so nothing leaks into the next test.
+    """
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    live.reset_for_tests()
+    try:
+        cfg = KiroCrewConfig()
+        live.watch().prime(
+            dataclasses.replace(cfg, messaging=dataclasses.replace(cfg.messaging, **messaging_kw))
+        )
+        yield
+    finally:
+        live.reset_for_tests()
 
 
 def _dispatcher(sessions, ctx, client, *, conv_log=None, agent=None, cfg=None):
@@ -430,29 +455,30 @@ class TestTurn:
         would be resumed across the idle boundary however the operator
         configured it.
         """
-        provider = FakeProvider(
-            [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
-                AcpEvent(kind=EVENT_COMPLETE),
-            ]
-        )
-        sessions = FakeSessions(provider, ctx_pct=10.0)
-        client = FakeClient()
-        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(idle_reset_minutes=30))
+        with _live_messaging(idle_reset_minutes=30):
+            provider = FakeProvider(
+                [
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
+                    AcpEvent(kind=EVENT_COMPLETE),
+                ]
+            )
+            sessions = FakeSessions(provider, ctx_pct=10.0)
+            client = FakeClient()
+            d = _dispatcher(sessions, FakeCtx(), client)
 
-        await d.handle_message(_inbound("one", message_id="m1"))
+            await d.handle_message(_inbound("one", message_id="m1"))
 
-        # Backdate the recorded activity past the idle window; the next inbound
-        # must land on a NEW generation rather than resuming the stale one.
-        route = d._route(_inbound("two", message_id="m2"))
-        d._conv._get(route).last_active -= 31 * 60
+            # Backdate the recorded activity past the idle window; the next inbound
+            # must land on a NEW generation rather than resuming the stale one.
+            route = d._route(_inbound("two", message_id="m2"))
+            d._conv._get(route).last_active -= 31 * 60
 
-        await d.handle_message(_inbound("two", message_id="m2"))
+            await d.handle_message(_inbound("two", message_id="m2"))
 
-        assert len(sessions.successes) == 2
-        assert (
-            sessions.successes[0] != sessions.successes[1]
-        ), f"idle rotation did not mint a new key ({sessions.successes[0]})"
+            assert len(sessions.successes) == 2
+            assert (
+                sessions.successes[0] != sessions.successes[1]
+            ), f"idle rotation did not mint a new key ({sessions.successes[0]})"
 
     @pytest.mark.asyncio
     async def test_no_rotation_keeps_the_same_generation(self) -> None:
@@ -461,48 +487,50 @@ class TestTurn:
         Without this, a rotation bug that fired on every message would still pass
         the test above.
         """
-        provider = FakeProvider(
-            [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
-                AcpEvent(kind=EVENT_COMPLETE),
-            ]
-        )
-        sessions = FakeSessions(provider, ctx_pct=10.0)
-        client = FakeClient()
-        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(idle_reset_minutes=30))
+        with _live_messaging(idle_reset_minutes=30):
+            provider = FakeProvider(
+                [
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
+                    AcpEvent(kind=EVENT_COMPLETE),
+                ]
+            )
+            sessions = FakeSessions(provider, ctx_pct=10.0)
+            client = FakeClient()
+            d = _dispatcher(sessions, FakeCtx(), client)
 
-        await d.handle_message(_inbound("one", message_id="m1"))
-        await d.handle_message(_inbound("two", message_id="m2"))
+            await d.handle_message(_inbound("one", message_id="m1"))
+            await d.handle_message(_inbound("two", message_id="m2"))
 
-        assert len(sessions.successes) == 2
-        assert sessions.successes[0] == sessions.successes[1]
+            assert len(sessions.successes) == 2
+            assert sessions.successes[0] == sessions.successes[1]
 
     @pytest.mark.asyncio
     async def test_rotation_runs_after_the_busy_check(self) -> None:
         """Order matters: rotating BEFORE the busy check would mint a new key and
         miss the in-flight turn on the current one, turning a steer into a second
         concurrent turn. Pinned because the fix's correctness is its placement."""
-        provider = FakeProvider(
-            [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
-                AcpEvent(kind=EVENT_COMPLETE),
-            ]
-        )
-        sessions = FakeSessions(provider, ctx_pct=10.0)
-        client = FakeClient()
-        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(idle_reset_minutes=30))
+        with _live_messaging(idle_reset_minutes=30):
+            provider = FakeProvider(
+                [
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
+                    AcpEvent(kind=EVENT_COMPLETE),
+                ]
+            )
+            sessions = FakeSessions(provider, ctx_pct=10.0)
+            client = FakeClient()
+            d = _dispatcher(sessions, FakeCtx(), client)
 
-        await d.handle_message(_inbound("one", message_id="m1"))
-        route = d._route(_inbound("two", message_id="m2"))
-        gen_before = d._conv.current_gen(route)
+            await d.handle_message(_inbound("one", message_id="m1"))
+            route = d._route(_inbound("two", message_id="m2"))
+            gen_before = d._conv.current_gen(route)
 
-        # Idle-eligible AND busy: the busy branch must win, leaving the
-        # generation untouched so the steer reaches the running turn.
-        d._conv._get(route).last_active -= 31 * 60
-        sessions._busy = True
-        await d.handle_message(_inbound("two", message_id="m2"))
+            # Idle-eligible AND busy: the busy branch must win, leaving the
+            # generation untouched so the steer reaches the running turn.
+            d._conv._get(route).last_active -= 31 * 60
+            sessions._busy = True
+            await d.handle_message(_inbound("two", message_id="m2"))
 
-        assert d._conv.current_gen(route) == gen_before
+            assert d._conv.current_gen(route) == gen_before
 
     @pytest.mark.asyncio
     async def test_turn_honours_an_out_of_band_approval_grant(self, monkeypatch) -> None:
@@ -906,19 +934,20 @@ class TestGroupIsolation:
     async def test_group_isolation_survives_unified_scope(self) -> None:
         """Under dm_scope=unified, direct keys collapse but group keys must not."""
         sessions = FakeSessions(FakeProvider([]))
-        cfg = _cfg(dm_scope="unified")
-        d = _dispatcher(sessions, FakeCtx(), FakeClient(), cfg=cfg)
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        # dm_scope is a POINT-OF-USE read now, so the scope under test has to be
+        # in the live config rather than only in the dispatcher's boot copy.
+        with _live_messaging(dm_scope="unified"):
+            group = _inbound(
+                text="hi",
+                open_id="ou_abc123",
+                chat_type="group",
+                chat_id="oc_group1",
+            )
+            dm = _inbound(text="hi", open_id="ou_abc123", chat_type="p2p")
 
-        group = _inbound(
-            text="hi",
-            open_id="ou_abc123",
-            chat_type="group",
-            chat_id="oc_group1",
-        )
-        dm = _inbound(text="hi", open_id="ou_abc123", chat_type="p2p")
-
-        group_key = d._session_key(d._route(group))
-        dm_key = d._session_key(d._route(dm))
+            group_key = d._session_key(d._route(group))
+            dm_key = d._session_key(d._route(dm))
 
         # Even under unified scope, group and DM remain isolated.
         assert group_key != dm_key

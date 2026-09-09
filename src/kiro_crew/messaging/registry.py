@@ -80,6 +80,17 @@ class ChannelDescriptor:
     #: operator looking in the wrong place. WeCom/WeChat's ``account_id`` is the
     #: case — its gateway refuses to start without one.
     required_config: tuple[str, ...] = ()
+    #: Config keys of this channel's section that are CONNECTION parameters:
+    #: the enable flag, the token or app identity the transport authenticates
+    #: with, the endpoint it connects to, the store it opens. A live transport
+    #: cannot adopt a new one of these, so a config change touching any of them
+    #: is applied by restarting the channel in-process
+    #: (``GatewayOrchestrator.restart_channel``). Every OTHER key of the section
+    #: (allow-lists, thresholds, render toggles) is pushed onto the running
+    #: transport or read at point of use, so a change there must NOT restart the
+    #: channel -- the restart applier compares the changed paths against this
+    #: set and nothing else. Empty for a host-managed lifecycle (Slack).
+    boot_keys: frozenset[str] = frozenset()
     """Credential keys this channel needs ALL of before it can connect.
 
     Data rather than a per-channel branch, so a diagnostic can report every
@@ -98,6 +109,24 @@ def governed_members(descriptors: tuple[ChannelDescriptor, ...]) -> tuple[str, .
 def bootable(descriptors: tuple[ChannelDescriptor, ...]) -> tuple[ChannelDescriptor, ...]:
     """The descriptors the registry boot loop starts (``start`` is not None)."""
     return tuple(d for d in descriptors if d.start is not None)
+
+
+def changed_boot_keys(
+    desc: ChannelDescriptor, changed_paths: "frozenset[str] | set[str]"
+) -> frozenset[str]:
+    """The ``boot_keys`` of *desc* that *changed_paths* touches.
+
+    *changed_paths* are dotted leaf paths from a config diff
+    (``telegram.bot_token``, ``telegram.accounts.main.token``); a key is
+    matched on the FIRST segment under the section, so a nested boot key
+    (``accounts``) counts however deep the leaf sits. Paths outside the
+    section are ignored, so a caller may hand over the whole change set.
+    Empty means "nothing that needs a restart changed" -- the answer the
+    live-field appliers rely on so their fields never bounce a connection.
+    """
+    prefix = desc.channel_type + "."
+    keys = {p[len(prefix) :].split(".", 1)[0] for p in changed_paths if p.startswith(prefix)}
+    return frozenset(keys & desc.boot_keys)
 
 
 async def start_channels(

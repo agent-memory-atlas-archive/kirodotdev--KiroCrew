@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest import mock
@@ -271,11 +272,58 @@ def _cfg(default_agent: str = "", approval_mode: str = "interactive"):
     )
 
 
+@pytest.fixture(autouse=True)
+def _drop_live_config_snapshot():
+    """Leave no primed config snapshot behind for the next test.
+
+    ``_prime_live`` publishes into the process-global watcher, so without this
+    the last test to prime would silently set the live config for every test
+    after it in the same worker.
+    """
+    yield
+    from kiro_crew.config import live
+
+    live.reset_for_tests()
+
+
+def _prime_live(cfg) -> None:
+    """Publish *cfg*'s ``webex`` and ``messaging`` fields as the live snapshot.
+
+    The dispatcher reads those two sections at POINT OF USE from the config
+    watcher rather than from the ``cfg=`` copy it was constructed with, so a
+    test that varies one of them has to put the value where the turn actually
+    looks for it. Every field the test's SimpleNamespace carries is copied onto
+    a real ``KiroCrewConfig``; the loader's own defaults fill the rest.
+
+    Call it again after mutating ``d.cfg`` mid-test -- the snapshot is a copy,
+    not a view.
+    """
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    base = KiroCrewConfig()
+    sections = {}
+    for name in ("webex", "messaging"):
+        section = getattr(cfg, name, None)
+        if section is None:
+            continue
+        overrides = {
+            f.name: getattr(section, f.name)
+            for f in dataclasses.fields(getattr(base, name))
+            if hasattr(section, f.name)
+        }
+        sections[name] = dataclasses.replace(getattr(base, name), **overrides)
+    live.reset_for_tests()
+    live.watch().prime(dataclasses.replace(base, **sections))
+
+
 def _dispatcher(sessions, ctx, client, *, conv_log=None, agent=None, cfg=None):
+    cfg = cfg or _cfg()
+    _prime_live(cfg)
     d = WebexDispatcher(
         sessions=sessions,
         ctx_builder=ctx,
-        cfg=cfg or _cfg(),
+        cfg=cfg,
         agent=agent,
         conv_log=conv_log,
         approval_mode="interactive",

@@ -140,6 +140,39 @@ def _resolve_spill_threshold() -> int:
 RESPONSE_SPILL_THRESHOLD_BYTES: int = _resolve_spill_threshold()
 
 
+def response_spill_threshold_bytes() -> int:
+    """The spill threshold, resolved per call so a config write applies immediately.
+
+    The threshold is a per-response size comparison with no state behind it, so
+    unlike ``READ_BUFFER_LIMIT_BYTES`` -- which is handed to asyncio readers as
+    ``limit=`` when they are CONSTRUCTED and cannot be changed afterwards -- it can
+    simply be re-read. It is read on EVERY response frame of the shared stdout
+    pump, on the event loop, so the read must be memory-only: the env override,
+    then the config the process watcher has already adopted (a plain attribute
+    read), then the boot-time value. It never touches ``config.json`` itself;
+    the watcher owns that file read and hands the result over in its snapshot.
+
+    ``RESPONSE_SPILL_THRESHOLD_BYTES`` above stays as the boot-time value for
+    callers (and tests) that want a single fixed number.
+    """
+    raw = os.environ.get("KIROCREW_MCP_SPILL_THRESHOLD")
+    if raw:
+        try:
+            val = int(raw)
+            if val >= 0:
+                return val
+        except (ValueError, TypeError):
+            pass
+    from kiro_crew.config import live
+
+    cfg = live.snapshot()
+    if cfg is not None:
+        cfg_val = getattr(getattr(cfg, "mcp_gateway", None), "response_spill_threshold_bytes", None)
+        if isinstance(cfg_val, int) and not isinstance(cfg_val, bool) and cfg_val >= 0:
+            return cfg_val
+    return RESPONSE_SPILL_THRESHOLD_BYTES
+
+
 def _proc_rss_kb(pid: Optional[int]) -> int:
     """Resident set size (KiB) for ``pid`` **and all its descendants**.
 

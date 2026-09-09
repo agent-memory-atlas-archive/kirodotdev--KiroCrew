@@ -90,6 +90,9 @@ async def maybe_start_weixin(orch: "GatewayOrchestrator") -> "WeixinClient | Non
             dispatch=dispatcher.handle_message,
         )
         await transport.connect()  # starts the iLink long-poll loop
+        # The dispatcher's config applier pushes reloaded authorization fields at
+        # the transport; wired after construction, like ``client``.
+        dispatcher.transport = transport
         if orch.dashboard_state is not None:
             orch.dashboard_state.register_channel_transport(transport)
             # Surface live connection state to GET /api/weixin/config.

@@ -22,6 +22,24 @@ from kiro_crew.dashboard.handlers import mcp as mcp_mod
 from kiro_crew.slack.gateway import GatewayOrchestrator
 
 
+def _prime_refresh_window(monkeypatch: pytest.MonkeyPatch, hours: int) -> None:
+    """Put ``mcp_gateway.resolve_once_refresh_hours`` on a test-scoped watcher.
+
+    The prefetch loop reads the window from the live snapshot, so a test that
+    wants a specific cadence primes one. Scoped with ``monkeypatch`` so the
+    process singleton is restored and no poll task is ever armed.
+    """
+    from kiro_crew.config import live
+    from kiro_crew.config.live import ConfigWatch
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    watch = ConfigWatch()
+    monkeypatch.setattr(live, "_WATCH", watch)
+    cfg = KiroCrewConfig()
+    cfg.mcp_gateway.resolve_once_refresh_hours = hours
+    watch.prime(cfg)
+
+
 def _make_request(state: object, body: dict) -> web.Request:
     req = MagicMock(spec=web.Request)
     attach_body(req, body)
@@ -84,10 +102,14 @@ async def test_pre_resolve_pass_runs_on_a_clock_not_only_at_boot(monkeypatch) ->
 
     monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
     orch = SimpleNamespace(
-        _cfg=SimpleNamespace(mcp_gateway=SimpleNamespace(resolve_once_refresh_hours=24)),
         _prefetch_mcp_resolutions=fake_pass,
+        _mcp_resolve_refresh_secs=GatewayOrchestrator._mcp_resolve_refresh_secs,
         _MCP_RESOLVE_MIN_SLEEP_SECS=GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS,
     )
+    # The window is read from the live snapshot, not the boot copy, so a reload
+    # moves the cadence without a broker restart. No `_cfg` on the fake proves it.
+    _prime_refresh_window(monkeypatch, 24)
+    orch._mcp_resolve_refresh_secs = lambda: GatewayOrchestrator._mcp_resolve_refresh_secs(orch)
     with pytest.raises(_Stop):
         await GatewayOrchestrator._mcp_resolve_prefetch_loop(orch, {"A": "b"})  # type: ignore[arg-type]
     # More than once is the whole point; one pass is the bug being fixed.
@@ -114,10 +136,11 @@ async def test_a_zero_refresh_window_does_not_spin_the_pre_resolve_loop(monkeypa
 
     monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
     orch = SimpleNamespace(
-        _cfg=SimpleNamespace(mcp_gateway=SimpleNamespace(resolve_once_refresh_hours=0)),
         _prefetch_mcp_resolutions=fake_pass,
         _MCP_RESOLVE_MIN_SLEEP_SECS=GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS,
     )
+    _prime_refresh_window(monkeypatch, 0)
+    orch._mcp_resolve_refresh_secs = lambda: GatewayOrchestrator._mcp_resolve_refresh_secs(orch)
     with pytest.raises(_Stop):
         await GatewayOrchestrator._mcp_resolve_prefetch_loop(orch, {})  # type: ignore[arg-type]
     assert slept == [GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS]
@@ -132,9 +155,7 @@ async def test_enable_503_when_apply_unwired(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
     monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
     state = SimpleNamespace()  # no _mcp_gateway_apply attribute
-    resp = await mcp_mod.api_mcp_gateway_enable(
-        _make_request(state, {"enabled": True})
-    )
+    resp = await mcp_mod.api_mcp_gateway_enable(_make_request(state, {"enabled": True}))
     assert resp.status == 503
 
 
@@ -146,13 +167,9 @@ async def test_enable_invokes_wired_apply(monkeypatch: pytest.MonkeyPatch) -> No
     # Enabling is gated on platform support; pin it True so this wiring test is
     # deterministic on the Windows CI shard (where the broker is unsupported).
     monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
-    apply_cb = AsyncMock(
-        return_value={"enabled": True, "running": True, "ping_ok": True}
-    )
+    apply_cb = AsyncMock(return_value={"enabled": True, "running": True, "ping_ok": True})
     state = SimpleNamespace(_mcp_gateway_apply=apply_cb)
-    resp = await mcp_mod.api_mcp_gateway_enable(
-        _make_request(state, {"enabled": True})
-    )
+    resp = await mcp_mod.api_mcp_gateway_enable(_make_request(state, {"enabled": True}))
     assert resp.status == 200
     payload = json.loads(resp.body)
     assert payload["ok"] is True
@@ -168,9 +185,7 @@ async def test_enable_invokes_wired_apply(monkeypatch: pytest.MonkeyPatch) -> No
 async def test_enable_rejects_non_bool(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
     state = SimpleNamespace(_mcp_gateway_apply=AsyncMock())
-    resp = await mcp_mod.api_mcp_gateway_enable(
-        _make_request(state, {"enabled": "yes"})
-    )
+    resp = await mcp_mod.api_mcp_gateway_enable(_make_request(state, {"enabled": "yes"}))
     assert resp.status == 400
 
 
@@ -214,9 +229,7 @@ async def test_enable_rejected_on_unsupported_platform(
     monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: False)
     apply_cb = AsyncMock()
     state = SimpleNamespace(_mcp_gateway_apply=apply_cb)
-    resp = await mcp_mod.api_mcp_gateway_enable(
-        _make_request(state, {"enabled": True})
-    )
+    resp = await mcp_mod.api_mcp_gateway_enable(_make_request(state, {"enabled": True}))
     assert resp.status == 400
     assert "not supported" in json.loads(resp.body)["error"].lower()
     apply_cb.assert_not_awaited()
@@ -230,13 +243,9 @@ async def test_disable_allowed_on_unsupported_platform(
     stale enabled=true from a config restore can always be turned off."""
     monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
     monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: False)
-    apply_cb = AsyncMock(
-        return_value={"enabled": False, "running": False, "ping_ok": False}
-    )
+    apply_cb = AsyncMock(return_value={"enabled": False, "running": False, "ping_ok": False})
     state = SimpleNamespace(_mcp_gateway_apply=apply_cb)
-    resp = await mcp_mod.api_mcp_gateway_enable(
-        _make_request(state, {"enabled": False})
-    )
+    resp = await mcp_mod.api_mcp_gateway_enable(_make_request(state, {"enabled": False}))
     assert resp.status == 200
     apply_cb.assert_awaited_once_with(False)
 

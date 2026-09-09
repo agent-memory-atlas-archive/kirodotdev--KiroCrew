@@ -658,7 +658,7 @@ async def api_prompts(request: web.Request) -> web.Response:
     # "local" entries come from the requester's own checkout rather than the
     # process-wide KIROCREW_PROJECT_DIR — which on a source install names the
     # Kiro Crew tree itself and on a wheel install names nothing, so a prompt
-    # the user authored in their project would never be listed here.
+    # the user authored in their project was never listed here (#7345).
     state: DashboardState = request.app["state"]
     session_key = _read_session_key(request)
     project_dir = _prompt_local_project(request, state, session_key)
@@ -1030,13 +1030,13 @@ def _local_prompt_scan_root(project_dir: Path | None) -> tuple[Path, Path] | Non
 
     ``_resolve_prompt_dir`` answers WHETHER a root may be served; this answers
     which INODE that permission was granted for, and the two are different
-    questions. Re-resolving the caller-addressed root at every containment decision
-    downstream — ``_prompt_dir_entry``'s parent comparison and the ``within_root``
-    its description read is pinned inside — would let a root swapped for a link
-    after validation resolve into the link's destination on BOTH sides of every
-    later comparison, so every file under the directory the swap named would look
-    confined. Resolving once here and comparing against that fixed value refuses
-    them instead:
+    questions. Every containment decision downstream used to re-resolve the
+    caller-addressed root — ``_prompt_dir_entry``'s parent comparison and the
+    ``within_root`` its description read is pinned inside — so a root swapped for
+    a link after validation resolved into the link's destination on BOTH sides of
+    every later comparison, and every file under the directory the swap named
+    looked confined. Resolving once here and comparing against that fixed value
+    refuses them instead:
 
     * a swap landing BEFORE this resolve makes the pinned value escape the
       project, which the containment gate below catches;
@@ -1660,8 +1660,8 @@ async def _api_user_prompt_detail(request: web.Request, name: str, scope: str) -
         # name: it opens with O_NOFOLLOW and validates the inode it actually
         # read (st_nlink > 1, non-regular, or a real path outside the root is
         # refused), so a sensitive file hardlinked into the prompt dir cannot
-        # be served through this endpoint. It also enforces the size cap, so no
-        # separate stat() is needed for it.
+        # be served through this endpoint. It also enforces the size cap, so
+        # the separate stat() that used to do that is gone.
         # The stat above is a separate syscall from the gate's own open, so a
         # prompt that grows past the cap in between would make the gate raise.
         # FileTooLargeError is not an OSError, so catching it here is what keeps
@@ -1797,7 +1797,7 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
 
     # Resolve the local project on the loop and close over it in _apply_locked so
     # a "local" update/delete addresses the requester's own checkout, through the
-    # same _prompt_local_project seam the scoped read uses to seed the editor —
+    # same _prompt_local_project seam the scoped read used to seed the editor —
     # the write lands in the file the read served, not in another project's copy
     # of the same stem.
     state: DashboardState = request.app["state"]
@@ -2015,12 +2015,12 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
 # ``~/.kiro/skills`` and ``kiro-workspace/`` against ``<project>/.kiro/skills`` —
 # while the WRITE handlers (skills.create/update/delete_skill) join the key onto
 # a core root. That means the same key names a DIFFERENT file on write than the
-# reader was shown. These prefixes are documented read-only in
+# reader was shown (issue #8244). These prefixes are documented read-only in
 # api_skills, so the write path refuses them rather than silently writing the
 # core-root copy. The literals must match the prefixes _resolve_skill_root and
 # _skill_key_roots use so read and write agree on territory. The ``package/``
-# prefix is intentionally NOT listed here — that territory is handled separately;
-# this guard covers the untracked kiro-user/ and kiro-workspace/ siblings.
+# prefix is intentionally NOT listed here — that territory is handled separately
+# by PR #7105; this guard is its untracked kiro-user/ and kiro-workspace/ sibling.
 READONLY_SKILL_KEY_PREFIXES = ("kiro-user/", "kiro-workspace/")
 
 
@@ -2199,8 +2199,8 @@ async def api_skills(request: web.Request) -> web.Response:
     skills = _get_skills(state)
     # Resolve the active project dir (cheap in-memory scan of slots) on the loop.
     # Scoped to the requesting chat slot: without the key, two chats on
-    # different projects fall to None and kiro-workspace skills silently
-    # vanish from the listing.
+    # different projects made this fall to None and kiro-workspace skills
+    # silently vanished from the listing (#2457).
     # Strict: must match what SkillsLoader will resolve for THIS chat, or the
     # catalog advertises a skill whose $token expands to nothing.
     project_dir: Path | None = requesting_slot_project(state, session_key)
@@ -2992,10 +2992,10 @@ async def api_skill_detail(request: web.Request) -> web.Response:
     # Refuse mutating verbs on the open-standard read-only territories. Their
     # READ path resolves per-session / per-machine (project or ~/.kiro/skills),
     # but update_skill/delete_skill would join the key onto a core root — so the
-    # write lands in a different file than the reader was shown.
+    # write lands in a different file than the reader was shown (issue #8244).
     # Guarding here, before the PUT/DELETE branches and any session-key work,
     # ensures the mutating verb never reaches skills.*; GET is untouched and keeps
-    # resolving via _resolve_skill_root. The package/ territory has the same shape.
+    # resolving via _resolve_skill_root. Same shape #7105 applies to package/.
     if request.method in ("PUT", "DELETE") and name.startswith(READONLY_SKILL_KEY_PREFIXES):
         return web.json_response(
             {
@@ -3148,7 +3148,7 @@ async def api_skills_create(request: web.Request) -> web.Response:
     # 'Kiro-Workspace/Foo' sanitises to 'kiro-workspace/foo'). create_skill joins
     # the key onto a core root, but the reader is served kiro-user/ and
     # kiro-workspace/ skills from a session/machine-scoped location — so a create
-    # here would write to a different file than the reader is shown.
+    # here would write to a different file than the reader is shown (issue #8244).
     if safe_name.startswith(READONLY_SKILL_KEY_PREFIXES):
         return web.json_response(
             {

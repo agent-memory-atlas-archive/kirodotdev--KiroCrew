@@ -5479,7 +5479,6 @@
       "this_app_provides_agents_and_skills_but_no_visua": "Esta app proporciona agentes y habilidades, pero no tiene interfaz visual.\n            Usa sus agentes desde el chat."
     },
     "approvalCard": {
-      "actions_group": "Acciones de aprobación",
       "approval_no_longer_pending": "Esta aprobación expiró o ya fue decidida — el agente ya no la está esperando.",
       "approve": "Aprobar",
       "approved": "Aprobado",
@@ -5801,8 +5800,6 @@
       "skill": "Skill",
       "slash_commands": "Comandos de barra",
       "steer": "Redirigir",
-      "alt_action_hint_queues": "{{chord}} encola este mensaje en su lugar",
-      "alt_action_hint_steers": "{{chord}} dirige con este mensaje en su lugar",
       "steer_act_on_this_right_away_desc": "Actuar sobre esto de inmediato",
       "steer_act_on_this_as_soon_as_possible_enter": "Redirigir — actuar sobre esto cuanto antes (Enter)",
       "stop_generation": "Detener la generación",
@@ -5840,8 +5837,7 @@
       "session_control_needs_attention": "Requiere atención",
       "session_control_ready": "Listo",
       "session_control_chip_label": "{{label}} — {{detail}}",
-      "agent_inherited_default": "Esta sesión sigue el agente predeterminado ({{name}}). No tiene un agente propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno.",
-      "model_inherited_default": "Esta sesión usa el modelo predeterminado ({{name}}). No tiene un modelo propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno."
+      "agent_inherited_default": "Esta sesión sigue el agente predeterminado ({{name}}). No tiene un agente propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno."
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -5853,8 +5849,6 @@
       "history_load_failed": "No se pudieron cargar los mensajes de esta sesión.",
       "model_list": "Lista de modelos",
       "retry": "Reintentar",
-      "stop_failed": "No se pudo detener este turno ({{error}}). Pulsa Detener de nuevo.",
-      "stop_failed_network": "No se pudo contactar con el servidor para detener este turno. Pulsa Detener de nuevo.",
       "session_ready_type_a_message_to_start": "Sesión lista. Escribe un mensaje para empezar.",
       "split_down": "Dividir abajo",
       "split_right": "Dividir a la derecha",
@@ -6441,11 +6435,7 @@
       "message": "Mensaje",
       "message_is_required": "El mensaje es obligatorio",
       "message_task": "Mensaje / tarea",
-      "minimal_context": "Contexto mínimo",
-      "minimal_context_description": "Omite la memoria, las lecciones, las directrices, las habilidades y el historial de sesiones anteriores en cada ejecución, para que un trabajo rutinario deje de pagar por un contexto que nunca lee. Déjalo desactivado si el trabajo necesita tu contexto guardado o ejecuta una habilidad.",
       "minutes": "minutos",
-      "mode_advice_minimal_context": "Este trabajo necesita el agente, pero parece que no necesita tu contexto guardado. El contexto mínimo mantiene el agente y descarta el resto.",
-      "mode_advice_script": "Este trabajo parece una comprobación mecánica que no requiere ningún razonamiento. La forma más económica es un trabajo de script, que no consume ningún turno del agente; pídelo en el chat para crearlo. El contexto mínimo es la siguiente mejor opción aquí.",
       "model": "Modelo",
       "model_inherit": "Modelo: heredado",
       "name": "Nombre",
@@ -7318,11 +7308,9 @@
       "will_be_removed_on_save": "Se eliminará al guardar."
     },
     "selectionToolbar": {
-      "ask": "Preguntar sobre esto",
-      "ask_hint": "Abre el Chat lateral con la selección citada: no se envía nada hasta que lo envíes, y el chat principal no se toca",
+      "ask": "Preguntar en Chat lateral",
       "copy": "Copiar",
-      "quote": "Citar",
-      "quote_hint": "Cita la selección en el redactor de esta conversación: tu respuesta va al chat principal"
+      "quote": "Citar"
     },
     "sendToInstanceSubmenu": {
       "failed": "Falló",
@@ -7424,8 +7412,6 @@
       "show_or_focus_the_kiro_crew_window": "Mostrar o enfocar la ventana de {{productName}}",
       "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Usar Ctrl (no Option) para los chats 1 a 9",
-      "browser_reserved_hint": "En una pestaña del navegador, el navegador captura estos atajos antes de que la página los reciba — las alternativas funcionan en todas partes; la aplicación de escritorio admite ambas.",
-      "desktop_app_only": "Solo aplicación de escritorio",
       "panel_toggles": "Alternar paneles",
       "unset": "Sin definir"
     },
@@ -8638,11 +8624,6 @@
       "name": "Nombre",
       "no_apps_available": "No hay apps disponibles",
       "no_apps_installed_yet": "Aún no hay apps instaladas",
-      "no_enabled_apps": "No hay apps activadas",
-      "show_disabled_one": "Mostrar {{count}} app desactivada",
-      "show_disabled_many": "Mostrar {{count}} apps desactivadas",
-      "show_disabled_other": "Mostrar {{count}} apps desactivadas",
-      "show_enabled_only": "Mostrar solo activadas",
       "no_matching_apps": "No hay apps que coincidan",
       "not_installed_from_apps_your_local_source_code_w": "No se instaló desde Apps — tu código fuente local no se verá afectado.",
       "removing": "Eliminando…",
@@ -9345,14 +9326,7 @@
       },
       "errorCard": {
         "continue": "Continuar",
-        "continue_hint": "Reanudar donde se detuvo. El trabajo ya escrito en disco no se altera.",
-        "default_model": "Cambiar el modelo predeterminado",
-        "default_model_hint": "Abre Configuración → Chat → Modelo predeterminado. Las sesiones nuevas empiezan con este valor.",
-        "pick_model": "Elegir un modelo para esta sesión",
-        "pick_model_hint": "Abre el selector de modelos, elige uno de los que tu cuenta puede usar y vuelve a enviar tu mensaje.",
-        "both_hint": "Haz ambas cosas: “{{pick}}” arregla esta sesión, “{{default}}” evita que las sesiones nuevas empiecen con el mismo modelo si está configurado como predeterminado. Después vuelve a enviar tu mensaje.",
-        "elsewhere_hint": "El selector de modelos y Configuración → Chat están en la ventana de chat principal. Ábrela para elegir un modelo y cambiar el predeterminado.",
-        "elsewhere_settings_hint": "Configuración → Chat está en la ventana de chat principal. Ábrela para cambiar el modelo predeterminado."
+        "continue_hint": "Reanudar donde se detuvo. El trabajo ya escrito en disco no se altera."
       },
       "folderPanel": {
         "clear_search": "Borrar búsqueda",
@@ -9485,7 +9459,6 @@
         "ask_a_side_question_2": "Hacer una pregunta paralela…",
         "ask_a_side_question_main_agent_keeps_working": "Haz una pregunta paralela sin interrumpir la ejecución activa. Nada de esto se guarda en el chat.",
         "context_from": "Contexto de",
-        "off_record_marker": "Chat lateral · no se guarda en la conversación",
         "context_only_tools_unavailable": "Solo contexto · Aquí no están disponibles las herramientas ni los MCP. Usa el chat principal para realizar acciones.",
         "question_too_long": "Pregunta demasiado larga — redúcela a menos de unos {{max}} caracteres (la tuya: {{current}})",
         "queue_cancel_failed": "No se pudo cancelar esa pregunta en cola",
@@ -9842,7 +9815,6 @@
       "could_not_regenerate": "No se pudo regenerar",
       "could_not_set_the_agent_default_model": "No se pudo definir el modelo predeterminado del agente",
       "could_not_switch_variant": "No se pudo cambiar de versión",
-      "side_chat_pane_gone": "No se pudo abrir un Chat lateral para ese panel: su sesión ya no está disponible: {{error}}",
       "could_not_start_a_new_session": "No se pudo iniciar una sesión nueva",
       "could_not_start_session_message_restored": "No se pudo iniciar una sesión nueva: {{error}}. Se restauró tu mensaje — vuelve a enviarlo para reintentar.",
       "enter_split_view": "Entrar en vista dividida",
@@ -10711,7 +10683,6 @@
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Un identificador único para este espacio de trabajo. Los agentes hacen referencia a los espacios de trabajo por su nombre.",
-      "add_crew_member": "Añadir miembro del equipo",
       "additional_stores_coming_with_memory_v2": "Por ahora solo está disponible el almacén predeterminado; pronto habrá más almacenes de memoria.",
       "agent_template_is_required": "La plantilla de agente es obligatoria",
       "agents": "Agentes",
@@ -10727,7 +10698,6 @@
       "create_a_crew_to_give_an_agent_its_own_workspace": "Un agente es un asistente con sus propios archivos y su propia memoria. Crea uno para cada tipo de trabajo para que nunca mezclen lo que han aprendido.",
       "create_a_new_crew": "Crear un agente nuevo",
       "create_agent": "Crear agente",
-      "create_member": "Crear miembro",
       "create_workspace": "Crear espacio de trabajo",
       "create_your_first_crew": "Crea tu primer agente",
       "creating": "Creando…",
@@ -10754,7 +10724,6 @@
       "effort_resolves_to": "Pensando con {{effort}}",
       "effort_unavailable_on_this_model": "{{model}} no acepta un esfuerzo de razonamiento, así que no hay nada que ajustar.",
       "failed_to_create_agent": "No se pudo crear el agente",
-      "failed_to_create_member": "No se pudo crear el miembro",
       "failed_to_create_workspace": "No se pudo crear el espacio de trabajo",
       "failed_to_delete_agent": "No se pudo eliminar el agente",
       "failed_to_update_agent": "No se pudo actualizar el agente",
@@ -10766,9 +10735,7 @@
       "isolated_memory_and_files_for_this_crew": "La carpeta que este agente lee y escribe. Si la cambias, los chats nuevos empiezan de cero en la carpeta nueva; la anterior se conserva.",
       "keep_editing": "Seguir editando",
       "manage_agent_workspace_memory_store_bindings": "Asistentes distintos para trabajos distintos. Cada agente guarda sus propios archivos.",
-      "member_already_exists": "Ya existe un miembro llamado '{{name}}'. Elige otro nombre.",
       "memory_store": "Almacén de memoria",
-      "memory_store_hint_member": "A qué almacén de memoria está vinculado este miembro. La vinculación se registra, pero todavía no le da al miembro una memoria propia.",
       "model": "Modelo",
       "name": "Nombre",
       "name_is_required": "El nombre es obligatorio",
@@ -10787,19 +10754,14 @@
       "resolves_to": "Usa {{model}}",
       "routing": "Routing",
       "runtime_binding": "Qué usa este agente",
-      "runtime_binding_member": "Qué usa este miembro",
       "save_changes": "Guardar los cambios",
       "select_an_agent_template": "Selecciona una plantilla de agente…",
-      "session_color_hint_member": "Las sesiones que inicia este miembro usan este color salvo que la sesión tenga uno propio. Déjalo vacío para no asignar color al miembro.",
       "shared_lower": "en común",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Subdirectorio dentro de ~/.kiro/crew donde este espacio de trabajo guarda sus datos (historial de chat, lecciones, proyectos). Cada espacio de trabajo tiene su propio directorio aislado.",
-      "template_hint_member": "La configuración inicial que usa este miembro: sus herramientas, conexiones e instrucciones.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "La configuración inicial que usa este agente — sus herramientas, sus conexiones y sus instrucciones.",
       "triggers": "Triggers",
       "triggers_hint": "Cuándo enrutar a este agente: guía de texto libre que el orquestador lee para seleccionarlo. Déjalo vacío para excluir este agente de la selección automática.",
-      "triggers_hint_member": "Cuándo pasar trabajo a este miembro: guía de texto libre que {{productName}} lee para decidir. Déjalo vacío para excluir a este miembro de la selección automática.",
       "triggers_info": "Cuando tu mensaje coincide claramente con estos triggers, el orquestador selecciona este agente (mediante la herramienta select_crew) y ejecuta la tarea con el espacio de trabajo, la memoria y el modelo del agente. Los agentes sin triggers nunca se seleccionan automáticamente.",
-      "triggers_info_member": "Cuando tu mensaje coincide claramente con estos disparadores, {{productName}} selecciona a este miembro y ejecuta la tarea con su espacio de trabajo, memoria y modelo. Los miembros sin disparadores nunca se seleccionan automáticamente.",
       "triggers_placeholder": "e.g. incidents, prod outages, pager escalations",
       "used_for_all_new_chats": "Se usa en todos los chats nuevos",
       "view_cards": "Tarjetas",
@@ -10809,7 +10771,6 @@
       "which_store_its_lessons_and_history_are_written": "A qué almacén de memoria está vinculado este agente. El vínculo se guarda, pero todavía no le da al agente una memoria propia.",
       "workspace": "espacio de trabajo",
       "workspace_2": "Espacio de trabajo",
-      "workspace_hint_member": "La carpeta que este miembro lee y escribe. Si la cambias, los chats nuevos empiezan de cero en la carpeta nueva; la anterior se conserva.",
       "workspace_name_is_required": "El nombre del espacio de trabajo es obligatorio",
       "yes_delete_it": "Sí, eliminarlo",
       "session_color": "Color de sesión",
@@ -10820,9 +10781,7 @@
       "discard_unsaved_body": "Este equipo tiene ediciones que nunca se guardaron. Cerrar ahora las descartará.",
       "discard_confirm": "Descartar cambios",
       "discard_also_crew_edits": "Las demás ediciones sin guardar de este equipo se descartarán junto con ella.",
-      "editor_options_load_failed": "No se pudieron cargar las opciones de espacio de trabajo, plantilla y almacén de memoria del editor de crew.",
-      "template_edit_later_note": "Elige el punto de partida más parecido: puedes cambiar la plantilla de este agente en cualquier momento después de crearlo.",
-      "template_edit_later_note_member": "Elige el punto de partida más cercano: podrás cambiar la plantilla de este miembro en cualquier momento después de crearlo."
+      "editor_options_load_failed": "No se pudieron cargar las opciones de espacio de trabajo, plantilla y almacén de memoria del editor de crew."
     },
     "knowledge": {
       "detailView": {
@@ -11298,9 +11257,11 @@
         "workflow_description": "Descripción"
       },
       "agentCfgTab": {
+        "after_saving_use": "Después de guardar, usa",
         "agent_config_file": "Configuración del agente ({{file}})",
         "agent_config_json": "JSON de configuración del agente",
         "agent_config_tip": "La definición del agente {{process}}: prompt, herramientas, servidores MCP y ajustes del modelo. Esta es la configuración de la capa de ejecución, independiente de los enlaces operativos de {{productName}}.",
+        "apply_restart_sessions_at_the_top_to_apply_chang": "Aplicar y reiniciar sesiones, arriba, para aplicar los cambios.",
         "invalid_json": "JSON no válido",
         "loading": "Cargando…",
         "save": "Guardar",
@@ -12425,18 +12386,6 @@
       "empty_failed_next_step": "Vuelve a intentar Eliminar permanentemente. Los detalles están en el registro del gateway.",
       "kept_identity_changed": "Un lote cambió en el disco después de seleccionarlo, así que se conservó."
     },
-    "sessionsPage": {
-      "page_title": "Todas las sesiones",
-      "search_placeholder": "Buscar sesiones…",
-      "new_session": "Nueva sesión",
-      "filter_all": "Todas",
-      "filter_unread": "No leídas",
-      "group_today": "Hoy",
-      "group_yesterday": "Ayer",
-      "group_earlier": "Anteriores",
-      "empty_title": "No hay sesiones",
-      "empty_subtitle": "Crea una para empezar."
-    },
     "sessionsTab": {
       "agent": "Agente",
       "channel": "Canal",
@@ -12876,9 +12825,6 @@
         "session_summaries": "Resúmenes de sesión",
         "sessions": "Sesiones",
         "sets_how_deep_explanations_go_plain_language_vs": "Define la profundidad de las explicaciones — lenguaje sencillo frente a detalle técnico completo",
-        "busy_alt_action_desc": "Dirigir actúa sobre el texto de inmediato; Encolar lo ejecuta cuando termine el trabajo actual. {{chord}} envía un solo mensaje con la otra acción. Las sesiones donde elegiste un modo en el botón de enviar conservan su elección.",
-        "busy_alt_action_desc_no_chord": "Dirigir actúa sobre el texto de inmediato; Encolar lo ejecuta cuando termine el trabajo actual. El atajo para cambiar una sola vez solo está disponible cuando Enter envía; usa el menú del botón de enviar en su lugar. Las sesiones donde elegiste un modo en el botón de enviar conservan su elección.",
-        "what_enter_does_while_the_agent_is_working": "Qué hace Enter mientras el agente trabaja",
         "shift_enter_for_newline": "Shift+Enter para nueva línea",
         "show_a_confirmation_dialog_when_closing_a_sessio": "Mostrar un diálogo de confirmación al cerrar una sesión",
         "show_a_favicon_and_page_title_instead_of_the_raw": "Muestra el favicon y el título de la página en lugar de la URL en bruto. A partir de ahí, este equipo descarga cada enlace que genera el modelo, así que cada sitio enlazado verá una petición desde tu dirección IP.",
@@ -13517,7 +13463,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "Pulsa las teclas…",
         "search": "Buscar",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Activa o desactiva los atajos de teclado de forma global — {{chord}} (esta referencia) siempre funciona",
+        "turn_keyboard_shortcuts_on_or_off_globally": "Activa o desactiva los atajos de teclado de forma global — {{mod}} + K (esta referencia) siempre funciona",
         "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9",
         "clear_shortcut": "Borrar",
         "panel_toggles": "Alternar paneles",
@@ -14441,11 +14387,10 @@
     "membersPage": {
       "agent_template": "Plantilla de agente",
       "configuration": "Configuración",
-      "crew_summary": "Resumen del miembro",
       "details": "Detalles",
       "edit_in_crew_manager": "Editar en el gestor de equipos",
       "edit_member": "Editar miembro",
-      "empty_roster": "Aún no hay miembros.",
+      "empty_roster": "Aún no hay miembros. Crea un equipo en el gestor de equipos para verlo aquí.",
       "inherited": "Heredado",
       "member_count_many": "{{count}} miembros",
       "member_count_one": "{{count}} miembro",
@@ -14505,6 +14450,7 @@
       "patrol_error": "No se pudo cargar el estado de patrulla de este miembro.",
       "patrol_error_roster": "No se pudo cargar el estado de patrulla de la lista.",
       "patrol_badge": "En patrulla · {{cycle}}",
+      "patrol_badge_stopped": "Patrulla detenida",
       "patrol_next_in": "Dentro de {{time}}",
       "wake_patrol_every": "Cada {{every}}",
       "filter_starred": "Destacados",

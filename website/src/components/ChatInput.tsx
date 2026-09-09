@@ -320,20 +320,6 @@ function measuredContentHeight(el: HTMLTextAreaElement): number {
   return twin.scrollHeight
 }
 
-/** The inputs that produced each textarea's current auto-sized height, and the
- *  height they produced. Both call sites below run for every keystroke — the
- *  input handler, then the auto-size effect once the new `value` commits — so
- *  without this the second call repeats a measurement whose every input is
- *  unchanged. A WeakMap rather than an expando keeps the entry's lifetime tied
- *  to the element's.
- *
- *  Only the MEASUREMENT is elided, never the write: `next !== prev` below still
- *  runs on a memo hit, so a height this function did not write is still
- *  corrected. That is what makes the drag handle's double-click reset work
- *  without a measurement — it clears the inline height while the value stays
- *  put, so the cached height is both still correct and no longer applied. */
-const lastMeasured = new WeakMap<HTMLTextAreaElement, { inputs: string; height: string }>()
-
 /** Auto-size textarea to fit content (only when not manually sized).
  *
  *  The measurement happens on an off-screen twin (see `measuredContentHeight`),
@@ -354,32 +340,11 @@ function applyHeight(
   prefillHint?: boolean,
   parked?: boolean,
 ) {
-  if (parked) {
-    // Clipped out of layout — there is nothing valid to measure. Drop the memo
-    // too: unparking re-runs the effect at an UNCHANGED value, so a cached
-    // height would be re-applied without measuring, and font metrics may have
-    // changed across the round-trip. One measurement per unpark is not a cost
-    // worth caching against.
-    lastMeasured.delete(el)
-    return
-  }
+  if (parked) return // clipped out of layout — there is nothing valid to measure
   if (manualHeight !== null) return // manual height — wrapper controls size
   const cap = prefillHint ? INPUT_PREFILL_MAX_H : INPUT_DEFAULT_MAX_H
   const prev = el.style.height
-  // Everything the twin measures against: its width and box come from the live
-  // element, and an EMPTY value is measured as the placeholder (see
-  // `measuredContentHeight`), so a placeholder swap changes the height too.
-  // `value` last — it is user text and may itself contain the delimiter, so no
-  // content can forge a boundary against the fields in front of it.
-  const inputs = [el.clientWidth, cap, el.placeholder, el.value].join('\u0000')
-  const memo = lastMeasured.get(el)
-  let next: string
-  if (memo !== undefined && memo.inputs === inputs) {
-    next = memo.height
-  } else {
-    next = Math.max(INPUT_MIN_H, Math.min(measuredContentHeight(el), cap)) + 'px'
-    lastMeasured.set(el, { inputs, height: next })
-  }
+  const next = Math.max(INPUT_MIN_H, Math.min(measuredContentHeight(el), cap)) + 'px'
   if (next !== prev) {
     el.style.height = next
     // Attribute the transcript's resulting viewport change to the composer, so the
@@ -550,13 +515,6 @@ interface ChatInputProps {
   agentIsInheritedDefault?: boolean
   agentSource?: string
   modelName?: string
-  /**
-   * True when `modelName` is the model an INHERITING slot actually runs on (the
-   * backend's served default), not a pin. The chip then carries the same
-   * ` · default` marker and explanatory tooltip the agent chip uses for its
-   * inherited case, so a served model does not read as something the user
-   * chose. A pinned chip has nothing to explain. */
-  modelIsInheritedDefault?: boolean
   onAgentClick?: (rect: DOMRect) => void
   onModelClick?: (rect: DOMRect) => void
   onProjectClick?: (rect: DOMRect) => void
@@ -961,7 +919,6 @@ function ChatInput({
   agentName,
   agentLabel,
   agentIsInheritedDefault,
-  modelIsInheritedDefault,
   agentSource,
   modelName,
   onAgentClick,
@@ -1539,18 +1496,8 @@ function ChatInput({
   // not stopping, on a steer-capable slot, and the user hasn't switched the
   // split button to Queue. Everywhere else the composer falls back to onSend
   // (normal send, or server-side queue while busy).
-  const busyChoiceAvailable = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer
-  const steerActive = busyChoiceAvailable && busySendMode === 'steer'
-  /**
-   * Fire the composer. `alternate === true` performs the OTHER busy action for
-   * this one send — queue when the split button says steer, steer when it says
-   * queue — the ⌘↩ / Ctrl+Enter gesture Claude Code and Codex users expect
-   * (#4608). Strictly `=== true`: this callback is also wired straight to
-   * `onClick`, which hands it a MouseEvent, and an event must read as "default",
-   * never as "flip". Outside the busy split (idle, stopping, no steer path) the
-   * flag is meaningless and a normal send happens.
-   */
-  const fireComposer = useCallback((alternate?: unknown) => {
+  const steerActive = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer && busySendMode === 'steer'
+  const fireComposer = useCallback(() => {
     if (disabled) return
     // A batch dictation is still transcribing: block the send so the pending
     // transcript isn't left behind. Otherwise Enter/Send fires the current draft
@@ -1559,11 +1506,9 @@ function ChatInput({
     // sends the complete text. Covers both Enter (handleKeyDown) and the Send
     // button, since both route through here.
     if (voiceTranscribing) return
-    const flip = alternate === true && busyChoiceAvailable
-    const steerNow = flip ? !steerActive : steerActive
-    if (steerNow && onSteer) onSteer()
+    if (steerActive && onSteer) onSteer()
     else onSend()
-  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerActive, onSteer, onSend])
+  }, [disabled, voiceTranscribing, steerActive, onSteer, onSend])
   const sendFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
     if (!disabled) onFollowUpSend?.(text, sourceKeyAtClick)
   }, [disabled, onFollowUpSend])
@@ -2769,15 +2714,7 @@ function ChatInput({
       // steer (default) acts on the text now; queue defers it.
       if (!ime.claimEnter(e)) return
       if (optimizingRef.current) return
-      // ⌘↩ / Ctrl+Enter while the busy split is showing performs the OTHER
-      // action for this send (steer ↔ queue) — the Claude Code / Codex gesture.
-      // Only in the `enter` send mode: in `ctrl-enter` the modified Enter IS the
-      // send key, and in `enter-ctrl-newline` the user gave it to newline (that
-      // branch returned above). Idle, the modified Enter is a plain send, as it
-      // always was. The flip lands in `fireComposer`, which ignores it whenever
-      // the split is not available, so this cannot steer a non-steerable slot.
-      const alternate = sendOnEnter === 'enter' && (e.metaKey || e.ctrlKey)
-      if (connected) fireComposer(alternate)
+      if (connected) fireComposer()
       return
     }
     // Prompt history: ↑/↓ cycles through prior user messages.
@@ -4372,16 +4309,12 @@ function ChatInput({
                 )
               ) : stopState === 'soft_pending' ? (
                 <div className="flex items-center gap-1.5">
-                  {/* Pulse floor 0.8 with a faint danger fill: at 0.6 on a
-                      transparent background the light-theme button bottomed
-                      out near white-on-white mid-pulse, and this is the only
-                      force-stop path while a cancel hangs (#9548 UX review). */}
                   <motion.button
-                    className="w-8 h-8 rounded-lg bg-danger/10 border-none text-danger hover:bg-danger/20 flex items-center justify-center cursor-pointer transition-all"
+                    className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all"
                     onClick={onStop}
                     title={i18nT('components.chatInput.force_kill_discards_in_progress_work_and_queued')}
                     aria-label={i18nT('components.chatInput.force_kill_session_discards_in_progress_work_and')}
-                    animate={{ opacity: [0.8, 1, 0.8] }}
+                    animate={{ opacity: [0.6, 1, 0.6] }}
                     transition={{ duration: 1.2, repeat: Infinity }}
                     data-testid="stop-button-pulsing"
                   >
@@ -4410,7 +4343,6 @@ function ChatInput({
                     onModeChange={setBusySendMode}
                     onFire={fireComposer}
                     disabled={disabled}
-                    altChordAvailable={sendOnEnter === 'enter'}
                   />
                 ) : (
                   <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')}>
@@ -4430,7 +4362,6 @@ function ChatInput({
                   onModeChange={setBusySendMode}
                   onFire={fireComposer}
                   disabled
-                  altChordAvailable={sendOnEnter === 'enter'}
                 />
               )
             ) : (<>
@@ -4855,34 +4786,9 @@ function ChatInput({
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
               onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              data-testid="composer-model-chip"
-              // Inherited default: mirror the agent chip -- ` · default` marker on
-              // the label, and the explanation on hover (title) AND keyboard
-              // focus / screen readers (aria-label), because a bare served id
-              // reads exactly like a pin. A pinned chip keeps the plain hint.
-              title={isRunning
-                ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
-                : modelIsInheritedDefault
-                  ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
-                  : i18nT('components.chatInput.model_2', { name: modelName })}
-              aria-label={isRunning
-                ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
-                : modelIsInheritedDefault
-                  ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
-                  : i18nT('components.chatInput.model_2', { name: modelName })}
+              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_model') : i18nT('components.chatInput.model_2', { name: modelName })}
             >
-              <span className="truncate max-w-[180px]">
-                {modelName}
-              </span>
-              {modelIsInheritedDefault && (
-                // Outside the truncating span: a long provider-prefixed id must
-                // ellipsize its own tail, never the marker that tells a served
-                // default apart from a pin.
-                <>
-                  <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
-                  <span className="opacity-60 shrink-0">{i18nT('components.agentSelector.default')}</span>
-                </>
-              )}
+              <span className="truncate max-w-[180px]">{modelName}</span>
               {onReasoningEffortClick && !shelfCompact && (
                 <>
                   <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>

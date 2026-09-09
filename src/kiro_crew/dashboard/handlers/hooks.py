@@ -50,16 +50,16 @@ def _get_hook_store(state: DashboardState):
 def _store_failure_guard(handler):
     """Map a webhook/script-hook store failure to 503 instead of a 500.
 
-    Every store this module touches can REFUSE rather than silently report an
+    Every store this module touches can now REFUSE rather than silently report an
     empty file: reads raise ``WebhookStoreUnreadable`` when the file exists but
     cannot be parsed, and the shared ``hooks.json`` write refuses rather than
     erasing the webhook contexts stored alongside the script hooks. Writes can also
     fail outright on a full or read-only disk (``OSError``).
 
-    One wrapper on every store-touching handler closes the class rather than
-    catching those refusals a handler at a time: a handler that already returns a
-    more specific 503 still does (its own guard runs first), and anything that
-    would otherwise escape as an unhandled 500 — which
+    Those refusals were being caught one handler at a time, a round of review each.
+    Applying one wrapper to every store-touching handler closes the class: a
+    handler that already returns a more specific 503 still does (its own guard runs
+    first), and anything that would otherwise escape as an unhandled 500 — which
     reads to the operator as a gateway fault rather than "your store needs
     repair" — becomes the shared, machine-readable response.
     """
@@ -103,11 +103,11 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
     # ``kirocrew.json`` lives in the user-writable, tool-shared agents dir, so
     # the read goes through the hardened agents-dir reader (size cap, symlink
     # and sensitive-target screens, explicit UTF-8, non-object rejection).
-    # ``None`` covers every unreadable case, including the ones an
-    # ``except (OSError, JSONDecodeError)`` misses (e.g. non-UTF-8 bytes, which
-    # would escape as an unhandled 500), and degrades one way: no user hooks.
+    # ``None`` covers every case the old ``except (OSError, JSONDecodeError)``
+    # caught — plus the ones it missed, e.g. non-UTF-8 bytes, which previously
+    # escaped as an unhandled 500 — and degrades the same way: no user hooks.
     # Off-loop: the reader stats + reads up to the size cap, and this handler
-    # runs on the gateway event loop (no-blocking-call rule).
+    # runs on the gateway event loop (review-adopted, no-blocking-call rule).
     # The labels are passed explicitly: they name the SEL denial event's
     # operation and interface channel, and without them a refusal here is
     # recorded under the reader's ``list_agents`` defaults -- attributing a
@@ -207,7 +207,7 @@ async def api_hooks_create(request: web.Request) -> web.Response:
     except _StoreUnavailable:
         return _store_unavailable_response()
     except ValueError as exc:
-        # store.create enforces the same invariants as store.update via the
+        # store.create now enforces the same invariants as store.update via the
         # shared validator, so it can raise ValueError. The HOOK_CREATE_SCHEMA
         # check above normally rejects bad input first, but catch it here too so
         # any schema/validator drift surfaces as a 400 (like the update handler)
@@ -615,7 +615,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     try:
         switch_on = await asyncio.to_thread(webhooks.token_store().is_switch_on)
     except webhooks.WebhookStoreUnreadable:
-        # The store exists but cannot be parsed. Reads fail closed rather
+        # The store exists but cannot be parsed. Reads now fail closed rather
         # than reporting an empty store, so answer with the same 503 shape an
         # operator-disabled endpoint uses instead of letting the exception
         # become an unhandled 500. Deliberately not recorded to the run store:
@@ -1294,8 +1294,8 @@ def _public_runs(runs: list[dict]) -> list[dict]:
     rendered on the dashboard, turning the run list into a disclosure surface.
 
     The record-time pass over ``name`` is not sufficient on its own: it runs only
-    the exfil-URL pass, covers just that one field, and cannot clean a row
-    already on disk. Redacting on egress applies both
+    the exfil-URL pass, covers just that one field, and cannot retroactively
+    clean rows written before this existed. Redacting on egress applies both
     passes to every field, on every read, which is the same discipline
     ``_list_hook_contexts`` already follows for the context list.
     """

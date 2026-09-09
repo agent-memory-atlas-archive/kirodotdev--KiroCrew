@@ -81,13 +81,6 @@
       "linux"
     ]
   },
-  "platform": {
-    "os": [
-      "macos",
-      "linux",
-      "windows"
-    ]
-  },
   "iconUrl": "/app-assets/pptx-maker/icon.svg",
   "heroImage": "/app-assets/pptx-maker/hero-light.svg",
   "heroImageDark": "/app-assets/pptx-maker/hero-dark.svg",

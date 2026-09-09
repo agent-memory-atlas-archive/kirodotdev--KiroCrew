@@ -1,10 +1,11 @@
 """Publish (and unpublish) the dashboard on this machine's tailnet.
 
-The write half of tailnet access. The config switch only makes the gateway
-*trust* the tailnet origin; putting the dashboard ON the tailnet is a separate
-``tailscale serve`` call, and this module is what runs it. Without it the switch
-is a working-looking control that changes nothing observable, and reaching the
-dashboard needs a second command the UI never mentions.
+The write half of tailnet access. Until this module existed, Kiro Crew never ran
+``tailscale serve`` anywhere: the config switch made the gateway *trust* the
+tailnet origin, but actually putting the dashboard on the tailnet was a command
+the operator had to know and type. So the promised one-command experience was
+really two commands, one of them undocumented in the UI, and skipping it produced
+a working-looking switch that changed nothing observable.
 
 Deliberately a **separate module from** :mod:`kiro_crew.dashboard.tailnet`, whose
 documented contract is the opposite of what a write path needs:
@@ -267,8 +268,8 @@ def _classify(output: str) -> ResultCode:
             "logged out",
             "not logged in",
             # `tailscale serve` against a stopped daemon (`tailscale down`)
-            # fails with exactly "Tailscale is stopped." The needle keeps the
-            # product name so an unrelated message that merely
+            # fails with exactly "Tailscale is stopped." (issue #7244). The
+            # needle keeps the product name so an unrelated message that merely
             # ends "... is stopped" is not handed the start-Tailscale remedy.
             "tailscale is stopped",
         )
@@ -564,11 +565,13 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     # config that sits entirely on other ports (another project on this machine) is
     # untouched by this write and must not block it.
     #
-    # Keying this on ``configured is True`` instead — betting that a daemon giving no
-    # usable answer would fail the publish call anyway and report the authoritative
-    # error — does not hold for a **timeout**: the status read has a 5s ceiling and the
-    # write 15s, so a daemon slow enough to time out the read can still accept the
-    # write, and then replace an existing handler. "No answer" is not "no daemon".
+    # An earlier revision keyed this on ``configured is True``, reasoning that when
+    # the daemon gives no usable answer the publish call would fail anyway and report
+    # the authoritative error. That reasoning does not hold for a **timeout**: the
+    # status read has a 5s ceiling and the write 15s, so a daemon slow enough to time
+    # out the read can still accept the write — and then replace an existing handler.
+    # "No answer" is not "no daemon", and the permissive branch existed largely
+    # because it made this module's own failure-mode tests simpler.
     state = serve_state(port)
     if not (state.published is True or state.port_free is True):
         return ServeResult(
@@ -647,7 +650,7 @@ def revoke_if_governance_now_pins_off(port: int) -> None:
     host serving its dashboard on the tailnet until someone restarted it, with the policy
     reporting the capability as denied the whole time.
 
-    Narrow on purpose. It does nothing unless governance denies the scope AND
+    Narrow on purpose. It does nothing unless governance now denies the scope AND
     :func:`serve_state` confirms the handler is OURS, so a mapping an operator added by
     hand is never touched — the same ownership test :func:`unpublish` makes, for the same
     reason. Best-effort and never raises: it runs on the refresher thread, and a
@@ -688,7 +691,7 @@ def revoke_if_governance_now_pins_off(port: int) -> None:
 def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResult:
     """Stop serving the dashboard on the tailnet — **only if 443 is ours**.
 
-    Narrow in two ways, both enforced rather than merely documented.
+    Narrow in two ways that earlier revisions of this function only *claimed* to be.
 
     **The removal names its mount.** Upstream's ``unsetServe`` treats an absent
     ``--set-path`` as "every mount under this port" — it collects all handlers and
@@ -773,8 +776,8 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
         # Mirrors the publish path's hint branch. It matters more here: a failed
         # withdrawal's verbatim output can read like a status line ("Tailscale
         # is stopped.") rather than like a failure, so without the appended hint
-        # the operator has no way to tell that nothing was withdrawn. Hints are
-        # appended to — never replace — the daemon's words.
+        # the operator has no way to tell that nothing was withdrawn (issue
+        # #7244). Hints are appended to — never replace — the daemon's words.
         hint = ""
         if code == "no_permission":
             hint = (

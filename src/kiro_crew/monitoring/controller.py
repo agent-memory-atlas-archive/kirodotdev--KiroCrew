@@ -11,17 +11,18 @@ from typing import Any, Protocol
 
 from kiro_crew.dashboard.state import MONITOR_WAKE_PREFIX
 from kiro_crew.monitoring.decision import monitor_budget_reason
-from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProvider
+from kiro_crew.monitoring.github_pull_request import (
+    GitHubPullRequestProbeResult,
+    GitHubPullRequestProvider,
+)
 from kiro_crew.monitoring.models import (
     MonitorDecision,
     MonitorDispatchResult,
     MonitorObservation,
-    MonitorProbe,
-    MonitorProbeResult,
+    MonitorObservationStatus,
     MonitorState,
     MonitorVerdict,
-    resolve_probe_result,
-    transient_probe_failure,
+    ProviderErrorKind,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -39,7 +40,7 @@ class _Service(Protocol):
     async def apply_monitor_probe(
         self,
         monitor_id: str,
-        result: MonitorProbeResult,
+        result: GitHubPullRequestProbeResult,
         *,
         now: float,
         config_generation: int,
@@ -84,6 +85,15 @@ class _Service(Protocol):
     ) -> bool: ...
 
 
+class _Provider(Protocol):
+    def probe(
+        self,
+        raw_target: str,
+        *,
+        previous_observation: Mapping[str, object] | None = None,
+    ) -> GitHubPullRequestProbeResult: ...
+
+
 MonitorDispatcher = Callable[[Any, str], Awaitable[MonitorDispatchResult]]
 
 
@@ -95,7 +105,7 @@ class MonitorController:
         service: _Service,
         dispatch: MonitorDispatcher,
         *,
-        provider: MonitorProbe | None = None,
+        provider: _Provider | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._service = service
@@ -153,20 +163,23 @@ class MonitorController:
         target = state.target
         previous_observation = deepcopy(state.last_observation)
         try:
-            results = await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._provider.probe,
-                (target,),
-                previous_observations={target: previous_observation},
+                target,
+                previous_observation=previous_observation,
             )
         except Exception:
             logger.exception("structured monitor provider raised unexpectedly")
-            result = transient_probe_failure()
-        else:
-            # resolve_probe_result logs the unusable case itself: a status test here
-            # cannot distinguish its synthesized fallback from a transient the
-            # provider classified correctly, and would log every rate limit as an
-            # error.
-            result = resolve_probe_result(results, target)
+            result = GitHubPullRequestProbeResult(
+                response=None,
+                canonical={},
+                observation=MonitorObservation(
+                    "",
+                    MonitorObservationStatus.PROVIDER_ERROR,
+                    provider_error=ProviderErrorKind.TRANSIENT,
+                    reason_code="provider_transient",
+                ),
+            )
         verdict = await self._service.apply_monitor_probe(
             loop.id,
             result,

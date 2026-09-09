@@ -575,8 +575,8 @@ def _rebuild_agent_config() -> None:
 def _persist_state(completed: bool) -> None:
     # DELTA read-modify-write of the one key this endpoint owns, inside a
     # single sidecar-flock hold -- a whole-document save() would publish a
-    # snapshot that can revert a concurrent writer's unrelated settings.
-    # Called off the loop via run_config_write.
+    # snapshot that can revert a concurrent writer's unrelated settings
+    # (#4767). Called off the loop via run_config_write.
     def _mutate(doc: dict) -> dict:
         coerce_dict_section(doc, "dashboard")["import_onboarded"] = completed
         return doc
@@ -640,7 +640,7 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                 # config-category importer read-modify-writes config.json, and
                 # a cancellation at a bare `await to_thread(...)` would release
                 # _get_config_lock() while the worker is still mid-rewrite --
-                # the same defect class the state handler guards against.
+                # the same defect class fixed at the state handler (#4767).
                 results.append(
                     await run_config_write(
                         _apply_import,
@@ -712,7 +712,7 @@ async def api_onboarding_import_state(request: web.Request) -> web.Response:
         # run_config_write holds _get_config_lock() itself and shields the
         # worker against cancellation -- a bare to_thread under a manual lock
         # hold releases the lock on cancellation while the thread is still
-        # rewriting config.json.
+        # rewriting config.json (#4767).
         await run_config_write(_persist_state, body["completed"])
     except Exception:
         logger.exception("Onboarding import state update failed")

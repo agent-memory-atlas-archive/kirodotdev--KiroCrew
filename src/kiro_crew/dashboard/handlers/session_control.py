@@ -45,7 +45,7 @@ async def _require_internal(request: web.Request) -> web.Response | None:
     # Best-effort, the property `_audit_denied` exists to carry for exactly this
     # shape of site: a refusal logged BEFORE the audit middleware has run.
     # `log_api_access` only enqueues — SEL is warmed at gateway startup
-    # (sel.warm_sel_singleton), so no thread hop is needed. Construction
+    # (sel.warm_sel_singleton, #8608), so no thread hop is needed. Construction
     # can still raise on a FAILED warm (a trust root too short to sign the
     # chain), which unguarded would turn this 403 into a 500: losing the
     # denial in order to report it.

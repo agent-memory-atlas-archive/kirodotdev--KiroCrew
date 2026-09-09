@@ -158,7 +158,7 @@ def _launch_lock(state: "DashboardState") -> LoopBoundLock:
     Without it the guard is check-then-act across an ``await``: two POSTs
     arriving together both see no active job, and each provisions its own
     CloudFormation stack — two billed instances the caller cannot undo.
-    LoopBoundLock, not asyncio.Lock: the lock is cached on the
+    LoopBoundLock, not asyncio.Lock (#4800): the lock is cached on the
     long-lived DashboardState, which outlives any single event loop.
     """
     lock = getattr(state, "cloud_launch_lock", None)

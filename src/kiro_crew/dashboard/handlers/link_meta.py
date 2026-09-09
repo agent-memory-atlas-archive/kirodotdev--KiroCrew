@@ -238,8 +238,8 @@ async def _read_capped(raw: _RawResponse, limit: int, *, truncate: bool) -> Tupl
     field a preview needs (``<title>``, the ``og:*`` tags, the icon ``<link>``) is
     declared in ``<head>``, and :class:`_HeadParser` stops parsing there, so a
     document that merely *continues* past the cap has already delivered the whole
-    preview. Rejecting it would discard a payload that is in hand: at the 256 KiB
-    cap that loses every heavyweight page on the web — a major retailer's home page
+    preview. Rejecting it discarded a payload that was in hand: at the 256 KiB cap
+    that lost every heavyweight page on the web — a major retailer's home page
     measures ~730 KB with its ``<title>`` at byte ~36 000 — while looking, in chat,
     exactly like the feature being switched off.
 
@@ -461,8 +461,8 @@ def _response_for(entry: _CacheEntry) -> web.Response:
     # Each status is a literal rather than a forwarded `status=entry.status`. A
     # computed status is unverifiable to the static error-code ratchet
     # (test_error_code_contract.py counts it as `dynamic_status`), and that
-    # bucket is capped precisely so hoisting a status into a variable cannot
-    # slip an un-coded error past the gate.
+    # bucket is capped precisely so hoisting a status into a variable cannot be
+    # used to slip an un-coded error past the gate.
     #
     # Only 400 and 502 reach here: a cached negative is either a rejected URL
     # or a failed fetch. `link_previews_disabled` (403) is answered before the

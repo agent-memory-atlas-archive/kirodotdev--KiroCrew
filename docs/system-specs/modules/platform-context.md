@@ -947,24 +947,12 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   > through read and does NOT auto-reconcile — the sweep + idempotent re-apply are
   > the recovery path.
 
-  `async registry(query: str | None = None) -> List[Dict]` (the manager parses its
-  own registry output into entries; the core passes them through as
-  `{"servers": [...]}`). The public
+  `async registry() -> List[Dict]` (the manager parses its own registry output
+  into entries; the core passes them through as `{"servers": [...]}`). The public
   `DefaultCapabilityManager.available()` is `False` → the handlers return HTTP 503;
   a companion implements registry-backed management. This is the operations-based
   Protocol the prior binary-name seam's contract note anticipated — chosen now,
   pre-launch, so no external CLI grammar fossilizes in the core.
-
-  > `query` is an optional free-text filter HINT, sent only by MCP discovery
-  > search (`mcp_providers/capability.py`); the browse endpoint
-  > `GET /api/capability/mcp/registry` omits it and gets the full listing. The
-  > provider consumes at most `_LIST_LIMIT_GUARD` (500) rows, so a manager whose
-  > registry is larger MUST filter server-side or every row past that cap is
-  > unsearchable. Ignoring the hint stays correct — the provider filters again —
-  > it only costs reach. The hint is feature-detected on the signature
-  > (`mcp_utils.registry_accepts_query`) and forwarded by
-  > `BoundedCapabilityManager`, so an edition still on the zero-arg signature
-  > keeps working.
 
   **Second consumer — App Kit dependency resolution.** `apps/dependencies.py`
   resolves an app manifest's `dependencies.capabilities.{mcp,skills}` through

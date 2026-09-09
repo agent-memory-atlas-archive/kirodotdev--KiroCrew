@@ -45,7 +45,6 @@ from kiro_crew.knowledge.folder_watcher import (
     walk_filters,
 )
 from kiro_crew.knowledge.ingestion import (
-    ImportChunkBudgetError,
     IngestionPipeline,
     _redact,
     rebuild_embeddings,
@@ -520,9 +519,9 @@ async def delete_item(request: web.Request) -> web.Response:
     await asyncio.to_thread(_delete_and_audit)
     # A now-empty source is reclaimed by the store's own orphan rule on the next
     # open, which checks the document-state tables, in-flight jobs and the location
-    # table first. Deleting the row here instead raises on the foreign keys those
-    # tables hold -- after the item delete has already committed -- and drops a
-    # source that still holds documents by location.
+    # table first. Deleting the row here instead raised on the foreign keys those
+    # tables hold -- after the item delete had already committed -- and dropped a
+    # source that still held documents by location.
     return web.json_response({"ok": True})
 
 
@@ -570,15 +569,15 @@ async def get_entity_graph(request: web.Request) -> web.Response:
     except ValueError:
         return web.json_response({"error": "invalid depth"}, status=400)
     # Materialise the graph off-loop before touching it. The store defers the
-    # load to its first reader, and every `.graph` read below runs on
+    # load to its first reader (#8329), and every `.graph` read below runs on
     # the event loop, where the loop-stall watchdog is armed -- so the scan has
     # to happen on a worker thread, the same way this module already offloads
     # the store's SQL.
     await asyncio.to_thread(store.ensure_graph_loaded)
     # get_entity_subgraph pins one graph reference internally and does the
     # existence check against it, so the 404 decision and the walk read the SAME
-    # snapshot even if a worker-thread mutation swaps in a rebuilt graph; it
-    # returns None when the entity is absent.
+    # snapshot even if a worker-thread mutation swaps in a rebuilt graph (#8692);
+    # it returns None when the entity is absent.
     result = store.get_entity_subgraph(entity_id, depth)
     if result is None:
         return web.json_response({"error": "entity not found"}, status=404)
@@ -662,12 +661,13 @@ async def get_full_graph(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid limit"}, status=400)
 
     # Materialise the graph off-loop before any `.graph` read below. The store
-    # defers the load to its first reader; this handler already offloads its SQL
-    # for the same reason, and an inline graph read would stall the event loop.
+    # defers the load to its first reader (#8329); this handler already offloads
+    # its SQL for the same reason, and the graph reads were only safe inline
+    # while the graph was built during construction.
     await asyncio.to_thread(store.ensure_graph_loaded)
 
     # Pin one graph reference for every read below. ``_load_graph`` publishes a
-    # rebuilt graph by swapping ``store._graph``; re-reading
+    # rebuilt graph by swapping ``store._graph`` (#8692); re-reading
     # ``store.graph`` at each step (degree ranking, then per-node attribute
     # reads, then edges) could otherwise mix an old and a new graph and drop a
     # node between steps. One capture means this response is a single snapshot.
@@ -785,30 +785,6 @@ async def source_counts(request: web.Request) -> web.Response:
     return web.json_response({"counts": counts, "total": total_row[0]})
 
 
-def _source_rows(store, uri_filter: str | None) -> list:
-    """The sources listing with per-source item counts, in one off-loop take.
-
-    Sync on purpose: the dashboard polls the sources list while a source is
-    syncing -- exactly the window in which the knowledge DB is contended --
-    and the LEFT JOIN aggregates over ``items``, which grows without bound.
-    The caller dispatches this to a worker thread; ``store.db`` is
-    thread-local, so the thread gets its own connection.
-    """
-    if uri_filter:
-        resolved_filter = str(Path(uri_filter).resolve()) if uri_filter.startswith('/') else uri_filter
-        return store.db.execute(
-            "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
-            "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
-            "ON s.id = c.source_id WHERE s.uri = ? ORDER BY s.updated_at DESC",
-            (resolved_filter,)
-        ).fetchall()
-    return store.db.execute(
-        "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
-        "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
-        "ON s.id = c.source_id ORDER BY s.updated_at DESC"
-    ).fetchall()
-
-
 async def list_sources(request: web.Request) -> web.Response:
     """GET /api/knowledge/sources.
 
@@ -819,7 +795,21 @@ async def list_sources(request: web.Request) -> web.Response:
     cost surfaces is a credit balance after the fact.
     """
     store = _store(request)
-    rows = await asyncio.to_thread(_source_rows, store, request.query.get("uri"))
+    uri_filter = request.query.get("uri")
+    if uri_filter:
+        resolved_filter = str(Path(uri_filter).resolve()) if uri_filter.startswith('/') else uri_filter
+        rows = store.db.execute(
+            "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
+            "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
+            "ON s.id = c.source_id WHERE s.uri = ? ORDER BY s.updated_at DESC",
+            (resolved_filter,)
+        ).fetchall()
+    else:
+        rows = store.db.execute(
+            "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
+            "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
+            "ON s.id = c.source_id ORDER BY s.updated_at DESC"
+        ).fetchall()
     sources = [dict(r) for r in rows]
     # Aggregate scans plus a size stat per outstanding file, and the dashboard polls
     # this list while a source is syncing -- offloaded so a large folder cannot stall
@@ -1075,8 +1065,7 @@ async def _ingest_local_file_task(pipeline, store, path: str, source_id: str) ->
     Shared by add_source (initial ingest) and sync_source (manual re-sync) so both
     entry points route local files through the same FileReader path and apply the
     same read-time sensitive-path re-validation (defense-in-depth against TOCTOU).
-    Updates sync_status to 'synced' on success, 'pending' when the import budget
-    defers the ingest, or 'error' on failure.
+    Updates sync_status to 'synced' on success or 'error' on failure.
     """
     try:
         if is_sensitive_path(str(Path(path).resolve())):
@@ -1088,24 +1077,6 @@ async def _ingest_local_file_task(pipeline, store, path: str, source_id: str) ->
         await pipeline.ingest_file(path, source_id=source_id)
         store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
         store.db.commit()
-    except ImportChunkBudgetError as exc:
-        # A budget deferral is transient, so it must not land in 'error': sync_all
-        # skips an errored source, which would quiesce this local_file permanently
-        # over a window that clears in a minute. 'pending' keeps it in the sweep,
-        # and the file on disk is still there to re-read -- the same test that
-        # keeps 'pending' off an upload, whose only copy is the unlinked temp file.
-        # SyncScheduler.sync_source treats this exception the same way.
-        #
-        # Offloaded, unlike the baselined sibling writes in this function: a
-        # statement holds the write lock for up to busy_timeout, so new code here
-        # takes the off-loop shape rather than adding to that debt.
-        def _mark_pending() -> None:
-            store.db.execute(
-                "UPDATE sources SET sync_status = 'pending' WHERE id = ?", (source_id,))
-            store.db.commit()
-
-        logger.warning("Ingestion deferred by import budget for %s: %s", path, exc)
-        await asyncio.to_thread(_mark_pending)
     except Exception:
         logger.exception("Background ingestion failed for %s", path)
         store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
@@ -1198,21 +1169,6 @@ async def _background_agent_sync(  # type: ignore[no-untyped-def]
         )
         store.db.commit()
         logger.info("Agent sync complete: source=%s url=%s", source_id, url)
-    except ImportChunkBudgetError as exc:
-        # Transient, so not 'error': sync_all skips an errored source, which would
-        # quiesce this agent-url source permanently over a window that clears in a
-        # minute. The URL is re-fetchable, so a retry has content to act on. Written
-        # off the loop, unlike the baselined sibling writes in this function.
-        def _mark_pending() -> None:
-            store.db.execute(
-                "UPDATE sources SET sync_status = 'pending' WHERE id = ?", (source_id,)
-            )
-            store.db.commit()
-
-        logger.warning(
-            "Agent sync deferred by import budget: source=%s url=%s: %s", source_id, url, exc
-        )
-        await asyncio.to_thread(_mark_pending)
     except Exception:
         logger.exception("Agent sync failed: source=%s url=%s", source_id, url)
         store.db.execute(
@@ -1358,25 +1314,14 @@ async def resume_source(request: web.Request) -> web.Response:
     return web.json_response({"status": "scanning"})
 
 
-def _folder_file_rows(store, source_id: str) -> list:
-    """A source's per-file scan state, in one off-loop take.
-
-    Sync on purpose: the dashboard polls this every few seconds during a scan
-    -- exactly the window in which the knowledge DB is contended. The caller
-    dispatches this to a worker thread; ``store.db`` is thread-local, so the
-    thread gets its own connection.
-    """
-    return store.db.execute(
-        "SELECT file_path, status, error_message, mtime, content_hash, item_ids, last_seen "
-        "FROM folder_file_state WHERE source_id = ? ORDER BY last_seen DESC",
-        (source_id,)).fetchall()
-
-
 async def list_source_files(request: web.Request) -> web.Response:
     """GET /api/knowledge/sources/{id}/files -- list files with scan status."""
     store = _store(request)
     source_id = request.match_info["id"]
-    rows = await asyncio.to_thread(_folder_file_rows, store, source_id)
+    rows = store.db.execute(
+        "SELECT file_path, status, error_message, mtime, content_hash, item_ids, last_seen "
+        "FROM folder_file_state WHERE source_id = ? ORDER BY last_seen DESC",
+        (source_id,)).fetchall()
     files = [{"file_path": r["file_path"], "status": r["status"] or "pending",
               "error_message": _redact(r["error_message"]) if r["error_message"] else None,
               "mtime": r["mtime"],
@@ -1466,13 +1411,6 @@ async def ingest_text(request: web.Request) -> web.Response:
         store.db.commit()
         _sel_log("source.ingest_text", source_id=source_id, name=name)
         return web.json_response({"ok": True, "job_id": job_id})
-    except ImportChunkBudgetError as exc:
-        # The cross-file import budget deferred this ingest. Surface the reasoned
-        # refusal (429, not a generic 500) so the caller learns it is a transient
-        # budget deferral it can retry, not a server fault. Nothing was written.
-        return web.json_response(
-            {"error": str(exc), "code": "import_budget_exceeded"},
-            status=429)
     except Exception:
         logger.exception("Agent ingest_text failed for source %s", source_id)
         return web.json_response({"error": "internal server error"}, status=500)
@@ -1596,9 +1534,10 @@ async def ingest_file(request: web.Request) -> web.Response:
     try:
         # The signature gate (CWE-434) and the byte ceiling are both enforced by
         # the shared streaming path, which judges the leading bytes while they
-        # are still in memory, so rejected content never reaches the filesystem.
-        # Cleanup on cancellation is the helper's, not this function's -- see
-        # part_stream's docstring.
+        # are still in memory. That is stricter than this call site used to be:
+        # it wrote the whole file first and only then sniffed, so rejected
+        # content did reach the filesystem. Cleanup on cancellation is the
+        # helper's, not this function's -- see part_stream's docstring.
         await part_stream.stream_part_to_file(
             field,  # type: ignore[arg-type]
             staged,
@@ -1616,9 +1555,6 @@ async def ingest_file(request: web.Request) -> web.Response:
             {"error": f"file content does not match its type: {ext}"}, status=400
         )
 
-    # Bound before the try so the handler's own failure path can reclaim it even
-    # if the reservation below never happened.
-    budget_token: int | None = None
     try:
         # Decompression-bomb guard (CWE-770): a valid-signature OOXML/zip can
         # still be a bomb whose members expand unbounded once python-docx / the
@@ -1634,21 +1570,6 @@ async def ingest_file(request: web.Request) -> web.Response:
                 _sel_log("ingest", filename=filename, outcome="rejected", reason=reason)
                 return web.json_response(
                     {"error": f"{ext} archive rejected ({reason})"}, status=400)
-
-        # Admission BEFORE acceptance. This route answers 'processing' and ingests
-        # in the background, and the staged temp file is the only server-side copy
-        # -- the finally below unlinks it -- so a refusal discovered after the
-        # response would discard a file the client was told had been accepted.
-        # Reserving here makes 429 the answer to an exhausted window, the same one
-        # ingest_text gives, and the token is handed to ingest_file so admission
-        # cannot be lost between the check and the work.
-        try:
-            budget_token = await pipeline.reserve_import_budget()
-        except ImportChunkBudgetError as exc:
-            staged.unlink(missing_ok=True)
-            _sel_log("ingest", filename=filename, outcome="deferred")
-            return web.json_response(
-                {"error": str(exc), "code": "import_budget_exceeded"}, status=429)
 
         # Create source record immediately so it appears in the UI
         store = _store(request)
@@ -1667,26 +1588,8 @@ async def ingest_file(request: web.Request) -> web.Response:
         # Run extraction in background so response returns immediately
         async def _bg_ingest(tmp_path: str, src_id: str) -> None:
             try:
-                await pipeline.ingest_file(
-                    tmp_path, original_name=filename, namespace=namespace,
-                    source_id=src_id,
-                    # Admission was settled above, so this call must not enter the
-                    # budget again -- including when the reservation returned None
-                    # because the budget is disabled, which is the default.
-                    count_toward_import_budget=False,
-                    import_budget_token=budget_token,
-                )
+                await pipeline.ingest_file(tmp_path, original_name=filename, namespace=namespace, source_id=src_id)
             except Exception:
-                # No dedicated ImportChunkBudgetError branch here, and none is
-                # reachable from the front door: admission was reserved above, so
-                # an exhausted window answered 429 before this task existed and
-                # this call cannot be refused for budget. What remains is a
-                # genuine failure, for which 'error' is the honest terminal state
-                # -- an upload's only copy is the staged temp file the finally
-                # unlinks, and an upload:// source has no re-fetchable URI, so
-                # unlike the local_file / agent-url paths there is nothing to
-                # retry from and 'pending' would promise one. Keeping one on-loop
-                # write also leaves this handler inside the existing baseline.
                 logger.exception("Background ingestion failed for %s", filename)
                 store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (src_id,))
                 store.db.commit()
@@ -1702,11 +1605,6 @@ async def ingest_file(request: web.Request) -> web.Response:
         return web.json_response({"source_id": source_id, "status": "processing"})
     except Exception:
         logger.exception("Ingestion failed for %s", filename)
-        # Reclaim the admission if the failure landed between reserving it and
-        # handing it to ingest_file; otherwise the placeholder would sit in the
-        # window for its duration and refuse imports that should pass. Once the
-        # background task exists, ingest_file's finally owns the token.
-        pipeline.release_import_budget(budget_token)
         staged.unlink(missing_ok=True)
         return web.json_response({"error": "internal server error"}, status=500)
 
@@ -1839,29 +1737,16 @@ async def import_bundle(request: web.Request) -> web.Response:
 # ---------- Route registration ----------
 
 
-def _embedding_counts(store) -> tuple[int, int]:
-    """(total active items, active items with a vector) in one off-loop take.
-
-    Sync on purpose: the dashboard polls the status endpoint repeatedly, and
-    running these COUNTs on the gateway loop busy-waits every task (watchdog
-    heartbeat included) whenever the knowledge DB is contended. The caller
-    dispatches this to a worker thread; ``store.db`` is thread-local, so the
-    thread gets its own connection.
-    """
+async def get_embedding_status(request: web.Request) -> web.Response:
+    """GET /api/knowledge/embedding/status -- embedding config and progress."""
+    store = _store(request)
+    embedder = request.app.get("knowledge_embedder")
     total = store.db.execute(
         "SELECT COUNT(*) as c FROM items WHERE status = 'active'"
     ).fetchone()["c"]
     embedded = store.db.execute(
         "SELECT COUNT(*) as c FROM items WHERE status = 'active' AND embedding IS NOT NULL"
     ).fetchone()["c"]
-    return total, embedded
-
-
-async def get_embedding_status(request: web.Request) -> web.Response:
-    """GET /api/knowledge/embedding/status -- embedding config and progress."""
-    store = _store(request)
-    embedder = request.app.get("knowledge_embedder")
-    total, embedded = await asyncio.to_thread(_embedding_counts, store)
     # Polled every 30s by the frontend — loop-safe probe.
     available = await embedder.is_available_async() if embedder else False
     return web.json_response({

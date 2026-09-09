@@ -43,8 +43,8 @@ _MAX_DURABLE_HOLD_ENTRIES = 2 * MAX_DEFERRED_NOTES
 class NoteEvidence(NamedTuple):
     """Positive evidence about the acknowledged note, resolved UNDER the lock.
 
-    The /note failure branches answer 200 only on positive evidence: the note
-    observably exists somewhere an owner will deliver or
+    The /note failure branches answer 200 only on positive evidence (issue
+    #4093): the note observably exists somewhere an owner will deliver or
     replay it. ``durable`` — a durable hold entry carries the note's id (on
     disk already, or in the merge this write committed). ``committed`` — a
     delivered row stamped with the id is in the COMMITTED transcript. Both
@@ -53,8 +53,8 @@ class NoteEvidence(NamedTuple):
     delivered row in the slot's LIVE message list) itself, because that one
     is in-memory and needs no lock. Absence of all three means the note has
     no owner — the branch's refusal is then the honest answer, never a 200
-    inferred from a negative signal, which would misread a rebind-dropped note
-    as delivered.
+    inferred from a negative signal (the inference this type replaced misread
+    a rebind-dropped note as delivered four review rounds in a row).
     """
 
     durable: bool
@@ -564,7 +564,7 @@ def persist_deferred_notes_sync(
     if written:
         # The merge landed in an EXISTING metadata line: record the durable
         # identity monotonically so a later failure branch can tell a
-        # delete-won race from a never-persisted slot.
+        # delete-won race from a never-persisted slot (issue #4093).
         with contextlib.suppress(AttributeError):
             slot._disk_meta_observed = True
         return DeferredHoldOutcome(written=True, evidence=evidence_box["value"])
@@ -712,12 +712,12 @@ class SlotBufferCoordinator:
     def flush_deferred_notes(slot: Any, *, logger: logging.Logger) -> int:
         """Flush held notes in order, restoring the unwritten suffix on failure.
 
-        Purely an in-memory drain: the flush NEVER writes the durable hold.
-        Each delivered inject row carries its note id in
+        Purely an in-memory drain: the flush NEVER writes the durable hold
+        (issue #4093). Each delivered inject row carries its note id in
         ``meta.noteId``, and the full save retires a durable entry exactly
         when the window it writes contains that id — so the delivered row and
         the retirement land in one atomic file write, whatever the
-        flush/save/enqueue interleaving is. A note dropped at the rebind
+        flush/save/enqueue interleaving was. A note dropped at the rebind
         seam records its id in ``slot._dropped_note_ids`` instead, and the
         next save retires it from there. A crash before the save re-delivers
         the note on restore: at-least-once, the correct failure direction for

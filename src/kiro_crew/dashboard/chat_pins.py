@@ -70,9 +70,10 @@ def _authorize_app_slot(
 def _redacted_pin(pin: dict) -> dict:
     """Copy of ``pin`` with the free-text ``preview`` re-redacted at the output boundary.
 
-    chat_pins.json read from disk may predate the current redactor patterns, so
-    the stored ``preview`` -- the only field carrying user prose -- is re-run
-    through the redactors on the way out. The remaining fields (``mid``, ``message_ts``, ``slot_key``)
+    chat_pins.json read from disk may predate the current redactor patterns
+    (or have been written by an older version), so the stored ``preview`` --
+    the only field carrying user prose -- is re-run through the redactors on
+    the way out. The remaining fields (``mid``, ``message_ts``, ``slot_key``)
     are structural identifiers and pass through unchanged.
     """
     return {
@@ -208,8 +209,8 @@ async def api_chat_pins_create(request: web.Request) -> web.Response:
             None,
         )
         if existing:
-            # Output-boundary rule applies here too: a pin already on
-            # disk may hold a credential the current redactors would catch.
+            # Output-boundary rule applies here too: a pre-existing pin on
+            # disk may hold an unredacted credential from an older version.
             return web.json_response(_redacted_pin(existing), status=200)
 
         # Scope the quota to the caller's own records so one origin_app filling

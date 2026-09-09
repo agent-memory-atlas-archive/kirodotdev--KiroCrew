@@ -46,13 +46,6 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
  * NOT be surprised to see it follow them to a new window. When in doubt leave
  * it out: a missing backup degrades to today's behaviour, while backing up
  * session-scoped state resurrects stale UI on an unrelated profile.
- *
- * Adding a member is NOT a safe no-op. A warm profile never hydrates
- * (`needsHydrate` is false once `SYNCED_KEYS_KEY` exists), so a newly added
- * key's local DEFAULT is flushed to the host before the host's own value is
- * ever read, overwriting a value another origin saved. The list reads like an
- * ordinary allowlist, but growing it safely needs the sync path to hydrate a
- * newly added key before its first flush — see the growth-gap issue 9491.
  */
 export const DURABLE_PREF_KEYS: readonly string[] = [
   // Chat preferences — one JSON blob holding ~16 settings (send-key mode,

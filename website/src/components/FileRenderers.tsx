@@ -10,7 +10,7 @@ import { useCanOpenFile, useCopyAck } from './FilePathMenu'
 import { fileDownloadUrl, fileStreamUrl, fileOfficePreviewUrl } from '../utils/fileReadUrl'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 /* ── extension helpers ── */
-const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.avif', '.svg', '.ico'])
+const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
 // Media served through /api/file-stream (Range-capable). Split decides the
 // element: <video> renders a picture surface, <audio> a compact control bar.

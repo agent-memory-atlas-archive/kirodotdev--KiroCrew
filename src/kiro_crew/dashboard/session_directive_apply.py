@@ -182,8 +182,8 @@ def _audit(session_key: str, kind: str, outcome: str) -> None:
     """Emit a SEL tool-invocation event for one directive application.
 
     AUTOSDE ``backend-security-controls`` requires every tool invocation AND
-    permission decision to emit a SEL event — the effect runs here (not in the
-    tool body or an HTTP endpoint), so the audit does too. Best-effort: a
+    permission decision to emit a SEL event — the effect now runs here (not in
+    the tool body or an HTTP endpoint), so the audit must too. Best-effort: a
     telemetry failure must never break the turn.
     """
     try:
@@ -581,8 +581,8 @@ async def _monitor_update(
     # cycle-count heuristic stays only as a legacy fallback for stores written
     # before the field existed, and the budget side has NO heuristic at all —
     # elapsed time keeps growing after a manual pause, so "budget looks spent"
-    # cannot distinguish a pause from an expiry: a budget raise must never
-    # resume a loop the user paused.
+    # cannot distinguish a pause from an expiry (GPT review on #2116: a
+    # budget raise must never resume a loop the user paused).
     if not getattr(loop, "active", True):
         reason = str(getattr(loop, "stopped_reason", "") or "")
         stopped_at_cap = reason == "cycle_cap" or (
@@ -608,8 +608,8 @@ async def _monitor_update(
         # already merged -- the wasted fresh loop this branch exists to prevent.
         #
         # Expressed ONCE, as a term in the revival decision itself, rather than as a
-        # guard per branch: a per-branch guard loses this precedence as soon as a
-        # new bound is added ahead of it.
+        # guard per branch: the notice next door lost this same precedence three
+        # times because each new bound was added ahead of it.
         monitor = getattr(loop, "monitor", None)
         owed = str(getattr(monitor, "terminal_pending", "") or "") if monitor else ""
         terminal = reason == MONITOR_TERMINAL_REASON or bool(owed)
@@ -758,8 +758,8 @@ async def _structured_monitor_update(
 
     # ``banner`` is a message-loop-only field (a structured monitor shows its
     # objective as the transcript row), so it belongs with the legacy fields the
-    # structured path refuses. Without it here, ``monitor_update`` would accept a
-    # banner into the patch, drop it, and report success -- a silent no-op.
+    # structured path refuses. Without it here, ``monitor_update`` accepted a
+    # banner into the patch, dropped it, and reported success -- a silent no-op.
     legacy_only = sorted(set(patch) & {"message", "max_cycles", "active", "banner"})
     if legacy_only:
         raise _DirectiveDenied(
@@ -941,7 +941,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
         raise _DirectiveDenied("Error: access denied (sensitive path).")
     if not is_dir:
         return f"Error: not a directory: {rp}"
-    # Pre-flight, mirrored from the HTTP project endpoint: this directive
+    # #7392 pre-flight, mirrored from the HTTP project endpoint: this directive
     # is the OTHER user/agent-driven moment of choice that sets slot.project
     # (set_project MCP routes here in-process, never through the endpoint), so
     # without this check the overlap refusal would still land at spawn time,

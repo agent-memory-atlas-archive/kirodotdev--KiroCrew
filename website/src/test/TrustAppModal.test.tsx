@@ -236,18 +236,6 @@ describe('isTrustDeniedError', () => {
 })
 
 describe('LibraryPage trust gate', () => {
-  // The consent flow is reached by clicking Enable on a DISABLED third-party
-  // tile, which the Library's default "enabled only" view filters out. This
-  // block is about the trust gate, not the default view, so it opts into the
-  // show-all view (persisted `mc-apps-library-show-all` toggle, '1' = show all)
-  // to render the tile it acts on.
-  beforeEach(() => {
-    localStorage.setItem('mc-apps-library-show-all', '1')
-  })
-  afterEach(() => {
-    localStorage.removeItem('mc-apps-library-show-all')
-  })
-
   it('opens the consent modal when enable is refused with app_execution_denied', async () => {
     enableApp.mockRejectedValue(TRUST_DENIED())
     renderPage()

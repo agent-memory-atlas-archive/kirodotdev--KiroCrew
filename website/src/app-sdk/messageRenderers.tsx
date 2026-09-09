@@ -55,10 +55,6 @@ export interface MessageRenderContext {
   /** Stable React key the list computed for this row. */
   key: string
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
-  /** Selection actions the host offers on assistant text (see
-   *  chat-core/composer/selectionActions). Absent = Copy only. */
-  onQuote?: (text: string, rect: DOMRect) => void
-  onAsk?: (text: string) => void
   /** Drop mcp_oauth banners a Connections card already owns. */
   hideCardOwnedOAuth: boolean
   /** tool_call_ids whose call a policy or hook blocked. */
@@ -420,8 +416,6 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
             showFooter={showFooter}
             slotRunning={ctx.running}
             onFileOpen={ctx.onFileOpen}
-            onQuote={ctx.onQuote}
-            onAsk={ctx.onAsk}
             variants={m.variants}
             variantIdx={m.variant_idx}
             turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}

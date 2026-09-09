@@ -16,7 +16,7 @@ import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/arti
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
-import { sendTurn } from './chat-core/transport/sendTurn'
+import { readSendReceipt } from './utils/sendDelivery'
 import { updateAffordance } from './utils/updateAffordance'
 import { isNewSection } from './utils/releaseVersion'
 import { metricColor } from './utils/metricColor'
@@ -92,7 +92,6 @@ import AppIcon from './components/AppIcon'
 import Clickable from './components/Clickable'
 import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
 import NotificationsPage from './pages/NotificationsPage'
-const SessionsPage = lazy(() => import('./pages/SessionsPage'))
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
 import LogsPage from './pages/LogsPage'
@@ -1342,13 +1341,6 @@ export default function App() {
   const mobileConnectKinds = (mobileConnectQuery.data?.methods ?? [])
     .map(m => m.kind)
     .filter(canRenderMobileConnectKind)
-  const hasRenderableMobileConnect = mobileConnectKinds.length > 0
-  // A methods refresh can revoke or replace every previously renderable kind
-  // while the overlay is open. Close it rather than preserving state that would
-  // remount the dialog if a future refresh happens to add a method back.
-  useEffect(() => {
-    if (!hasRenderableMobileConnect) setMobileConnectOpen(false)
-  }, [hasRenderableMobileConnect])
   // Selected session's project directory: a terminal opened from the nav row
   // starts there (server default when no session is selected or it has none).
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
@@ -2838,22 +2830,12 @@ export default function App() {
   // spends the launch. Sampling would let the video open the instant the user
   // closed the changelog, which is the back-to-back pair the policy forbids.
   const [startupInterruptionSeen, setStartupInterruptionSeen] = useState(false)
-  // The LIVE reading of the same conditions the latch is fed from. The gate reads
-  // both, and the live one is load-bearing: the latch is written by the effect
-  // below, which runs AFTER the commit that showed the changelog, while
-  // `changelogDecided` is set one microtask later on the same fetch chain. When
-  // that microtask lands between the commit and its passive effects, the gate's
-  // own effect runs in a render where `changelogDecided` is already true and the
-  // latch still false: and opened the video beside the changelog (flaked in 2
-  // of 5 frontend runs). Same shape as `onboardingOwed` above: derive from the
-  // authoritative flags in the same commit, keep the latch for after they clear.
-  const startupInterruptionLive = showChangelog || updateAvailable || updateStaged
-    || showOnboarding || showAgentImport || showPrivacy
   useEffect(() => {
-    if (startupInterruptionLive) {
+    if (showChangelog || updateAvailable || updateStaged
+      || showOnboarding || showAgentImport || showPrivacy) {
       setStartupInterruptionSeen(true)
     }
-  }, [startupInterruptionLive])
+  }, [showChangelog, updateAvailable, updateStaged, showOnboarding, showAgentImport, showPrivacy])
 
   const [startupVideoOpen, setStartupVideoOpen] = useState(false)
   const [startupVideoDone, setStartupVideoDone] = useState(false)
@@ -2866,7 +2848,7 @@ export default function App() {
     if (!canShowStartupVideo({
       // Either an interruption already appeared this launch, or first-run is still
       // owed and is about to. Both spend the launch.
-      interruptionShown: startupInterruptionSeen || startupInterruptionLive || onboardingOwed,
+      interruptionShown: startupInterruptionSeen || onboardingOwed,
       // Three separate authorities, and the video waits for ALL of them: onboarding's
       // three modals are decided by the `themeBootReady` effect above, the changelog
       // decides across its own fetch, and the slot list decides whether this session
@@ -2878,8 +2860,8 @@ export default function App() {
     markStartupVideoHandled()
     setStartupVideoOpen(true)
   }, [
-    startupVideoOpen, startupVideoDone, startupInterruptionSeen, startupInterruptionLive,
-    onboardingOwed, themeBootReady, changelogDecided, slotsLoaded, activeSlotMemoryMode,
+    startupVideoOpen, startupVideoDone, startupInterruptionSeen, onboardingOwed,
+    themeBootReady, changelogDecided, slotsLoaded, activeSlotMemoryMode,
   ])
 
   // Browser tab title badge — sums every built-in surface's badge (chat,
@@ -2969,20 +2951,17 @@ export default function App() {
       // feature-request workflow to a later, unrelated message.
       await api.chatSlotContext(slot, FEATURE_REQUEST_PROMPT_FALLBACK, { source: 'feature-request', maxAge: 60 })
     } catch { /* Send the visible request even if hidden context is unavailable. */ }
-    // The chat-core transport owns the receipt contract (`?ws=1` JSON receipt,
-    // HTTP 4xx/5xx RESOLVE rather than reject, deadline) and never rejects.
-    const receipt = await sendTurn({ message: visibleMessage, slot, colorTheme })
-    // Resolution is not success: `refused` means the server accepted neither
-    // `ok` nor `queued`, so no turn started and no WS response is coming, and
-    // `transport-error` means the request never left. Both get the error row.
-    // The indeterminate statuses are deliberately silent -- `unknown` (a 2xx
-    // whose body would not parse) means the request WAS accepted, and
-    // `response-late` (deadline before a receipt) means it may have been; in
-    // both a turn may be running, and this row is the only signal the pill
-    // has: claiming a failure it cannot prove tells the user to resend a
-    // request that already went out.
-    if (receipt.status === 'refused') reportFailedSend(receipt.reason)
-    else if (receipt.status === 'transport-error') reportFailedSend()
+    try {
+      const r = await api.sendChat(visibleMessage, slot, colorTheme)
+      const { body, outcome } = await readSendReceipt(r)
+      // Resolution is not success: the server accepted neither `ok` nor
+      // `queued`, so no turn started and no WS response is coming. An UNKNOWN
+      // outcome (a 2xx whose body would not parse) is deliberately silent — the
+      // request WAS accepted, so a turn may be running, and this row is the only
+      // signal the pill has: claiming a failure it cannot prove tells the user to
+      // resend a request that already went out.
+      if (outcome === 'refused') reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
+    } catch { reportFailedSend() }
   }, [dispatch, navigate, colorTheme, appStore])
 
   const toggleNav = () => {
@@ -3857,7 +3836,7 @@ export default function App() {
           />
         </Suspense>
       )}
-      {mobileConnectOpen && hasRenderableMobileConnect && (
+      {mobileConnectOpen && (
         <Suspense fallback={null}>
           <MobileConnectModal kinds={mobileConnectKinds} onClose={() => setMobileConnectOpen(false)} />
         </Suspense>
@@ -4234,7 +4213,7 @@ export default function App() {
                   onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
                 />
               )}
-              {hasRenderableMobileConnect && (
+              {mobileConnectKinds.length > 0 && (
                 <NavItem
                   path="#"
                   label={i18nT('app.connect_your_phone')}
@@ -4436,12 +4415,8 @@ export default function App() {
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
             <Route path="/notifications" element={<ErrorBoundary><NotificationsPage /></ErrorBoundary>} />
-            {/* Bookmarkable session chooser: neutral list, no auto-select; rows
-                open the full /chat/<key> experience inside this same shell. */}
-            <Route path="/sessions" element={<ErrorBoundary><Suspense fallback={null}><SessionsPage /></Suspense></ErrorBoundary>} />
             {/* Knowledge moved into Agent Capabilities; old bookmarks land on its tab. */}
             <Route path="/knowledge" element={<Navigate to="/capabilities?tab=knowledge" replace />} />
-
             <Route path="/members" element={<ErrorBoundary><Suspense fallback={null}><MembersPage /></Suspense></ErrorBoundary>} />
             <Route path="/overview" element={<Navigate to="/settings/overview" replace />} />
             <Route path="/schedule" element={<SchedulePage />} />

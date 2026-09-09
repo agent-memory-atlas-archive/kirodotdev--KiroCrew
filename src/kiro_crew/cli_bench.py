@@ -152,9 +152,7 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         ),
     )
     retr.add_argument(
-        "--out-dir",
-        default=DEFAULT_OUT_DIR,
-        help=f"Where to write the report (default: {DEFAULT_OUT_DIR})",
+        "--out-dir", default=DEFAULT_OUT_DIR, help=f"Where to write the report (default: {DEFAULT_OUT_DIR})"
     )
     retr.add_argument("--stem", default=None, help="Report filename stem")
 
@@ -169,7 +167,9 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
     )
     cmp_p.add_argument("baseline", help="Path to the baseline .json report")
     cmp_p.add_argument("candidate", help="Path to the candidate .json report")
-    cmp_p.add_argument("-k", type=_positive_int, default=5, help="Cut-off to report (default: 5)")
+    cmp_p.add_argument(
+        "-k", type=_positive_int, default=5, help="Cut-off to report (default: 5)"
+    )
 
     kb = bench_sub.add_parser(
         "kb-retrieval",
@@ -190,7 +190,7 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         "golden",
         nargs="?",
         default=None,
-        help="Path to a golden-set JSON (default: the packaged kb_golden_v2.json)",
+        help="Path to a golden-set JSON (default: the packaged kb_golden_v1.json)",
     )
     kb.add_argument(
         "-k",
@@ -374,7 +374,9 @@ def _load_corpus(key: str):  # noqa: ANN202 - Corpus, but imported lazily
 
     spec = datasets.SPECS.get(key)
     if spec is None:
-        raise SystemExit(f"unknown corpus {key!r}; known: {', '.join(sorted(datasets.SPECS))}")
+        raise SystemExit(
+            f"unknown corpus {key!r}; known: {', '.join(sorted(datasets.SPECS))}"
+        )
     path = datasets.ensure(spec)
     raw = datasets.load_json(spec)
     if spec.dataset == "locomo":

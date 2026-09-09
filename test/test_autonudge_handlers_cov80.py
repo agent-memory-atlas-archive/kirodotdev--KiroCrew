@@ -13,7 +13,6 @@ with a mock so the audit call can be asserted on rather than appended to a real 
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -24,7 +23,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
-from kiro_crew.monitoring.models import MonitorOutcome, MonitorState, monitor_state_public_dict
+from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 
 
 class _FakeSvc:
@@ -592,7 +591,7 @@ async def test_list_reports_disabled_when_service_absent(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_legacy_list_includes_structured_monitors(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_legacy_list_excludes_structured_monitors(monkeypatch: pytest.MonkeyPatch) -> None:
     legacy = _loop("lp-1")
     structured = _monitor_loop("mon-1", "chat-2-222")
     assert structured.monitor is not None
@@ -601,162 +600,12 @@ async def test_legacy_list_includes_structured_monitors(monkeypatch: pytest.Monk
     _svc(monkeypatch, _FakeSvc([legacy, structured]))
     payload = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))
     assert payload["enabled"] is True
-    assert [lp["id"] for lp in payload["loops"]] == ["lp-1", "mon-1"]
+    assert [lp["id"] for lp in payload["loops"]] == ["lp-1"]
     # The legacy dataclass fields still round-trip as JSON, without the new marker.
     assert payload["loops"][0]["idle_secs"] == 300
     assert payload["loops"][0]["slot_key"] == "chat-1-111"
-    # The structured row says a monitor is armed, on what cadence and in what
-    # state, and carries NOTHING describing what it watches.
-    assert payload["loops"][1]["active"] is True
-    assert payload["loops"][1]["idle_secs"] == 300
-    assert "monitor" not in payload["loops"][1]
-    assert "message" not in payload["loops"][1]
+    assert "monitor" not in payload["loops"][0]
     assert "must-not-escape" not in json.dumps(payload)
-
-
-@pytest.mark.asyncio
-async def test_legacy_reads_withhold_every_owner_scoped_monitor_field(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The boundary guard: what is being watched must not reach an un-gated route.
-
-    Asserted structurally against ``monitor_state_public_dict`` rather than as a
-    hand-written field list, so ADDING a field to ``MonitorState`` cannot quietly
-    widen this route: EVERY public monitor field is owner-scoped here, and this
-    route publishes none of them.
-    """
-    loop = _monitor_loop("mon-1", "chat-2-222")
-    assert loop.monitor is not None
-    loop.monitor.wake_instructions = "drive PR 7 to green, then stop"
-    loop.monitor.last_fingerprint = "sha-abc123"
-    loop.monitor.last_observation = {"target": "github.com/acme/widgets#7", "state": "open"}
-    loop.monitor.extra_fields["secret"] = "must-not-escape"
-    loop.monitor._raw_payload = {"secret": "must-not-escape"}
-    _svc(monkeypatch, _FakeSvc([loop]))
-
-    listed = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))
-    per_slot = _body(
-        await h.api_autonudge_get(
-            _mk(
-                "GET",
-                "/api/autonudge/slot/chat-2-222",
-                match={"slot_key": "chat-2-222"},
-            )
-        )
-    )
-
-    # Two names appear on BOTH dataclasses -- ``created_ts`` and
-    # ``stopped_reason`` -- and on the row they carry the LOOP's meaning, so they
-    # are a name collision rather than a leak. Everything else the monitor
-    # publishes is owner-scoped and must not appear at all.
-    loop_fields = {field.name for field in dataclasses.fields(loop)}
-    owner_scoped = set(monitor_state_public_dict(loop.monitor)) - loop_fields
-    assert "target" in owner_scoped and "wake_instructions" in owner_scoped
-    for row in (listed["loops"][0], per_slot["loop"]):
-        # The record is absent outright, not reduced under a key of its own.
-        assert "monitor" not in row
-        assert owner_scoped.isdisjoint(row)
-        # ``message`` IS the wake instructions on a structured monitor, so the
-        # innocuous-looking legacy field is the one that would leak them.
-        assert "message" not in row
-        assert "banner" not in row
-        assert "stop_sentinel_path" not in row
-    # Nothing describing the subject survives anywhere in either response.
-    for blob in (json.dumps(listed), json.dumps(per_slot)):
-        assert "drive PR 7 to green" not in blob
-        assert "sha-abc123" not in blob
-        assert "acme/widgets" not in blob
-        assert "review_ready" not in blob
-        assert "github_pull_request" not in blob
-        assert "must-not-escape" not in blob
-
-
-@pytest.mark.asyncio
-async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pin the surviving key set, in both directions.
-
-    The projection is built by filtering ``fields(NudgeLoop)``, so a NEW loop
-    field would join this route silently. This fails when that happens, which
-    forces the entitlement question to be answered once rather than by default.
-    """
-    loop = _monitor_loop("mon-1", "chat-2-222")
-    _svc(monkeypatch, _FakeSvc([loop]))
-
-    row = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))["loops"][0]
-
-    assert set(row) == {
-        "id",
-        "slot_key",
-        "idle_secs",
-        "active",
-        "created_ts",
-        "max_runtime_secs",
-        "gate",
-        "stopped_reason",
-        "approval_stalled",
-        "next_due_ts",
-        "self_armed",
-        # Mapped from the monitor's own accounting, not withheld -- withholding
-        # them handed the component a default whose label reads "0 = infinity".
-        "max_cycles",
-        "cycle_count",
-        "last_fire_ts",
-    }
-    mapped = {name for name, _ in h._MONITOR_MAPPED_LEGACY_FIELDS}
-    assert mapped <= set(row)
-    # Withheld + published still covers every loop field, and the mapped names
-    # are the exact overlap between the two sets.
-    assert set(h._MONITOR_WITHHELD_LEGACY_FIELDS) | set(row) == {
-        field.name for field in dataclasses.fields(loop)
-    }
-    assert mapped == set(h._MONITOR_WITHHELD_LEGACY_FIELDS) & set(row)
-
-
-@pytest.mark.asyncio
-async def test_legacy_list_omits_cycle_accounting_only_for_structured_rows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The three MAPPED fields, asserted on both sides.
-
-    A structured monitor never writes these on the loop, but each has a truthful
-    equivalent in the monitor's own state, so they carry the real value instead of
-    being withheld. Withholding was worse: the component defaults an absent
-    ``max_cycles`` to 0 under a label reading "0 = infinity", so the panel claimed
-    a budget-bounded monitor runs forever. A plain loop is untouched.
-    """
-    legacy = _loop("lp-1")
-    legacy.cycle_count = 4
-    legacy.max_cycles = 24
-    legacy.last_fire_ts = 1700.0
-    structured = _monitor_loop("mon-1", "chat-2-222")
-    assert structured.monitor is not None
-    structured.monitor.budgets = dataclasses.replace(structured.monitor.budgets, max_agent_turns=7)
-    structured.monitor.agent_turns = 3
-    structured.monitor.last_completed_at = 1650.0
-    structured.monitor.probe_count = 12
-    _svc(monkeypatch, _FakeSvc([legacy, structured]))
-
-    rows = {
-        lp["id"]: lp
-        for lp in _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))["loops"]
-    }
-
-    assert rows["lp-1"]["max_cycles"] == 24
-    assert rows["lp-1"]["cycle_count"] == 4
-    assert rows["lp-1"]["last_fire_ts"] == 1700.0
-    # The monitor carries its OWN values under the same names, because each has a
-    # truthful equivalent. Withholding them let the component default max_cycles
-    # to 0, whose label reads "0 = infinity" -- a stronger falsehood about a
-    # budget-bounded record than a coarse-but-true number.
-    assert rows["mon-1"]["max_cycles"] == 7  # budgets.max_agent_turns
-    assert rows["mon-1"]["cycle_count"] == 3  # agent_turns spent
-    assert rows["mon-1"]["last_fire_ts"] == 1650.0  # last_completed_at
-    assert rows["mon-1"]["active"] is True
-    assert rows["mon-1"]["idle_secs"] == 300
-    assert rows["mon-1"]["next_due_ts"] == 0.0
-    assert rows["mon-1"]["stopped_reason"] == ""
 
 
 @pytest.mark.asyncio
@@ -765,8 +614,6 @@ async def test_prompt_gated_loop_remains_on_legacy_surface(
 ) -> None:
     gated = _monitor_loop("gate-1", "chat-2-222")
     gated.gate = True
-    gated.max_cycles = 24
-    gated.cycle_count = 3
     _svc(monkeypatch, _FakeSvc([gated]))
 
     legacy = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))
@@ -774,10 +621,6 @@ async def test_prompt_gated_loop_remains_on_legacy_surface(
 
     assert [loop["id"] for loop in legacy["loops"]] == ["gate-1"]
     assert structured["monitors"] == []
-    # A gated loop delivers down the legacy path, so its cycle accounting is
-    # real and must survive the projection that drops a structured monitor's.
-    assert legacy["loops"][0]["max_cycles"] == 24
-    assert legacy["loops"][0]["cycle_count"] == 3
 
 
 # --- GET /api/autonudge/{slot_key} -------------------------------------------
@@ -801,7 +644,7 @@ async def test_get_returns_the_loop_bound_to_the_slot(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_legacy_get_returns_a_structured_monitor(
+async def test_legacy_get_hides_a_structured_monitor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loop = _monitor_loop("mon-9", "chat-7-777")
@@ -809,124 +652,12 @@ async def test_legacy_get_returns_a_structured_monitor(
     loop.monitor.extra_fields["secret"] = "must-not-escape"
     loop.monitor._raw_payload = {"secret": "must-not-escape"}
     _svc(monkeypatch, _FakeSvc([loop]))
-    request = _mk("GET", "/api/autonudge/slot/chat-7-777", match={"slot_key": "chat-7-777"})
+    request = _mk("GET", "/api/autonudge/chat-7-777", match={"slot_key": "chat-7-777"})
 
     payload = _body(await h.api_autonudge_get(request))
 
-    assert payload["enabled"] is True
-    assert payload["loop"]["id"] == "mon-9"
-    assert payload["loop"]["active"] is True
-    assert "monitor" not in payload["loop"]
-    assert payload["loop"]["max_cycles"] == loop.monitor.budgets.max_agent_turns
+    assert payload == {"enabled": True, "loop": None}
     assert "must-not-escape" not in json.dumps(payload)
-
-
-@pytest.mark.asyncio
-async def test_a_terminal_monitor_reports_its_outcome_on_the_legacy_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """State is the fourth thing the popover needs, and it survives the reduction.
-
-    ``outcome`` is liveness, not subject: it says the watch finished and how, with
-    no reference to what was watched. A person deciding whether to intervene needs
-    exactly this, and it is the difference between a monitor still working and one
-    that stopped without saying so.
-    """
-    loop = _monitor_loop("mon-3", "chat-3-333")
-    assert loop.monitor is not None
-    loop.monitor.outcome = MonitorOutcome.BLOCKED
-    loop.monitor.probe_count = 31
-    loop.active = False
-    loop.stopped_reason = "monitor_terminal"
-    _svc(monkeypatch, _FakeSvc([loop]))
-
-    row = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))["loops"][0]
-
-    assert row["active"] is False
-    assert row["stopped_reason"] == "monitor_terminal"
-    # The loop's own state answers "is it still running"; the monitor's terminal
-    # OUTCOME is not published here -- it rides the owner-gated route.
-    assert "monitor" not in row
-
-
-@pytest.mark.asyncio
-async def test_both_legacy_reads_return_a_monitor_armed_through_the_create_route(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Arm one the way production does, then read it off BOTH legacy routes.
-
-    The loop is built from the kwargs ``api_monitor_create`` actually hands the
-    arming chokepoint, not from a fixture, so the values under test are the ones a
-    real arm writes -- including the ``message`` that is really the wake
-    instructions, and the ``max_cycles=0`` the legacy shape cannot express. Before
-    this fix the list dropped the row and the per-slot read answered ``loop:
-    None``, so the goal popover reported nothing armed while the monitor probed.
-    """
-    svc = _svc(monkeypatch, _FakeSvc())
-
-    async def _arm(**kwargs: Any) -> tuple[NudgeLoop, None, int]:
-        armed = NudgeLoop(
-            id="mon-armed",
-            slot_key=kwargs["slot_key"],
-            message=kwargs["message"],
-            idle_secs=kwargs["idle_secs"],
-            max_cycles=kwargs["max_cycles"],
-            max_runtime_secs=kwargs["max_runtime_secs"],
-            monitor=kwargs["monitor"],
-        )
-        svc.loops.append(armed)
-        return armed, None, 200
-
-    monkeypatch.setattr(h, "authorize_and_add_nudge", _arm)
-    created = await h.api_monitor_create(
-        _mk(
-            "POST",
-            "/api/monitors",
-            body={
-                "slot_key": "chat-4-444",
-                "target": "https://github.com/acme/widgets/pull/7",
-                "wake_instructions": "fix the red lane",
-                "cadence_secs": 900,
-            },
-        )
-    )
-    assert created.status == 200
-    armed = svc.loops[0]
-    assert h.is_structured_monitor_loop(armed)
-    assert armed.max_cycles == 0  # what the legacy shape would call "unlimited"
-    assert armed.message == "fix the red lane"  # the wake instructions, verbatim
-
-    listed = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))
-    per_slot = _body(
-        await h.api_autonudge_get(
-            _mk(
-                "GET",
-                "/api/autonudge/slot/chat-4-444",
-                match={"slot_key": "chat-4-444"},
-            )
-        )
-    )
-
-    assert [lp["id"] for lp in listed["loops"]] == ["mon-armed"]
-    assert per_slot["loop"]["id"] == "mon-armed"
-    for row in (listed["loops"][0], per_slot["loop"]):
-        # Existence, cadence, liveness, state -- and nothing about the subject.
-        assert row["active"] is True
-        assert row["idle_secs"] == 900
-        for withheld in ("monitor", "message", "banner", "stop_sentinel_path"):
-            assert withheld not in row
-        # Mapped, not withheld: the real turn budget rather than a 0 that reads
-        # as unlimited.
-        assert row["max_cycles"] == 8  # the create route's default budget
-    for blob in (json.dumps(listed), json.dumps(per_slot)):
-        assert "fix the red lane" not in blob
-        assert "acme/widgets" not in blob
-    # The owner-gated route is unchanged and still carries the full record.
-    owner_view = _body(await h.api_monitors_list(_mk("GET", "/api/monitors")))
-    assert owner_view["monitors"][0]["monitor"]["target"] == (
-        "https://github.com/acme/widgets/pull/7"
-    )
-    assert owner_view["monitors"][0]["monitor"]["wake_instructions"] == "fix the red lane"
 
 
 @pytest.mark.asyncio

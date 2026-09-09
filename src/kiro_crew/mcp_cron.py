@@ -1116,6 +1116,21 @@ def _list_tools() -> list[dict[str, Any]]:
                         "description": "Optional list of job IDs. When set, "
                         "returns full bodies for matching jobs only.",
                     },
+                    "json": {
+                        "type": "boolean",
+                        "description": "If true, return a JSON document instead "
+                        "of text: one record per owned job with its mode, "
+                        "schedule, context settings, prompt, and folded "
+                        "run-history counts (runs, failures, distinct results, "
+                        "runs that found nothing to do). Takes precedence over "
+                        "verbose and over ids' implied verbose, because it "
+                        "serves a program rather than a reader. Run history is "
+                        "read through the gateway, which is the only reader "
+                        "that can see it; when that read cannot happen, "
+                        "history_available is false and every job's history is "
+                        "null rather than an empty tally, so a job whose "
+                        "history is unknown is never mistaken for an idle one.",
+                    },
                 },
             },
         },
@@ -1477,6 +1492,140 @@ def _sanitize(s: str) -> str:
     extra regexes apply; standalone is byte-for-byte today's two-pass.
     """
     return redact(s)
+
+
+# ── cron_list JSON mode ──
+#
+# A skill script cannot read the job store or the run history itself. The store is
+# only sandbox-visible because ``mcp_cron`` was carved out for it
+# (``sandbox._CREW_SANDBOX_VISIBLE_LEAVES``), and reading it directly bypasses the
+# ownership filter every MCP cron tool applies -- a non-owner sharing one data home
+# would see every participant's job metadata. ``cron-history`` is masked outright,
+# and on Linux the mask is an empty writable directory, so a direct read reports
+# zero runs for every job and looks identical to a job that has never fired.
+#
+# So both reads come through here: ownership is decided from the gateway-vouched
+# session key, and history is fetched from the gateway for the ALREADY-SCOPED ids
+# only. A history read that cannot happen is reported as unavailable, never as zero.
+
+#: Recent runs asked of the gateway per job. Matches the audit window the
+#: cron-cost-optimize skill reasons over.
+_JSON_HISTORY_LIMIT = 40
+
+#: Jobs carried in one JSON payload. Each entry is a few hundred bytes, so this
+#: stays far under ``validation.MAX_RESPONSE_LEN`` -- whose truncation is a blind
+#: tail slice that would turn valid JSON into unparseable text.
+_JSON_MAX_JOBS = 100
+
+#: Prompt text carried per job. Longer than the compact preview, because a
+#: consumer classifies the prompt rather than displaying it, and shorter than the
+#: full body, which no classifier needs and which would blow the payload budget.
+_JSON_MESSAGE_LEN = 400
+
+#: Per-request and whole-phase ceilings for the history fetch. A slow or absent
+#: gateway degrades the payload, it never hangs the tool.
+_JSON_HISTORY_TIMEOUT_SECS = 3.0
+_JSON_HISTORY_BUDGET_SECS = 20.0
+
+
+def _fetch_history_stats(job_ids: list[str]) -> tuple[dict[str, dict[str, Any]], str]:
+    """Ask the gateway to fold each job's run history into counts.
+
+    Returns ``(stats_by_job_id, unavailable_reason)``. An empty reason means every
+    id in *job_ids* was fetched. A non-empty reason means some or all could not be,
+    and the caller MUST surface it rather than let a missing entry read as a job
+    that has never run.
+
+    Loopback plus ``X-Internal-Secret``, the same path ``cron_trigger`` uses, with
+    the same port and credential resolvers -- the serving port rather than the
+    configured one, and the per-listener secret ahead of the home-wide fallback.
+    """
+    import json as _json
+    import urllib.request
+
+    from kiro_crew.config.loader import read_local_secret
+    from kiro_crew.cron_history_stats import fold_runs
+    from kiro_crew.loopback_http import loopback_urlopen
+
+    if not job_ids:
+        return {}, ""
+    try:
+        port = resolve_serving_port()
+    except Exception as exc:  # pragma: no cover - resolver is defensive already
+        return {}, f"cannot resolve the gateway port ({type(exc).__name__})"
+    secret = read_local_secret(port)
+    if not secret:
+        return {}, "no gateway credential on this host, so run history cannot be read"
+
+    stats: dict[str, dict[str, Any]] = {}
+    started = time.time()
+    for jid in job_ids:
+        if time.time() - started > _JSON_HISTORY_BUDGET_SECS:
+            return stats, "the run-history fetch ran out of time before every job was read"
+        url = f"http://127.0.0.1:{port}/api/crons/{jid}/history?limit={_JSON_HISTORY_LIMIT}"
+        req = urllib.request.Request(url, method="GET", headers={"X-Internal-Secret": secret})
+        try:
+            with loopback_urlopen(req, timeout=_JSON_HISTORY_TIMEOUT_SECS) as resp:
+                body = _json.loads(resp.read())
+        except Exception as exc:
+            # One unreachable gateway means none of the rest will answer either.
+            return stats, f"the gateway did not answer the run-history read ({type(exc).__name__})"
+        runs = body.get("runs")
+        stats[jid] = fold_runs(runs if isinstance(runs, list) else [])
+    return stats, ""
+
+
+def _render_cron_list_json(jobs: list[Any]) -> str:
+    """Ownership-scoped job records plus folded run-history counts, as JSON.
+
+    Every free-text field is sanitized BEFORE it is truncated. The other order
+    leaves a credential's prefix in the surviving span, which is why the compact
+    renderer has a test named for it.
+
+    The payload bounds itself and says so. Relying on the response-level cap would
+    hand a consumer a blind tail slice of a JSON document, which does not parse.
+    """
+    import json as _json
+
+    now = time.time()
+    kept = jobs[:_JSON_MAX_JOBS]
+    stats, unavailable = _fetch_history_stats([j.id for j in kept])
+
+    records: list[dict[str, Any]] = []
+    for job in kept:
+        history = stats.get(job.id)
+        records.append(
+            {
+                "id": job.id,
+                "name": _sanitize(job.name or "")[:_MSG_PREVIEW_LEN],
+                "mode": _job_kind(job),
+                "enabled": bool(getattr(job, "enabled", True)),
+                "schedule": format_schedule(job.schedule, tz_name=job.timezone or ""),
+                "every_secs": getattr(job.schedule, "every_secs", None),
+                "cron_expr": getattr(job.schedule, "cron_expr", None),
+                "timezone": job.timezone or None,
+                "minimal_context": bool(job.minimal_context),
+                "persistent_session": bool(job.persistent_session),
+                "hide_in_chat": bool(job.hide_in_chat),
+                "message": _sanitize(job.message or "")[:_JSON_MESSAGE_LEN],
+                "last_status": job.last_status or "",
+                # None, never an empty tally: a job whose history could not be read
+                # has not been shown to be idle, and a consumer must be able to
+                # tell those two apart.
+                "history": history,
+            }
+        )
+
+    payload: dict[str, Any] = {
+        "generated_at": now,
+        "scanned": len(records),
+        "truncated": len(jobs) > len(kept),
+        "history_available": not unavailable,
+        "jobs": records,
+    }
+    if unavailable:
+        payload["history_unavailable_reason"] = unavailable
+    return _json.dumps(payload, indent=2, sort_keys=True)
 
 
 def _job_kind(job: Any) -> str:
@@ -2125,6 +2274,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 missing = ", ".join(sorted(id_set))
                 return f"No cron jobs match ids: {missing}"
             verbose = True
+        # JSON last, and it wins: it is a different CONSUMER, not a third verbosity.
+        # A machine reading this must get a parseable document even when `ids` has
+        # already forced verbose on, so the precedence is stated in the description
+        # the same way `ids over verbose` already is.
+        if bool(args.get("json", False)):
+            return _render_cron_list_json(jobs)
         if verbose:
             return _render_cron_list_full(jobs)
         return _render_cron_list_compact(jobs)

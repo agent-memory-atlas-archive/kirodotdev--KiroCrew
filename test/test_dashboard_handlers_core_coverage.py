@@ -837,11 +837,7 @@ class TestSttConfigEndpoint:
         assert not isinstance(stt["idle_evict_secs"], bool)
 
     @pytest.mark.asyncio
-    async def test_get_advertises_capabilities(self, seeded_config, monkeypatch) -> None:
-        # The unsupported flag folds in the venv's own packaging: a uv-created venv
-        # ships no `pip` module, so the channel probe reads False there and the
-        # flag flips True on every uv host. Pin the probe, as the sibling tests do.
-        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+    async def test_get_advertises_capabilities(self, seeded_config) -> None:
         async with TestClient(TestServer(_stt_app())) as client:
             resp = await client.get("/api/config/stt")
             assert resp.status == 200
@@ -861,8 +857,8 @@ class TestSttConfigEndpoint:
         assert "en-US" in body["language_codes"]
         assert body["available"] is False
         assert body["prereqs"] == []
-        # The pip channel is pinned open above, so the unsupported flag must be
-        # False regardless of installed extras.
+        # This test venv has a working pip channel, so the unsupported flag
+        # must be False regardless of installed extras.
         assert body["transcribe_unsupported"] is False
         # Cause discriminator for the unsupported notice: the desktop bundle
         # needs different guidance than a pip-less/PEP 668 interpreter. A test

@@ -201,77 +201,6 @@ def make_dir_link(link: pathlib.Path, target: pathlib.Path) -> None:
     link.symlink_to(target, target_is_directory=True)
 
 
-def host_abs(*parts: str) -> str:
-    """A fixture path that is absolute on THIS host: ``/opt/shims`` or ``C:\\opt\\shims``.
-
-    Production filters and validates paths with ``os.path.isabs`` -- spec PATH
-    entries, trusted binaries, upload references, socket paths -- and from
-    Python 3.13 ``ntpath.isabs`` rejects a bare leading slash (a path
-    without a drive is relative to the current drive). A POSIX literal such as
-    ``"/usr/bin"`` therefore changes meaning per interpreter on Windows: absolute
-    on 3.12, relative on 3.13, so a test written with one silently exercises the
-    rejection branch there. Spell fixtures through this helper instead; it touches
-    no filesystem, and its result is what ``os.path.isabs`` accepts everywhere.
-    """
-    return os.path.abspath(os.path.join(os.sep, *parts))
-
-
-def forget_env_at_teardown(monkeypatch, *names: str) -> None:
-    """Make ``monkeypatch`` remove *names* from ``os.environ`` at teardown.
-
-    For a variable the code under test is about to WRITE (a saved channel token
-    exported for the running gateway, a ``PORT`` a booted server publishes, a
-    ``--env`` a CLI applies), neither obvious spelling restores the environment:
-
-    * ``monkeypatch.delenv(name, raising=False)`` BEFORE the write records nothing
-      when the variable is absent -- pytest only records an undo for a key that
-      existed -- so the value written later survives the test;
-    * ``monkeypatch.delenv(name)`` AFTER the write records the written value as
-      the thing to restore, so teardown puts the token BACK.
-
-    Both shapes were found leaking across tests in a full run. This records the
-    current state (absent or present) as the undo, so teardown returns the
-    variable to exactly what it was before the test, whatever the test wrote.
-    """
-    for name in names:
-        if name in os.environ:
-            monkeypatch.delenv(name)
-        else:
-            monkeypatch.setenv(name, "")  # records "was absent" as the undo
-            monkeypatch.delenv(name)
-
-
-def cap_project_root_walk(monkeypatch, ceiling: pathlib.Path) -> None:
-    """Make ``kiro_crew.artifact_source`` see NO project root above ``ceiling``.
-
-    ``classify_source`` walks up from a file looking for ``PROJECT_ROOT_MARKERS``
-    (``.git``, ``Makefile``, ``package.json``, ``.kiro``, ...), so a test that
-    asserts COPY for "a plain directory" under ``tmp_path`` is also asserting
-    that nothing ABOVE ``tmp_path`` carries a marker. That is not the test's to
-    decide: pytest's temp root sits wherever ``TMPDIR`` points, and a checkout or
-    a ``.kiro`` workspace a few levels up turns the whole temp tree into a
-    project. Observed with ``TMPDIR`` under ``~/.kiro/crew/workspace``: every
-    such assertion answered LINK to that workspace instead of COPY.
-
-    Directories outside ``ceiling`` report no marker; inside it the real probe
-    runs, so the markers a test plants (``proj/.git``) still count. Pair it with
-    the ``_tempdir`` narrowing these tests already do -- the two seams together
-    make the rest of ``tmp_path`` ordinary, UNMARKED filesystem.
-    """
-    from kiro_crew import artifact_source
-
-    real_marker = artifact_source.project_root_marker
-    top = os.path.normcase(os.path.realpath(str(ceiling)))
-
-    def _capped(directory: str) -> str | None:
-        here = os.path.normcase(os.path.realpath(directory))
-        if here != top and not here.startswith(top + os.sep):
-            return None
-        return real_marker(directory)
-
-    monkeypatch.setattr(artifact_source, "project_root_marker", _capped)
-
-
 #: ``pytest_collection_modifyitems`` -- which applies the
 #: ``windows-expected-failures.txt`` skips -- lives in the ROOTDIR ``conftest.py``.
 #: That list already names node ids under
@@ -286,7 +215,7 @@ def cap_project_root_walk(monkeypatch, ceiling: pathlib.Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
+def _windows_restrict_to_owner_stub(request, monkeypatch):
     """On Windows, no-op the secret lockdown for hermetic tests.
 
     Many tests stub ``subprocess.run`` (or strip PATH) for hermeticity, or
@@ -323,8 +252,8 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
     ):
         yield
         return
-    _floor_monkeypatch.setattr(platform_compat, "restrict_to_owner", lambda p: None)
-    _floor_monkeypatch.setattr(platform_compat, "restrict_dir_to_owner", lambda p: None)
+    monkeypatch.setattr(platform_compat, "restrict_to_owner", lambda p: None)
+    monkeypatch.setattr(platform_compat, "restrict_dir_to_owner", lambda p: None)
     yield
 
 
@@ -349,7 +278,7 @@ def _release_source_corpus_after_module():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_aim_skills_dir(_floor_monkeypatch):
+def _isolate_aim_skills_dir(monkeypatch):
     """Prevent SkillsLoader from discovering edition-contributed skill roots.
 
     SkillsLoader now sources extra skill roots from the CPP seam
@@ -365,7 +294,7 @@ def _isolate_aim_skills_dir(_floor_monkeypatch):
     """
     from kiro_crew.platform.defaults import DefaultMcpToolingProvider
 
-    _floor_monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
+    monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -672,7 +601,7 @@ def _reset_reasoning_effort_globals():
 
 
 @pytest.fixture(autouse=True)
-def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
+def _disable_dev_fleet_background_tasks(monkeypatch):
     """Stop dev-fleet's app-startup hook from starting its background loops.
 
     A test that boots the real app via ``dev_fleet.server.create_app()`` (to
@@ -683,7 +612,7 @@ def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
     (issue #1832). A test that wants the real refresher overrides this itself
     via ``monkeypatch.setattr(worktree_ops, "_background_tasks_disabled", lambda: False)``.
     """
-    _floor_monkeypatch.setenv("KIROCREW_DEVFLEET_NO_BACKGROUND", "1")
+    monkeypatch.setenv("KIROCREW_DEVFLEET_NO_BACKGROUND", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -921,7 +850,7 @@ def _restore_default_child_watcher():
 
 
 @pytest.fixture(autouse=True)
-def _git_identity(_floor_monkeypatch) -> None:
+def _git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make git tests hermetic: pin identity AND neutralize host global/system config.
 
     Two independent host-environment bleeds must be closed for git-backed tests
@@ -937,22 +866,22 @@ def _git_identity(_floor_monkeypatch) -> None:
        ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` at ``/dev/null`` so no
        host-level config (excludes, aliases, hooks, signing) leaks into tests.
     """
-    _floor_monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
-    _floor_monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
-    _floor_monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
-    _floor_monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
     # Isolate from the host's global/system git config (Git >= 2.32). An empty
     # file (/dev/null) means git reads no global or system settings.
-    _floor_monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
-    _floor_monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
 
 
 @pytest.fixture(autouse=True)
-def _enterprise_bypass(_floor_monkeypatch) -> None:
+def _enterprise_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
-    _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")
-    _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_enterprise_id", "ETEST")
-    _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._allowed_team_ids", {"TTEST"})
+    monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")
+    monkeypatch.setattr("kiro_crew.slack.enterprise._validated_enterprise_id", "ETEST")
+    monkeypatch.setattr("kiro_crew.slack.enterprise._allowed_team_ids", {"TTEST"})
 
 
 @pytest.fixture(autouse=True)
@@ -1181,11 +1110,31 @@ def _fake_computer_use_backend():
     reset_shared_backend()
 
 
-# ``_reset_platform_context`` (the per-test PlatformContext reset and the
-# ``KIROCREW_PROFILE=standalone`` pin) lives in the ROOTDIR conftest, not here:
-# the ~108 test modules under ``src/kiro_crew/apps/builtins/*/tests/`` never see
-# this file, and an inherited enterprise ``KIROCREW_PROFILE`` failed 150+ of them
-# closed on an operator's box while ``test/`` stayed green.
+@pytest.fixture(autouse=True)
+def _reset_platform_context(monkeypatch):
+    """Clear the process-global PlatformContext between tests.
+
+    A test that composes a non-default context (e.g. an Amazon-overlay probe)
+    must not leak it into the next test.  ``current_context()`` lazily rebuilds
+    the standalone default on next access.
+
+    Also pins ``KIROCREW_PROFILE=standalone`` by default so a dev box that has a
+    real SSO-marker directory does not make ``boot_platform`` resolve the
+    ``amazon`` profile and fail closed (no companion installed) for the many
+    pre-existing tests that drive ``run_gateway`` / boot.  A test that wants the
+    amazon profile overrides this env via its own ``monkeypatch.setenv`` (it
+    runs after this autouse fixture), or composes the context directly via
+    ``set_context`` without booting.
+    """
+    from kiro_crew.platform.bootstrap import _reset_boot_state
+    from kiro_crew.platform.context import reset_context
+
+    monkeypatch.setenv("KIROCREW_PROFILE", "standalone")
+    reset_context()
+    _reset_boot_state()
+    yield
+    reset_context()
+    _reset_boot_state()
 
 
 @pytest.fixture
@@ -1217,7 +1166,7 @@ def short_sock_dir(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _no_release_feed_network(_floor_monkeypatch) -> None:
+def _no_release_feed_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the update check's network seam unreachable for the whole suite.
 
     ``handlers.updates._do_update_check`` now has a second branch: any install
@@ -1246,13 +1195,13 @@ def _no_release_feed_network(_floor_monkeypatch) -> None:
             "kiro_crew.dashboard.handlers.updates._fetch_feed_bytes instead"
         )
 
-    _floor_monkeypatch.setattr(
+    monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.updates._fetch_feed_bytes", _refuse, raising=True
     )
 
 
 @pytest.fixture(autouse=True)
-def _no_live_catalog_network(_floor_monkeypatch):
+def _no_live_catalog_network(monkeypatch: pytest.MonkeyPatch):
     """Make the official app catalog's network seam unreachable for the suite.
 
     ``official_catalog._open_catalog`` is THE seam every catalog fetch goes
@@ -1294,7 +1243,7 @@ def _no_live_catalog_network(_floor_monkeypatch):
             "seam such as inventory_for_install) instead"
         )
 
-    _floor_monkeypatch.setattr(official_catalog, "_open_catalog", _refuse, raising=True)
+    monkeypatch.setattr(official_catalog, "_open_catalog", _refuse, raising=True)
     yield original
 
 
@@ -1442,7 +1391,7 @@ class _InertGatewayPosts(list):
 
 
 @pytest.fixture(autouse=True)
-def gateway_posts(request, _floor_monkeypatch):
+def gateway_posts(request, monkeypatch):
     """Record ``mcp_core._post`` calls instead of letting them reach a gateway.
 
     ``mcp_tools.control._emit_directive`` publishes every directive out of band
@@ -1483,7 +1432,7 @@ def gateway_posts(request, _floor_monkeypatch):
                 " loopback_urlopen/_api_urlopen (or _post) in the test itself"
             )
 
-        _floor_monkeypatch.setattr(mcp_core, "loopback_urlopen", _refuse_network)
+        monkeypatch.setattr(mcp_core, "loopback_urlopen", _refuse_network)
         yield _InertGatewayPosts()
         return
 
@@ -1493,7 +1442,7 @@ def gateway_posts(request, _floor_monkeypatch):
         posted.append((path, json.loads(json.dumps(body)) if body is not None else None))
         return {}
 
-    _floor_monkeypatch.setattr(mcp_core, "_post", _capture)
+    monkeypatch.setattr(mcp_core, "_post", _capture)
     yield posted
 
 

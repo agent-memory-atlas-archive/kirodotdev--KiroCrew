@@ -268,8 +268,8 @@ def _read_layer_b(sid: str) -> dict[str, Any] | None:
         #
         # This makes the ceiling effectively a BYTE cap where the name says
         # chars. For multibyte text that is strictly tighter -- a 40M-char CJK
-        # log is ~120MB, so it degrades to transcript-only where the char cap
-        # alone would load it -- and that is the correct direction for a limit:
+        # log is ~120MB and now degrades to transcript-only where it previously
+        # loaded -- and that is the correct direction for a memory-safety limit:
         # the ceiling has to bound what is actually allocated, and the fallback
         # is an honest transcript-only copy rather than a crashed gateway. The
         # char check below stays as the semantic cap.
@@ -417,14 +417,15 @@ def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:
             # The shared helper, which every atomic-write site in the repo is
             # required to use: it allocates the temp file with ``mkstemp`` so
             # concurrent writers cannot collide on a deterministic ``.tmp`` name
-            # (an ENOENT race a hand-rolled write is exposed to), and it retries
-            # the Windows rename window.
+            # (an ENOENT race the previous hand-rolled write here was exposed to),
+            # and it retries the Windows rename window.
             #
             # ``restrict_to_owner=True`` applies the owner-only lockdown to the
             # temp file BEFORE any content reaches it — POSIX mode bits are
-            # meaningless against NTFS ACLs, and locking down only after the
-            # rename leaves Layer B readable under the inherited DACL for the
-            # whole write window. It implies 0o600 on POSIX, and the default
+            # meaningless against NTFS ACLs, and the previous post-rename
+            # ``restrict_to_owner`` call left Layer B readable under the
+            # inherited DACL for the whole write window (issue #5285). It
+            # implies 0o600 on POSIX, and the default
             # ``restrict_on_error="raise"`` keeps this site FAIL CLOSED.
             try:
                 atomic_write(path, text, restrict_to_owner=True)
@@ -599,10 +600,11 @@ async def build_transfer_bundle_async(
     # If that edit's own save failed, disk still holds the previous response and
     # the copy would ship it.
     #
-    # Flushing here is safe because the save advances ``_disk_window_len`` itself,
-    # so afterwards the tail slice is empty and the bundle comes wholly from disk.
-    # Slicing on ``_resumed_count`` instead would duplicate the tail: the save
-    # does NOT touch that counter.
+    # Flushing here is safe now in a way it was not originally: the save advances
+    # ``_disk_window_len`` itself, so afterwards the tail slice is empty and the
+    # bundle comes wholly from disk. (The first version of this code flushed and
+    # then sliced on ``_resumed_count``, which the save does NOT touch — that is
+    # what duplicated the tail.)
     #
     # best_effort=False: a swallowed failure would put us right back to bundling
     # a stale transcript, so an unpersistable source fails the transfer instead.
@@ -806,9 +808,9 @@ def _assemble_bundle(
             continue
         content = m.get("content", "")
         # Redact on the way OUT, not only on the way in. This bundle leaves the
-        # host, so this is an egress boundary: a transcript already on disk (or one
-        # carried in from a channel) can still hold a raw credential, and relying
-        # on the peer to scrub it would send
+        # host, so this is an egress boundary: a transcript written before the
+        # redactors existed (or one carried in from a channel) can still hold a
+        # raw credential on disk, and relying on the peer to scrub it would send
         # the secret across the boundary first and trust the far side to clean up.
         # The importer redacts again — idempotent, and it must not assume a
         # well-behaved sender.
@@ -1159,8 +1161,9 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
         # join first shrinks the exposed window to a single thread hop and makes
         # any prompt inside it resume correctly.
         #
-        # NOTE: joining first is why the failure paths below call
-        # ``_forget_layer_b`` -- a rollback has to undo a join that already exists.
+        # NOTE: this reorder is why the failure paths below call
+        # ``_forget_layer_b`` -- a rollback now has to undo a join that already
+        # exists, which was not true when materialisation ran last.
         sessions = getattr(state, "sessions", None)
         layer_b = bundle.get("layer_b")
         sm_key = effective_session_key(new_slot)
@@ -1230,8 +1233,8 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
             # the loop heartbeat — and because ``_loop_heartbeat`` pets
             # LoopStallWatchdog *from a coroutine*, a blocked loop cannot pet
             # it: the watchdog's exit_after timer fires and _exit()s the
-            # gateway. chat_persistence.restore_open_slots_async yields on the
-            # same read-and-redact work for the same reason.
+            # gateway. chat_persistence.restore_open_slots_async hit exactly
+            # this on the same read-and-redact work and fixed it the same way.
             # Budgeted by CHARS rather than message count because the cost
             # scales with content size, not with how it is split into turns.
             since_yield += len(content)

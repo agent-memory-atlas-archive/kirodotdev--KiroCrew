@@ -5283,7 +5283,6 @@
       "this_app_provides_agents_and_skills_but_no_visua": "이 앱은 에이전트와 스킬을 제공하지만 시각적 인터페이스는 없습니다.\n 채팅에서 이 앱의 에이전트를 사용하세요."
     },
     "approvalCard": {
-      "actions_group": "승인 작업",
       "approval_no_longer_pending": "이 승인은 만료되었거나 이미 결정되었습니다 — 에이전트가 더 이상 기다리지 않습니다.",
       "approve": "승인",
       "approved": "승인됨",
@@ -5615,8 +5614,6 @@
       "skill": "스킬",
       "slash_commands": "슬래시 명령",
       "steer": "방향 지시",
-      "alt_action_hint_queues": "{{chord}}(으)로 이 메시지를 대기열에 넣기",
-      "alt_action_hint_steers": "{{chord}}(으)로 이 메시지를 바로 조정에 쓰기",
       "steer_act_on_this_right_away_desc": "지금 바로 처리",
       "steer_act_on_this_as_soon_as_possible_enter": "방향 지시 — 최대한 빨리 처리 (Enter)",
       "stop_generation": "생성 중지",
@@ -5654,8 +5651,7 @@
       "session_control_needs_attention": "확인 필요",
       "session_control_ready": "준비됨",
       "session_control_chip_label": "{{label}} — {{detail}}",
-      "agent_inherited_default": "이 세션은 기본 에이전트({{name}})를 따릅니다. 자체 에이전트가 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
-      "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요."
+      "agent_inherited_default": "이 세션은 기본 에이전트({{name}})를 따릅니다. 자체 에이전트가 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요."
     },
     "chatPane": {
       "agent_list": "에이전트 목록",
@@ -5667,8 +5663,6 @@
       "history_load_failed": "이 세션의 메시지를 불러올 수 없습니다.",
       "model_list": "모델 목록",
       "retry": "다시 시도",
-      "stop_failed": "이 턴을 중지할 수 없습니다({{error}}). 중지를 다시 누르세요.",
-      "stop_failed_network": "서버에 연결할 수 없어 이 턴을 중지하지 못했습니다. 중지를 다시 누르세요.",
       "session_ready_type_a_message_to_start": "세션이 준비되었습니다. 메시지를 입력하여 시작하세요.",
       "split_down": "아래로 분할",
       "split_right": "오른쪽으로 분할",
@@ -6237,11 +6231,7 @@
       "message": "메시지",
       "message_is_required": "메시지는 필수입니다",
       "message_task": "메시지 · 작업",
-      "minimal_context": "최소 컨텍스트",
-      "minimal_context_description": "실행할 때마다 메모리, 학습 내용, 스티어링, 스킬, 이전 세션 기록을 건너뜁니다. 정해진 일을 반복하는 작업이 읽지도 않는 컨텍스트에 비용을 쓰지 않게 됩니다. 저장된 컨텍스트가 필요한 작업이나 스킬을 사용하는 작업에서는 끈 상태로 두세요.",
       "minutes": "분",
-      "mode_advice_minimal_context": "이 작업에는 에이전트가 필요하지만, 저장된 컨텍스트는 필요하지 않아 보입니다. 최소 컨텍스트는 에이전트만 남기고 나머지는 제외합니다.",
-      "mode_advice_script": "이 작업은 추론이 전혀 필요 없는 기계적인 점검처럼 보입니다. 가장 저렴한 형태는 에이전트 턴을 쓰지 않는 스크립트 작업이며, 채팅에서 만들어 달라고 요청하면 됩니다. 여기서는 최소 컨텍스트가 그다음으로 좋은 선택입니다.",
       "model": "모델",
       "model_inherit": "모델: 상속",
       "name": "이름",
@@ -7098,11 +7088,9 @@
       "will_be_removed_on_save": "저장할 때 삭제됩니다."
     },
     "selectionToolbar": {
-      "ask": "이에 대해 질문",
-      "ask_hint": "선택한 부분을 인용해 사이드 채팅을 엽니다 — 보내기 전까지는 아무것도 전송되지 않으며 메인 채팅은 그대로 유지됩니다",
+      "ask": "사이드 채팅에서 질문",
       "copy": "복사",
-      "quote": "인용",
-      "quote_hint": "선택한 부분을 이 대화의 입력창에 인용합니다 — 답장은 메인 채팅으로 전송됩니다"
+      "quote": "인용"
     },
     "sendToInstanceSubmenu": {
       "failed": "실패",
@@ -7204,8 +7192,6 @@
       "show_or_focus_the_kiro_crew_window": "{{productName}} 창 표시 또는 포커스",
       "use_ctrl_not_option_for_chat_1_9": "채팅 1–9에는 ⌥ Option이 아니라 ⌃ Ctrl을 사용하세요",
       "use_ctrl_not_option_for_chat_1_to_9": "채팅 1에서 9까지는 Option이 아니라 Ctrl을 사용하세요",
-      "browser_reserved_hint": "브라우저 탭에서는 이 단축키들을 페이지가 받기 전에 브라우저가 가로챕니다. 대체 조합은 어디서나 동작하며, 데스크톱 앱은 둘 다 지원합니다.",
-      "desktop_app_only": "데스크톱 앱 전용",
       "panel_toggles": "패널 표시 전환",
       "unset": "설정 안 됨"
     },
@@ -8404,9 +8390,6 @@
       "name": "이름",
       "no_apps_available": "사용 가능한 앱이 없습니다",
       "no_apps_installed_yet": "아직 설치된 앱이 없습니다",
-      "no_enabled_apps": "활성화된 앱이 없습니다",
-      "show_disabled_other": "비활성화된 앱 {{count}}개 표시",
-      "show_enabled_only": "활성화된 앱만 표시",
       "no_matching_apps": "일치하는 앱이 없습니다",
       "not_installed_from_apps_your_local_source_code_w": "앱에서 설치되지 않았습니다 — 로컬 소스 코드는 영향을 받지 않습니다.",
       "removing": "제거 중…",
@@ -9083,14 +9066,7 @@
       },
       "errorCard": {
         "continue": "계속",
-        "continue_hint": "중단된 지점부터 다시 시작합니다. 이미 디스크에 기록된 작업은 그대로 유지됩니다.",
-        "default_model": "기본 모델 변경",
-        "default_model_hint": "설정 → 채팅 → 기본 모델을 엽니다. 새 세션은 이 값으로 시작합니다.",
-        "pick_model": "이 세션의 모델 선택",
-        "pick_model_hint": "모델 선택기를 열어 계정에서 사용할 수 있는 모델을 하나 고른 뒤 메시지를 다시 보내세요.",
-        "both_hint": "둘 다 하세요. ‘{{pick}}’ 버튼은 이 세션을 고치고, ‘{{default}}’ 버튼은 기본값이 같은 모델일 때 새 세션이 그 모델로 시작하지 않게 합니다. 그런 다음 메시지를 다시 보내세요.",
-        "elsewhere_hint": "모델 선택기와 설정 → 채팅은 기본 채팅 창에 있습니다. 거기서 모델을 선택하고 기본 모델을 바꾸세요.",
-        "elsewhere_settings_hint": "설정 → 채팅은 기본 채팅 창에 있습니다. 거기서 기본 모델을 바꾸세요."
+        "continue_hint": "중단된 지점부터 다시 시작합니다. 이미 디스크에 기록된 작업은 그대로 유지됩니다."
       },
       "folderPanel": {
         "clear_search": "검색 지우기",
@@ -9223,7 +9199,6 @@
         "ask_a_side_question_2": "사이드 질문하기…",
         "ask_a_side_question_main_agent_keeps_working": "실행 중인 작업을 멈추지 않고 사이드에서 질문할 수 있습니다. 여기 내용은 대화에 저장되지 않습니다.",
         "context_from": "컨텍스트 출처",
-        "off_record_marker": "사이드 채팅 · 대화에 저장되지 않습니다",
         "context_only_tools_unavailable": "컨텍스트 전용 · 여기서는 도구와 MCP를 사용할 수 없습니다. 작업은 기본 채팅에서 요청하세요.",
         "question_too_long": "질문이 너무 깁니다 — 약 {{max}} 글자 이내로 줄여 주세요 (현재: {{current}})",
         "queue_cancel_failed": "대기열에 있는 해당 질문을 취소할 수 없습니다",
@@ -9562,7 +9537,6 @@
       "could_not_regenerate": "다시 생성할 수 없습니다",
       "could_not_set_the_agent_default_model": "에이전트의 기본 모델을 설정할 수 없습니다",
       "could_not_switch_variant": "버전을 전환할 수 없습니다",
-      "side_chat_pane_gone": "해당 창의 사이드 채팅을 열 수 없습니다 — 세션을 더 이상 사용할 수 없습니다: {{error}}",
       "could_not_start_a_new_session": "새 세션을 시작할 수 없습니다",
       "could_not_start_session_message_restored": "새 세션을 시작할 수 없습니다: {{error}}. 메시지는 복원되었습니다 — 다시 보내서 재시도하세요.",
       "enter_split_view": "분할 보기로 전환",
@@ -10403,7 +10377,6 @@
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "이 워크스페이스의 고유 식별자입니다. 에이전트는 이름으로 워크스페이스를 참조합니다.",
-      "add_crew_member": "크루 멤버 추가",
       "additional_stores_coming_with_memory_v2": "현재는 기본 저장소만 사용할 수 있습니다 — 더 많은 메모리 저장소 지원이 곧 제공됩니다.",
       "agent_template_is_required": "에이전트 템플릿은 필수입니다",
       "agents": "에이전트",
@@ -10419,7 +10392,6 @@
       "create_a_crew_to_give_an_agent_its_own_workspace": "에이전트는 자체 파일과 자체 메모리를 가진 어시스턴트입니다. 학습한 내용이 섞이지 않도록 작업 종류마다 하나씩 만드세요.",
       "create_a_new_crew": "새 에이전트 만들기",
       "create_agent": "에이전트 만들기",
-      "create_member": "멤버 만들기",
       "create_workspace": "워크스페이스 만들기",
       "create_your_first_crew": "첫 에이전트 만들기",
       "creating": "만드는 중…",
@@ -10446,7 +10418,6 @@
       "effort_resolves_to": "{{effort}}(으)로 사고",
       "effort_unavailable_on_this_model": "{{model}}은(는) 추론 강도를 받지 않으므로 설정할 것이 없습니다.",
       "failed_to_create_agent": "에이전트를 만들지 못했습니다",
-      "failed_to_create_member": "멤버를 만들지 못했습니다",
       "failed_to_create_workspace": "워크스페이스를 만들지 못했습니다",
       "failed_to_delete_agent": "에이전트를 삭제하지 못했습니다",
       "failed_to_update_agent": "에이전트를 업데이트하지 못했습니다",
@@ -10458,9 +10429,7 @@
       "isolated_memory_and_files_for_this_crew": "이 에이전트가 읽고 쓰는 폴더입니다. 변경하면 새 채팅은 새 폴더에서 시작하며, 기존 폴더는 유지됩니다.",
       "keep_editing": "계속 편집",
       "manage_agent_workspace_memory_store_bindings": "작업마다 별도의 어시스턴트. 각 에이전트는 자체 파일을 유지합니다.",
-      "member_already_exists": "'{{name}}'이라는 이름의 멤버가 이미 있습니다. 다른 이름을 선택하세요.",
       "memory_store": "메모리 저장소",
-      "memory_store_hint_member": "이 멤버가 바인딩되는 메모리 저장소입니다. 바인딩은 기록되지만, 아직 멤버에게 고유한 메모리를 주지는 않습니다.",
       "model": "모델",
       "name": "이름",
       "name_is_required": "이름은 필수입니다",
@@ -10479,19 +10448,14 @@
       "resolves_to": "{{model}} 사용 중",
       "routing": "라우팅",
       "runtime_binding": "이 에이전트가 사용하는 것",
-      "runtime_binding_member": "이 멤버가 사용하는 항목",
       "save_changes": "변경 사항 저장",
       "select_an_agent_template": "에이전트 템플릿 선택…",
-      "session_color_hint_member": "이 멤버가 시작하는 세션은 세션 자체에 색상이 없는 한 이 색상을 사용합니다. 비워 두면 멤버 색상이 없습니다.",
       "shared_lower": "공유",
       "subdirectory_inside_kiro_crew_where_this_workspa": "이 워크스페이스가 데이터(채팅 기록, 레슨, 프로젝트)를 저장하는 ~/.kiro/crew 내부 하위 디렉터리입니다. 각 워크스페이스는 격리된 자체 디렉터리를 갖습니다.",
-      "template_hint_member": "이 멤버가 사용하는 시작 설정 — 도구, 연결 및 지침.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "이 에이전트가 사용하는 시작 설정 — 도구, 연결, 지침입니다.",
       "triggers": "트리거",
       "triggers_hint": "이 에이전트로 라우팅할 시점 — 오케스트레이터가 읽는 자유 형식 안내입니다. 자동 선택에서 제외하려면 비워 두세요.",
-      "triggers_hint_member": "이 멤버에게 작업을 넘길 시점 — {{productName}}이(가) 판단에 사용하는 자유 형식 안내입니다. 비워 두면 이 멤버는 자동 선택에서 제외됩니다.",
       "triggers_info": "메시지가 이 트리거와 명확히 일치하면 오케스트레이터가 이 에이전트를 선택하고(select_crew 도구 사용) 해당 에이전트의 워크스페이스, 메모리, 모델로 작업을 실행합니다. 트리거가 없는 에이전트는 자동으로 선택되지 않습니다.",
-      "triggers_info_member": "메시지가 이 트리거와 명확히 일치하면 {{productName}}이(가) 이 멤버를 선택하고 멤버의 워크스페이스, 메모리, 모델로 작업을 실행합니다. 트리거가 없는 멤버는 자동 선택되지 않습니다.",
       "triggers_placeholder": "예: 인시던트, 프로덕션 장애, 페이저 에스컬레이션",
       "used_for_all_new_chats": "모든 새 채팅에 사용",
       "view_cards": "카드",
@@ -10501,7 +10465,6 @@
       "which_store_its_lessons_and_history_are_written": "이 에이전트가 연결된 메모리 저장소. 연결은 기록되지만, 아직 에이전트에게 자체 메모리를 부여하지는 않습니다.",
       "workspace": "워크스페이스",
       "workspace_2": "워크스페이스",
-      "workspace_hint_member": "이 멤버가 읽고 쓰는 폴더입니다. 바꾸면 새 채팅은 새 폴더에서 새로 시작하고, 이전 폴더는 그대로 남습니다.",
       "workspace_name_is_required": "워크스페이스 이름은 필수입니다",
       "yes_delete_it": "예, 삭제합니다",
       "session_color": "세션 색상",
@@ -10512,9 +10475,7 @@
       "discard_unsaved_body": "이 크루에는 저장되지 않은 편집 내용이 있습니다. 지금 닫으면 삭제됩니다.",
       "discard_confirm": "변경 사항 취소",
       "discard_also_crew_edits": "이 크루의 다른 저장되지 않은 편집 내용도 함께 삭제됩니다.",
-      "editor_options_load_failed": "크루 편집기의 워크스페이스, 템플릿, 메모리 저장소 옵션을 불러올 수 없습니다.",
-      "template_edit_later_note": "가장 가까운 출발점을 선택하세요 — 이 에이전트의 템플릿은 만든 뒤에 언제든지 바꿀 수 있습니다.",
-      "template_edit_later_note_member": "가장 가까운 시작점을 선택하세요 — 이 멤버의 템플릿은 만든 뒤 언제든 바꿀 수 있습니다."
+      "editor_options_load_failed": "크루 편집기의 워크스페이스, 템플릿, 메모리 저장소 옵션을 불러올 수 없습니다."
     },
     "knowledge": {
       "detailView": {
@@ -10974,9 +10935,11 @@
         "workflow_description": "설명"
       },
       "agentCfgTab": {
+        "after_saving_use": "저장한 후",
         "agent_config_file": "에이전트 설정 ({{file}})",
         "agent_config_json": "에이전트 설정 JSON",
         "agent_config_tip": "{{process}} 에이전트 정의 — 프롬프트, 도구, MCP 서버, 모델 설정. {{productName}}의 운영 바인딩과는 별개인 실행 계층 설정입니다.",
+        "apply_restart_sessions_at_the_top_to_apply_chang": "상단의 ‘적용 및 세션 재시작’을 눌러 변경 사항을 적용하세요.",
         "invalid_json": "잘못된 JSON",
         "loading": "불러오는 중…",
         "save": "저장",
@@ -12078,18 +12041,6 @@
       "empty_failed_next_step": "'완전히 삭제'를 다시 시도하세요. 자세한 내용은 게이트웨이 로그에 있습니다.",
       "kept_identity_changed": "선택한 뒤 디스크에서 바뀐 배치가 있어 그대로 두었습니다."
     },
-    "sessionsPage": {
-      "page_title": "전체 세션",
-      "search_placeholder": "세션 검색…",
-      "new_session": "새 세션",
-      "filter_all": "전체",
-      "filter_unread": "읽지 않음",
-      "group_today": "오늘",
-      "group_yesterday": "어제",
-      "group_earlier": "이전",
-      "empty_title": "세션이 없습니다",
-      "empty_subtitle": "새로 만들어 시작하세요."
-    },
     "sessionsTab": {
       "agent": "에이전트",
       "channel": "채널",
@@ -12525,9 +12476,6 @@
         "session_summaries": "세션 요약",
         "sessions": "세션",
         "sets_how_deep_explanations_go_plain_language_vs": "설명의 깊이를 설정합니다 — 쉬운 표현과 완전한 기술 세부 정보",
-        "busy_alt_action_desc": "조정은 텍스트를 즉시 처리하고, 대기열은 현재 작업이 끝난 뒤 실행합니다. {{chord}}을(를) 누르면 그 메시지만 다른 동작으로 보냅니다. 보내기 버튼에서 모드를 고른 세션은 각자의 선택을 유지합니다.",
-        "busy_alt_action_desc_no_chord": "조정은 텍스트를 즉시 처리하고, 대기열은 현재 작업이 끝난 뒤 실행합니다. 한 번만 바꾸는 단축키는 Enter로 보내는 설정에서만 쓸 수 있습니다. 그 외에는 보내기 버튼 메뉴를 사용하세요. 보내기 버튼에서 모드를 고른 세션은 각자의 선택을 유지합니다.",
-        "what_enter_does_while_the_agent_is_working": "에이전트가 작업 중일 때 Enter의 동작",
         "shift_enter_for_newline": "Shift+Enter로 줄바꿈",
         "show_a_confirmation_dialog_when_closing_a_sessio": "세션을 닫을 때 확인 대화 상자 표시",
         "show_a_favicon_and_page_title_instead_of_the_raw": "URL 원문 대신 파비콘과 페이지 제목을 표시합니다. 이렇게 하면 이 컴퓨터가 모델이 출력하는 모든 링크를 가져오므로, 링크된 각 사이트에는 사용자의 IP 주소에서 온 요청이 기록됩니다.",
@@ -13166,7 +13114,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "키를 누르세요…",
         "search": "검색",
-        "turn_keyboard_shortcuts_on_or_off_globally": "키보드 단축키를 전체적으로 켜거나 끕니다 — {{chord}}(이 도움말)는 항상 동작합니다",
+        "turn_keyboard_shortcuts_on_or_off_globally": "키보드 단축키를 전체적으로 켜거나 끕니다 — {{mod}} + K(이 도움말)는 항상 동작합니다",
         "use_ctrl_not_option_for_chat_1_9": "채팅 1–9에 ⌥ Option이 아니라 ⌃ Ctrl 사용",
         "clear_shortcut": "지우기",
         "panel_toggles": "패널 표시 전환",
@@ -14072,11 +14020,10 @@
     "membersPage": {
       "agent_template": "에이전트 템플릿",
       "configuration": "구성",
-      "crew_summary": "멤버 요약",
       "details": "상세",
       "edit_in_crew_manager": "크루 관리 페이지에서 편집",
       "edit_member": "멤버 편집",
-      "empty_roster": "아직 크루 멤버가 없습니다.",
+      "empty_roster": "아직 크루 멤버가 없습니다. 크루 관리 페이지에서 만들면 여기에 표시됩니다.",
       "inherited": "상속됨",
       "member_count_other": "멤버 {{count}}명",
       "member_gone": "{{shown}}을(를) 표시합니다. '{{name}}'은(는) 더 이상 명단에 없습니다.",
@@ -14134,6 +14081,7 @@
       "patrol_error": "이 멤버의 순찰 상태를 불러오지 못했습니다.",
       "patrol_error_roster": "멤버 목록의 순찰 상태를 불러오지 못했습니다.",
       "patrol_badge": "순찰 중 · {{cycle}}",
+      "patrol_badge_stopped": "순찰 중지됨",
       "patrol_next_in": "{{time}} 후 예정",
       "wake_patrol_every": "{{every}}마다",
       "filter_starred": "즐겨찾기",

@@ -347,9 +347,9 @@ async def _should_prevent_sleep(state: DashboardState, port: int) -> bool:
 #
 # Module-level and shared by BOTH ``start_dashboard`` and ``start_api_server``
 # so the two entrypoints can never drift: the ``--slack-only`` headless server
-# must gate exactly the same MCP tool routes the dashboard does. Drift here —
-# headless mounting no token auth at all — is an auth bypass. Keep this as the
-# single source of truth.
+# must gate exactly the same MCP tool routes the dashboard does. A prior drift
+# here — headless mounting no token auth at all — was an auth-bypass regression
+# of the loopback-bypass fix. Keep this as the single source of truth.
 _STRICT_INTERNAL_API_PATHS = frozenset(
     {
         "/api/send-message",
@@ -485,7 +485,7 @@ async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
     (:func:`kiro_crew.sel.warm_sel_singleton`, awaited by both start paths
     before the middleware chain is built), so ``log_api_access`` here only
     enqueues to the writer thread (after its one-time start on first
-    ``log()``). The warm is best-effort, though: when it FAILS, the
+    ``log()``) (#8608). The warm is best-effort, though: when it FAILED, the
     next ``sel()`` retries ``_init_locked`` -- trust-dir creation, key load,
     a tail read of the log -- on the calling thread, and this helper runs on
     the event loop for every denied request. So the hop is kept for exactly
@@ -938,7 +938,7 @@ _PERMISSIONS_POLICY = "clipboard-write=(self), clipboard-read=(self)"
 # header the runtime loads; without it the load hard-fails (crossorigin
 # makes the header MANDATORY, not additive), the runtime never arrives,
 # Tailwind-classed widgets render unstyled, and the widget loading overlay
-# sits on its hang backstop (blank box). `*` leaks nothing:
+# sits on its hang backstop (blank box), see issue #6181. `*` leaks nothing:
 # /vendor/ holds only public, non-secret static JS (already auth-exempt via
 # token_auth._BYPASS_PREFIXES) and the response carries no credentials or
 # user data.
@@ -988,7 +988,6 @@ async def _vendor_preflight_handler(request: web.Request) -> web.Response:
 # /sprites: those use stable, un-hashed filenames.
 _IMMUTABLE_PATH_PREFIXES = ("/assets/",)
 _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
-_NO_STORE_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
 
 # Max size of a single incoming HTTP header field, raised from aiohttp's
 # 8190-byte default. Browser cookies are not port-isolated (RFC 6265), so on
@@ -1112,19 +1111,11 @@ def _apply_security_headers(
     # responses for hashed assets: a 304's headers merge into the stored
     # cache entry, so answering it with no-store would degrade the cached
     # immutable bundle.
-    #
-    # This check is NOT sufficient on its own for the static route: aiohttp's
-    # ``FileResponse`` is built with status 200 and only stats the file inside
-    # ``prepare()``, after the middleware chain has returned. A missing chunk
-    # therefore passes through here as a 200 and becomes a 404 later, still
-    # wearing the immutable header. ``_finalize_asset_cache_control`` (an
-    # ``on_response_prepare`` handler, which runs once the status is final)
-    # closes that hole; this early decision stays as the common path.
     status = getattr(resp, "status", None)
     if status in (200, 206, 304) and path.startswith(_IMMUTABLE_PATH_PREFIXES):
         resp.headers.setdefault("Cache-Control", _IMMUTABLE_CACHE_CONTROL)
     else:
-        resp.headers.setdefault("Cache-Control", _NO_STORE_CACHE_CONTROL)
+        resp.headers.setdefault("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         resp.headers.setdefault("Pragma", "no-cache")
         resp.headers.setdefault("Expires", "0")
 
@@ -1176,41 +1167,6 @@ def _apply_security_headers(
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-
-
-async def _finalize_asset_cache_control(request: web.Request, response: web.StreamResponse) -> None:
-    """``on_response_prepare`` hook: never let an error under ``/assets/`` out
-    with ``immutable``.
-
-    ``_apply_security_headers`` runs in middleware, when a ``FileResponse``
-    still reports status 200 — aiohttp defers the ``stat`` to ``prepare()``.
-    A request for a chunk the running ``dist/`` does not have (mid-upgrade, or
-    a stale bundle asking for a chunk the new build renamed) thus reached the
-    wire as ``404`` + ``public, max-age=31536000, immutable``, and Chromium
-    kept that 404 for a year under the request URL. Lucide icon chunks keep
-    their content hash across releases, so one poisoned entry breaks the module
-    graph of every later bundle that imports it: the entry ``<script
-    type=module>`` fails silently and the page never boots — tunnel rebuilds and
-    gateway restarts cannot fix it because the cache key is the local URL. This
-    hook runs after the status is final and overwrites (not ``setdefault``) the
-    header for exactly that case: an immutable-prefixed path whose final status
-    is not one the immutable policy admits.
-    """
-    if response.status in (200, 206, 304):
-        return
-    if not request.path.startswith(_IMMUTABLE_PATH_PREFIXES):
-        return
-    if response.headers.get("Cache-Control") != _IMMUTABLE_CACHE_CONTROL:
-        return
-    response.headers["Cache-Control"] = _NO_STORE_CACHE_CONTROL
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-
-
-def _install_asset_cache_control_finalizer(app: web.Application) -> None:
-    """Register ``_finalize_asset_cache_control`` on ``app``. Idempotent."""
-    if _finalize_asset_cache_control not in app.on_response_prepare:
-        app.on_response_prepare.append(_finalize_asset_cache_control)
 
 
 # URL prefix for app-shipped standalone HTML windows. One namespace keeps app
@@ -1592,7 +1548,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/monitors/{monitor_id}/stop", api_monitor_stop)
     app.router.add_post("/api/monitors/{monitor_id}/restart", api_monitor_restart)
 
-    # Agent questions. The MCP ask_question tool does not post here: it returns
+    # Agent questions. The MCP ask_question tool no longer posts here: it returns
     # a session directive and the dashboard posts a NON-BLOCKING card (see
     # mcp_tools.control.ask_question). This API stays live because the UI reads
     # /pending to rehydrate cards after a reload and answers or dismisses them
@@ -2113,9 +2069,9 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
     """Enable the safety override at startup if the operator declared it.
 
     ``agent.dangerouslySkipPermissions`` is a STANDING operator instruction, so the grant it creates
-    does not expire — a lapse after 24h would silently drop the user back to
-    prompt-for-everything, which breaks flows driven from Slack/Discord and from
-    cron where nobody is watching the dashboard to re-enable it.
+    does not expire — it used to lapse after 24h and silently drop the user back
+    to prompt-for-everything, which breaks flows driven from Slack/Discord and
+    from cron where nobody is watching the dashboard to re-enable it.
 
     State is in-memory, so the grant is re-established and re-audited on every
     startup rather than persisted. An enterprise policy can forbid a
@@ -2228,7 +2184,7 @@ def _unattended_expiry_text(loop_count: int, source: str) -> str:
     halves of that remedy — re-enabling auto-approve and ``until_shutdown``, a
     ``yolo_duration`` scope member — are refused by the same fail-closed
     ``approval_modes`` gate that revoked the grant, so suggesting them directs
-    the one operator who is not present into a wall. The stall
+    the one operator who is not present into a wall (issue #8850). The stall
     description stays; only the remedy is replaced with the actual cause.
 
     The stall is stated conditionally because global auto-approve is not the only
@@ -2310,13 +2266,13 @@ def _override_expiry_dm_text(source: str) -> str:
 
     A POLICY revocation (``source == POLICY_REVOKED_SOURCE``) is not an expiry
     the operator can undo: ``_commit_activation``'s fail-closed
-    ``approval_modes`` gate refuses the very ``/kirocrew yolo`` a re-arm
-    suggestion would name, so suggesting it directs the operator into a wall
-    without naming the cause. Presentation only — the gate and its SEL audit are
-    untouched. (The unattended-run notice applies the same source split in
+    ``approval_modes`` gate refuses the very ``/kirocrew yolo`` this message
+    used to suggest, so the old text directed the operator into a wall without
+    naming the cause. Presentation only — the gate and its SEL audit are
+    unchanged. (The unattended-run notice applies the same source split in
     ``_unattended_expiry_text``.)
 
-    Every other source keeps the re-armable wording byte-identical: a TTL lapse
+    Every other source keeps the original wording byte-identical: a TTL lapse
     IS re-armable, and that text is pinned by tests.
     """
     if source == POLICY_REVOKED_SOURCE:
@@ -2499,11 +2455,11 @@ async def _dm_owner(state: DashboardState, text: str) -> None:
     safety-override-expiry path), so the open_dm → post_message →
     swallow-and-log idiom lives in one place.
 
-    **Slack is not the only place an operator lives.** No-opping without Slack
-    would make an expiring unattended grant invisible on a Teams-only,
-    Discord-only or Telegram-only install — silence about a security grant
-    lapsing is the one outcome this notice exists to prevent. So a Slack DM is
-    preferred (it is the owner's direct address), and every registered
+    **Slack is not the only place an operator lives.** This used to no-op entirely
+    without Slack, which made an expiring unattended grant invisible on a
+    Teams-only, Discord-only or Telegram-only install — silence about a security
+    grant lapsing is the one outcome this notice exists to prevent. So a Slack DM
+    is still preferred (it is the owner's direct address), and every registered
     channel transport that advertises a reachable configured target is used as the
     FALLBACK when Slack is absent or could not deliver. Not in addition: an
     operator with Slack should get one notice, not one per channel.
@@ -3485,7 +3441,7 @@ async def start_dashboard(
     await asyncio.to_thread(state.load_chat_pins)
     # Off-loop: load_tags runs a synchronous save_tags() during load (status
     # back-fill / seed) which fsyncs on the event loop; a large tags.json —
-    # including preserved-but-malformed rows — must not stall startup.
+    # including preserved-but-malformed rows (#5792) — must not stall startup.
     await asyncio.to_thread(state.load_tags)
     app["port"] = port
     app["dashboard_url"] = dashboard_url
@@ -3668,9 +3624,9 @@ async def start_dashboard(
 
         # App hook reconciler: the CLI (`kirocrew app enable/disable/install/
         # uninstall`) mutates apps on disk in a DIFFERENT process and never
-        # notifies this gateway, so without reconciliation a CLI reinstall leaves
-        # the old backend.hooks module live, its on_startup task running, and its
-        # .app_secret stale. This poll reloads changed hooks in-process — the same
+        # notifies this gateway, so a CLI reinstall left the old backend.hooks
+        # module live, its on_startup task running, and its .app_secret stale
+        # (issue #7880). This poll reloads changed hooks in-process — the same
         # "CLI writes disk, gateway reconciles" contract already used for crons
         # and UI files. Started AFTER on_gateway_startup so the boot pass has
         # already recorded its loaded-hook signatures in the shared registry and
@@ -3774,11 +3730,6 @@ async def start_dashboard(
         if hasattr(resp, "headers"):
             _apply_security_headers(resp, request.app, request.path, request)
         return resp  # type: ignore[return-value]
-
-    # The static handler's FileResponse decides 200-vs-404 only in prepare(),
-    # after the middleware above has already stamped immutable. This hook sees
-    # the final status and strips immutable from any /assets/ error.
-    _install_asset_cache_control_finalizer(app)
 
     # SPA fallback: serve index.html for client-side React Router paths.
     # Uses the same _is_spa_shell_request predicate as the auth middleware so
@@ -3904,7 +3855,7 @@ async def start_dashboard(
     # localStorage (theme, zoom, layout, notifications, ...) is never split
     # across hostnames. localStorage keys on scheme://host:port, so reaching the
     # dashboard on "localhost" one time and "kirocrew.localhost" the next (e.g.
-    # `kirocrew token` printing localhost while the gateway
+    # `kirocrew token` historically printed localhost while the gateway
     # auto-opens kirocrew.localhost) lands the browser in a different, empty
     # bucket and all settings appear reset. The canonical host is resolved once
     # at startup (it is stable for the gateway's lifetime). Only top-level
@@ -3925,13 +3876,13 @@ async def start_dashboard(
     # Warm the SecurityEventLog singleton off the loop before any handler or
     # middleware can be its first touch, so a first ``log_api_access`` is a
     # non-blocking enqueue on every path — call sites need no per-site
-    # ``asyncio.to_thread`` hop. Best-effort inside the helper: a
+    # ``asyncio.to_thread`` hop (#8608). Best-effort inside the helper: a
     # failed warm never blocks readiness.
     await warm_sel_singleton()
 
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
-        # Outermost: privacy-safe per-route latency. Times the FULL
+        # Outermost: privacy-safe per-route latency (rec #1). Times the FULL
         # in-gateway handling (all middleware + handler). Labels are limited to
         # method / bounded route_template / status_class — never a real path,
         # query, id, or body — so it cannot leak content or explode cardinality.
@@ -4248,7 +4199,7 @@ async def start_dashboard(
     asyncio.create_task(handlers._bg_mcp_probe())
 
     # Refresh config.json's meta stamp when an upgrade left it naming the
-    # previous build. Post-bind and fire-and-forget (never awaited on
+    # previous build (#3102). Post-bind and fire-and-forget (never awaited on
     # the boot path), and the file I/O runs in a thread so the version check —
     # one small fixed-path file, O(1), rewrite only on mismatch — never holds
     # the event loop. Two locks cover both writer generations: the refresh
@@ -4395,15 +4346,15 @@ async def start_dashboard(
     #
     # Both restores run inside suspend_slots_push() so the per-slot broadcasts
     # coalesce into one at the end: get_or_create_slot() pushes the whole slot list
-    # on every call, which makes bulk restore O(N²) in serialization work for
+    # on every call, which made bulk restore O(N²) in serialization work for
     # intermediate states no client renders. Reseeding happens inside the block too
     # — it must complete before the single broadcast so clients never see slots
     # under a counter that could still re-mint a colliding index.
-    # Converge any leftover copy transcripts BEFORE the restores read them. On an
-    # install carrying a second transcript for a channel conversation under a
-    # derived dashboard key, its dashboard-authored turns exist nowhere else, so
-    # they must be merged into the channel transcript before a slot is built
-    # from it. Idempotent, so it is a cheap no-op on
+    # Converge any leftover copy transcripts BEFORE the restores read them. A
+    # channel conversation used to get a second transcript under a derived
+    # dashboard key; on an install carrying one, its dashboard-authored turns
+    # exist nowhere else, so they must be merged into the channel transcript
+    # before a slot is built from it. Idempotent, so it is a cheap no-op on
     # every subsequent boot. Off-loop: it takes the per-session cross-process
     # flock, which must never block the event loop.
     try:
@@ -4607,7 +4558,7 @@ async def start_api_server(
     await asyncio.to_thread(state.load_chat_pins)
     # Off-loop: load_tags runs a synchronous save_tags() during load (status
     # back-fill / seed) which fsyncs on the event loop; a large tags.json —
-    # including preserved-but-malformed rows — must not stall startup.
+    # including preserved-but-malformed rows (#5792) — must not stall startup.
     await asyncio.to_thread(state.load_tags)
     app["port"] = port
 
@@ -4723,7 +4674,7 @@ async def start_api_server(
 
     # Warm the SecurityEventLog singleton off the loop (parity with
     # start_dashboard) so the first audit on this entrypoint is also a
-    # non-blocking enqueue, never an on-loop ``_init_locked``.
+    # non-blocking enqueue, never an on-loop ``_init_locked`` (#8608).
     await warm_sel_singleton()
 
     # Explicit ordering mirrors start_dashboard: latency → deny-audit → host →

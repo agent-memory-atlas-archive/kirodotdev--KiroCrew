@@ -112,7 +112,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     # A crew-bound slot has no local rewind: it would rebuild the LOCAL ACP
     # session and re-run the edited turn on this machine, diverging from the peer.
     # AFTER the app-ownership 404 above so a foreign app cannot tell a remote slot
-    # apart from a missing one via the 409.
+    # apart from a missing one via the 409 (GPT #7693).
     refusal = remote_bound_refusal(slot)
     if refusal is not None:
         return refusal

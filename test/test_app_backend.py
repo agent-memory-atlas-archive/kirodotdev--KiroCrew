@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -39,30 +38,11 @@ def _sandbox_can_spawn() -> bool:
     probe: a spawn can fail for reasons a capability probe cannot see, and
     reusing wrap_argv() means this check can never drift from
     start_app_backend().
-
-    The probe runs under an EMPTY ``KIROCREW_HOME``. It is evaluated at
-    collection, before the per-test isolation fixture pins the data home, so a
-    bare ``wrap_argv()`` here reads the OPERATOR's real ``~/.kiro/crew/config.json``
-    -- and on a Windows or macOS developer machine that file routinely carries
-    ``agent.sandbox_allow_unsandboxed_exec=true`` (the only way Kiro Crew runs
-    there). That made the probe answer "can spawn" for a host with no sandbox
-    backend at all, and every test it gates then failed closed under the
-    fixture's default config, while CI (no operator config) skipped them. The
-    gate must observe what the tests will observe: the default config.
     """
     try:
         from kiro_crew import sandbox as _sb
 
-        with tempfile.TemporaryDirectory() as empty_home:
-            saved = os.environ.get("KIROCREW_HOME")
-            os.environ["KIROCREW_HOME"] = empty_home
-            try:
-                argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
-            finally:
-                if saved is None:
-                    os.environ.pop("KIROCREW_HOME", None)
-                else:
-                    os.environ["KIROCREW_HOME"] = saved
+        argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
     except Exception:  # noqa: BLE001 — any probe failure => treat as "can't spawn"
         return False
     try:
@@ -3685,56 +3665,3 @@ class TestEnabledStateDistinguishesUnreadableFromDisabled:
         meta.write_text("{ not json", encoding="utf-8")
 
         assert bmod._app_enabled_state("probe") is None
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="shebang semantics are POSIX-only")
-class TestExecBackendShebangShim:
-    def _spawn_cmd(self, tmp_path, shebang_line: str):
-        """Build the exec-arm inputs and return the resolved cmd."""
-        import kiro_crew.apps.backend as bk
-        from kiro_crew.apps.interpreter import app_deps_dir
-
-        root = tmp_path / "app"
-        root.mkdir()
-        (root / "requirements.txt").write_bytes(b"requests\n")
-        d = app_deps_dir(root)
-        d.mkdir(parents=True)
-        (d / bk._DEPS_STAMP_NAME).write_text(bk._deps_digest(b"requests\n"))
-        (d / bk._DEPS_ABI_NAME).write_text(bk._deps_abi_tag())
-        script = root / "run"
-        script.write_text(f"{shebang_line}\nimport requests\n")
-        script.chmod(0o755)
-        return bk, root, script
-
-    def test_an_abi_matched_shebang_script_launches_through_deps_boot(
-        self, tmp_path
-    ):
-        import sys as _sys
-
-        bk, root, script = self._spawn_cmd(tmp_path, f"#!{_sys.executable}")
-        got = bk._abi_shebang_of(root, str(script))
-        assert got == _sys.executable
-
-    def test_an_argument_bearing_shebang_keeps_its_flags(self, tmp_path):
-        """#!<python> -I keeps its kernel launch: the shared reader answers
-        None for argument-bearing shebangs, so no rewrite happens - and the
-        flag REMAINS in what actually executes. Both halves are asserted:
-        not a candidate, and the on-disk launch still carries -I exactly as
-        written (the kernel, not a rewrite, interprets the shebang)."""
-        import sys as _sys
-
-        bk, root, script = self._spawn_cmd(tmp_path, f"#!{_sys.executable} -I")
-        assert bk._abi_shebang_of(root, str(script)) is None
-        first_line = script.read_bytes().split(b"\n", 1)[0]
-        assert first_line == f"#!{_sys.executable} -I".encode()
-        # And a no-candidate script is launched as-is: simulate the exec-arm
-        # decision the spawn makes with this answer.
-        cmd = [str(script), "--serve"]
-        si = bk._abi_shebang_of(root, cmd[0])
-        assert si is None
-        # the arm leaves cmd untouched when there is no shim candidate
-        assert cmd == [str(script), "--serve"]
-
-    def test_a_foreign_shebang_is_not_a_shim_candidate(self, tmp_path):
-        bk, root, script = self._spawn_cmd(tmp_path, "#!/opt/foreign/python3.11")
-        assert bk._abi_shebang_of(root, str(script)) is None

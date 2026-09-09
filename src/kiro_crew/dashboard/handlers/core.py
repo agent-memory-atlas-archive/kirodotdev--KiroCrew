@@ -37,7 +37,6 @@ from kiro_crew.config.loader import (
     EXTRACTION_POOL_SIZE_MAX,
     EXTRACTION_POOL_SIZE_MIN,
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
-    IMPORT_CHUNK_BUDGET_MAX,
     MAX_SUBAGENTS_FIXED_FLOOR,
     MCP_PROBE_TIMEOUT_MAX,
     MCP_PROBE_TIMEOUT_MIN,
@@ -115,7 +114,7 @@ _SENSITIVE_MASK = "••••••••"
 # straight off a discovered agent spec, so a third-party package controls these
 # strings. They are not schema-``sensitive`` (they are not secrets the OWNER
 # stored), so the schema-driven walk in ``_masked_config_dict`` never touches
-# them — this named list is what closes that gap on the config endpoint.
+# them — this named list is what closes that gap on the config endpoint (#8717).
 #
 # Scope: every ``str`` field of ``KiroCrewAgentConfig`` whose LOAD path does not
 # pin its shape. ``reasoning_effort`` (``coerce_effort`` collapses anything but
@@ -129,9 +128,9 @@ _SENSITIVE_MASK = "••••••••"
 # The record KEY (the agent name) is handled separately in the pass below:
 # a suspicious-keyed record is REMOVED from the browser-facing view (masking a
 # key would collide two suspicious records into one entry), and the
-# name-reference fields that could still spell it are masked. The create route
-# does not refuse a credential-shaped name, so this view cannot assume one never
-# arrives.
+# name-reference fields that could still spell it are masked. PR #8472 refuses
+# a credential-shaped name at creation, which will close that hazard at its
+# source for names arriving through the create route once it lands.
 _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "description",
     "triggers",
@@ -147,14 +146,14 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
 def _mask_agent_free_text(value: object) -> object:
     """Render ONE agent-record free-text value for the config response.
 
-    Same rule the roster endpoint's rows need: a value the
+    Same rule PR #8472 proposes for the roster endpoint's rows: a value the
     redactors would alter — credential- or exfiltration-URL-shaped text — is
     replaced WHOLESALE by ``_SENSITIVE_MASK``; a non-string is masked too (it
     is not renderable content, and ``description`` has no load-time type guard,
     so one can genuinely arrive here). Benign content passes through
     byte-identical, so an ordinary stored value renders exactly as written.
-    ``GET /api/agents`` ships these fields verbatim — that half of the class is
-    not this endpoint's.
+    Until #8472 lands, ``GET /api/agents`` still ships these fields verbatim —
+    that half of the class is tracked there, not here.
 
     A fixed sentinel rather than an in-place scrub: a scrubbed view is a
     FUNCTION of the stored value, so any future write-side "treat the mask as
@@ -203,9 +202,10 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     PATCH allowlist (``_EDITABLE_CONFIG``) names no ``agents.*`` path, and
     the PUT branch reads only the singular ``agent`` section against a
     hardcoded key list. The agents CRUD route is the write path for these
-    fields; its read pair is ``GET /api/agents``, which ships them verbatim —
-    that half of the class needs the same mask plus a mask-means-unchanged
-    write rule this endpoint does not need. Named cost of the wider field set: the overview's config tab renders
+    fields; its read pair is ``GET /api/agents``, which today still ships
+    them verbatim — that half of the class is PR #8472's, which proposes the
+    same mask plus the mask-means-unchanged write rule this endpoint does not
+    need. Named cost of the wider field set: the overview's config tab renders
     ``kiro_agent``/``workspace``/``memory_store`` and cross-references the
     latter two against the workspace and store lists, so a masked value breaks
     that "used by" row — but only for a record whose value is already
@@ -257,7 +257,7 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     # above cannot cover them; see _AGENT_UNTRUSTED_TEXT_FIELDS. Both response
     # sites of this endpoint (the GET body and the PATCH echo) funnel through
     # this one function, so this pass gives the redaction rule surface coverage
-    # here rather than point coverage.
+    # here rather than the point coverage #8717 records.
     #
     # The record KEY (the agent name) is handled by REMOVAL, not masking: agent
     # sync stores a discovered agent's name as this dict's key, so a
@@ -558,7 +558,7 @@ async def api_ready(request: web.Request) -> web.Response:
 #: non-catalog value degrades gracefully client-side). Membership IS enforced,
 #: but at the point of use: ``context.ui_language_tag`` gates the agent-steer
 #: read path on ``_UI_LANGUAGE_CATALOGS`` so a non-catalog tag is never claimed
-#: to the model as the UI language. A new backend consumer of
+#: to the model as the UI language (#1130). A new backend consumer of
 #: ``dashboard.language`` must route through that resolver rather than reading
 #: the raw field.
 _LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
@@ -1209,10 +1209,10 @@ def _ffmpeg_install_commands() -> list[str]:
     on ``GET /api/stt/status`` is what says whether a decoder exists.
 
     There is deliberately no fallback command. A distribution with no FFmpeg
-    package (Amazon Linux, RHEL without EPEL) and no build script in reach gets an
-    empty list rather than ``echo 'Build ffmpeg from source: …'``: a command a user
-    pastes into a terminal only to get a URL echoed back -- one whose only effect is
-    to print a sentence -- is a dead end wearing the costume of an instruction.
+    package (Amazon Linux, RHEL without EPEL) and no build script in reach used to
+    be handed ``echo 'Build ffmpeg from source: …'``, which a user pasted into a
+    terminal and got a URL echoed back at them -- a command whose only effect is to
+    print a sentence is a dead end wearing the costume of an instruction.
     """
     ensure_ffmpeg_in_path()
     if _find_ffmpeg():
@@ -1387,8 +1387,8 @@ async def api_sel_verify(request: web.Request) -> web.Response:
 
     ``integrity`` is ``unverifiable`` when the segment dir refused to pin (or
     was swapped mid-verification): the rotated segments were not checked, and
-    the endpoint must not answer ``ok`` over the live log alone. ``detail``
-    carries the reason and is empty when verifiable.
+    the endpoint must not answer ``ok`` over the live log alone (#5051
+    review). ``detail`` carries the reason and is empty when verifiable.
     """
 
     # Same offload rationale as api_sel_events, including deferring _sel() into
@@ -1757,7 +1757,7 @@ def _validate_role_model(
     reuse the per-session provider guard (rejects display-only canonical keys for
     the active provider), then — when a live advertised set is known — apply the
     SAME entitlement predicate the session-init withhold uses
-    (:func:`model_is_unusable`) so the picker and the wire cannot disagree.
+    (:func:`model_is_unusable`, #1596) so the picker and the wire cannot disagree.
     No advertised set => accept (entitlement unknowable; don't accuse on no
     evidence), matching that predicate's own conservative default.
 
@@ -1816,10 +1816,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
     # ``values_fn`` rather than a literal, because the set WIDENS after this module
     # is imported: an edition registers a backend from
-    # ``ProviderRegistry.register_acp_backends`` at boot, and a literal would
-    # reject it here with a misleading "invalid value". Resolved per request
-    # against the one code owner, so this cannot drift from what ``AcpProvider``
-    # will actually serve.
+    # ``ProviderRegistry.register_acp_backends`` at boot, and the old literal left
+    # it rejected here with a misleading "invalid value". Resolved per request
+    # against the one code owner, so this can no longer drift from what
+    # ``AcpProvider`` will actually serve — which is what the parity test used to
+    # stand in for.
     "agent.acp_backend": {"type": "enum", "values_fn": _selectable_acp_backends},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
@@ -1887,7 +1888,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     },
     "session.timeout_secs": {"type": "int", "min": SESSION_TIMEOUT_MIN, "max": SESSION_TIMEOUT_MAX},
     # Range shared with the load-time clamp in config/loader.py — one constant
-    # pair, so the write gate and the load path cannot drift.
+    # pair, so the write gate and the load path cannot drift (issue #4734).
     "session.autocompact_pct": {
         "type": "float",
         "min": AUTOCOMPACT_PCT_MIN,
@@ -1983,7 +1984,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # empty allowlist stays off; an unrecognised pin_scope falls back to node).
     "dashboard.tailscale.trust_identity": {"type": "bool"},
     "dashboard.tailscale.pin_scope": {"type": "str", "max_len": 8},
-    # Refresh-chain peer binding. Editable here because the only
+    # Refresh-chain peer binding (issue #2417). Editable here because the only
     # direction a caller can move it is the one an operator may legitimately
     # need for roaming, and the loader resolves anything non-boolean back to the
     # bound default — so a malformed write cannot reopen the replay path.
@@ -2025,7 +2026,6 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     },
     "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": DEDUP_EVERY_N_SWEEPS_MAX},
     "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": SWEEP_CHUNK_BUDGET_MAX},
-    "knowledge.import_chunk_budget": {"type": "int", "min": 0, "max": IMPORT_CHUNK_BUDGET_MAX},
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
     "knowledge.extraction_model": {"type": "str"},
     "knowledge.extraction_pool_size": {
@@ -2580,8 +2580,9 @@ def _invalid_session_path_id(session_id: str, agent_id: str | None = None) -> we
     set the path join refuses, no wider (a narrower guard would break the ``:``
     in a real key like ``dashboard:slot-3``) and no narrower (a wider one puts
     the 500 back). Shape follows ``cron.py``'s ``_invalid_path_id_response`` --
-    400 with an ``invalid_<name>`` ``code`` -- the contract
-    docs/system-specs/common/code-style.md requires of a backend-owned error body.
+    400 with an ``invalid_<name>`` ``code`` -- which is the contract #6301 names
+    and which docs/system-specs/common/code-style.md
+    requires of a backend-owned error body.
 
     ``agent_id`` is checked second because that is the order the sinks validate
     in, so the reported code names the half the caller must actually fix.

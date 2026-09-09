@@ -23,14 +23,6 @@
   "platform": {
     "requiresDesktopApp": true
   },
-  "platform": {
-    "os": [
-      "macos",
-      "linux",
-      "windows"
-    ],
-    "requiresDesktopApp": true
-  },
   "ui": {
     "pages": [
       {

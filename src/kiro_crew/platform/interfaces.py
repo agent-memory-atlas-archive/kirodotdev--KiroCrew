@@ -896,24 +896,13 @@ class CapabilityManager(Protocol):
 
     async def uninstall_mcp(self, server_id: str) -> "CapabilityResult": ...
 
-    async def registry(self, query: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def registry(self) -> List[Dict[str, Any]]:
         """Available MCP servers from the registry.
 
         The manager parses its own registry output into entries; the core passes
         them through verbatim as ``{"servers": [...]}``. Conventional keys the
         dashboard consumes: ``id``, ``installed``, ``title``, ``tier``,
         ``description`` (plus any extra fields the edition includes).
-
-        ``query`` is an OPTIONAL free-text filter HINT, passed only by MCP
-        discovery search (``mcp_providers.capability``); the browse endpoint
-        ``GET /api/capability/mcp/registry`` omits it and still gets the full
-        listing. A manager MAY use it to filter server-side, and SHOULD when its
-        registry is large enough that it truncates: the caller consumes at most
-        ``_LIST_LIMIT_GUARD`` rows, so on a big registry every row past that cap
-        is unsearchable unless the filter runs manager-side. Ignoring the hint
-        stays CORRECT — the caller filters again — it only costs reach. Because
-        the hint is feature-detected on the signature, an older zero-arg
-        implementation keeps working unchanged.
         """
         ...
 

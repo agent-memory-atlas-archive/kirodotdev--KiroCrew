@@ -2412,7 +2412,7 @@ async def _route_message(
     # ── Transcribe audio files (voice memos) ──
     # Placed after dedup + auth to avoid expensive work on duplicate events
     # or unauthorized users.
-    _attachment_temp_paths: list[str] = []
+    _image_temp_paths: list[str] = []
     _had_voice_input = False
     if files and orch.slack and _user_authorized:
         memos = [f for f in files if is_voice_memo(f)]
@@ -2444,13 +2444,13 @@ async def _route_message(
                     _had_voice_input = True
             text = _voice_memo_context(text, len(memos), len(transcripts), available=stt_ok)
 
-        # ── Process non-audio files (images, text, opaque files, etc.) ──
-        attachment_paths, text_blocks = await process_slack_files(orch, files)
-        _attachment_temp_paths = attachment_paths
+        # ── Process non-audio files (images, text, etc.) ──
+        image_paths, text_blocks = await process_slack_files(orch, files)
+        _image_temp_paths = image_paths
 
-        # Image paths are inlined by ACP; opaque paths remain available to agent tools.
-        if attachment_paths:
-            paths_text = "\n".join(attachment_paths)
+        # Inject image paths so AcpClient._send_prompt() inlines them as base64
+        if image_paths:
+            paths_text = "\n".join(image_paths)
             text = f"{text}\n{paths_text}" if text else paths_text
 
         # Inject text file contents
@@ -2460,16 +2460,16 @@ async def _route_message(
 
     # Bail out if we still have no text after attempting transcription
     if not text:
-        # Clean up any downloaded attachment temp files
-        for p in _attachment_temp_paths:
+        # Clean up any downloaded image temp files
+        for p in _image_temp_paths:
             try:
                 os.unlink(p)
             except OSError:
                 pass
         return
 
-    def _cleanup_attachment_temps() -> None:
-        for p in _attachment_temp_paths:
+    def _cleanup_image_temps() -> None:
+        for p in _image_temp_paths:
             try:
                 os.unlink(p)
             except OSError:
@@ -2491,7 +2491,7 @@ async def _route_message(
         if end != -1:
             clean_text = text[end + 1 :].lstrip()
     if not clean_text:
-        _cleanup_attachment_temps()
+        _cleanup_image_temps()
         return
 
     # ── !stop: intercept BEFORE handle_message to bypass session semaphore ──
@@ -2635,8 +2635,7 @@ async def _route_message(
             team_id=team_id,
             agent_override=agent_override,
             user_display_name=_sender_display,
-            # Historical key; carries every attachment temp path for cleanup.
-            image_temp_paths=list(_attachment_temp_paths),
+            image_temp_paths=list(_image_temp_paths),
             from_trusted_bot=from_trusted_bot,
         )
         if not _queued:
@@ -2652,7 +2651,7 @@ async def _route_message(
                         team_id=team_id,
                         agent_override=agent_override,
                         user_display_name=_sender_display,
-                        image_temp_paths=list(_attachment_temp_paths),
+                        image_temp_paths=list(_image_temp_paths),
                         from_trusted_bot=from_trusted_bot,
                     ),
                 )
@@ -2665,9 +2664,11 @@ async def _route_message(
                 await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:
                 logger.debug("Failed to add queue reaction", exc_info=True)
-        # NOTE: do NOT _cleanup_attachment_temps() here — clean_text references
-        # these paths. The historical image_temp_paths queue key transfers cleanup
-        # ownership to _dispatch_queued after the turn runs.
+        # NOTE: do NOT _cleanup_image_temps() here — clean_text references these
+        # temp-file paths and the queued turn hasn't run yet. They are carried in
+        # the queue kwargs and unlinked by _dispatch_queued after the turn runs
+        # (deleting them now dropped the images silently: p.is_file() was False
+        # by dispatch time, so _send_prompt skipped them with no error).
         return
     elif orch.sessions and orch.sessions.enqueue(
         session_key,
@@ -2679,7 +2680,7 @@ async def _route_message(
         team_id=team_id,
         agent_override=agent_override,
         user_display_name=_sender_display,
-        image_temp_paths=list(_attachment_temp_paths),
+        image_temp_paths=list(_image_temp_paths),
         from_trusted_bot=from_trusted_bot,
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
@@ -2689,7 +2690,8 @@ async def _route_message(
             except Exception:
                 logger.debug("Failed to add queue reaction", exc_info=True)
         # See the force=True branch above: cleanup is deferred to
-        # _dispatch_queued so every queued attachment path remains valid.
+        # _dispatch_queued so the queued turn's clean_text can still resolve
+        # its image temp-file paths.
         return
 
     # ── New transport path: route to the messaging abstraction ──
@@ -2766,7 +2768,7 @@ async def _route_message(
             orch._handler_tasks.discard(task)
             if orch._session_tasks.get(session_key) is task:
                 del orch._session_tasks[session_key]
-            _cleanup_attachment_temps()
+            _cleanup_image_temps()
             # Drain queue: only if no other task took over this session.
             # Mirrors native _on_done so messages queued while this session was
             # busy aren't stranded when the transport path is the active route.
@@ -2822,7 +2824,7 @@ async def _route_message(
         )
     except Exception:
         logger.exception("Failed to create handle_message task")
-        _cleanup_attachment_temps()
+        _cleanup_image_temps()
         return
 
     orch._session_tasks[session_key] = t
@@ -2831,7 +2833,7 @@ async def _route_message(
         orch._handler_tasks.discard(task)
         if orch._session_tasks.get(session_key) is task:
             del orch._session_tasks[session_key]
-        _cleanup_attachment_temps()
+        _cleanup_image_temps()
         # Drain queue: only if no other task took over this session
         try:
             if session_key not in orch._session_tasks and orch.sessions:

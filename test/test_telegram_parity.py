@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from test_telegram import FakeClient, _dispatcher, _dm
 
-from conftest import host_abs
 from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.telegram.client import (
     REACTION_EMOJI,
@@ -44,12 +43,6 @@ from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramInboundM
 
 # Split so the literal never appears whole in this file.
 _AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
-
-#: The authorized upload root. ``authorize_upload_root`` keeps only an ABSOLUTE
-#: root (a string gate; extraction is faked below), and from Python 3.13
-#: ``ntpath.isabs("/tmp")`` is False, so the POSIX literal left uploads disabled
-#: on Windows and every "the picture must be uploaded" assertion failed there.
-_UPLOAD_ROOT = host_abs("tmp")
 
 
 def _msg(text: str, *, user: int = 1, chat: int = 1) -> TelegramInboundMessage:
@@ -234,7 +227,7 @@ class TestOutboundImages:
     @pytest.mark.asyncio
     async def test_an_image_ships_as_an_attachment_after_the_text(self) -> None:
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         renderer._extract_uploads = AsyncMock(  # type: ignore[method-assign]
             return_value=("Here is the chart.", [_png()])
         )
@@ -264,7 +257,7 @@ class TestOutboundImages:
     @pytest.mark.asyncio
     async def test_a_restricted_session_keeps_uploads_off(self) -> None:
         renderer, _ = _renderer(uploads_allowed=False)
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         assert renderer._uploads_enabled() is False
 
     @pytest.mark.asyncio
@@ -272,7 +265,7 @@ class TestOutboundImages:
         self,
     ) -> None:
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         client.media_fails = True
         renderer._extract_uploads = AsyncMock(  # type: ignore[method-assign]
             return_value=("Here it is.", [_png()])
@@ -291,7 +284,7 @@ class TestOutboundImages:
         # Markup that hid a secret loses its formatting rather than its
         # redaction: that is the documented direction of the trade.
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         client.media_fails = True
         leaky = OutboundFile(
             path="/tmp/chart.png",
@@ -311,7 +304,7 @@ class TestOutboundImages:
         # One truncated bubble used to keep only what fit under the cap: with
         # enough failed images, every reference past it vanished silently.
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         client.media_fails = True
         files = [_png(f"chart-{i:03d}.png") for i in range(200)]
         renderer._extract_uploads = AsyncMock(  # type: ignore[method-assign]
@@ -333,7 +326,7 @@ class TestOutboundImages:
         # points. An astral char costs 2 units, so emoji-dense alt text passed
         # the slice while overflowing the real limit, and the send bounced.
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         client.media_fails = True
         dense = OutboundFile(
             path="/tmp/chart.png",
@@ -378,7 +371,7 @@ class TestOutboundImages:
         # _split_text hard-cuts at the render budget, so the markup is placed
         # across that offset on purpose.
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         ref = "![c](/tmp/chart.png)"
         cut = renderer._rendered_limit()
         renderer._buf = ["A" * (cut - 10) + ref]
@@ -394,7 +387,7 @@ class TestOutboundImages:
     @pytest.mark.asyncio
     async def test_live_frames_hide_the_markup_so_no_path_flashes(self) -> None:
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         renderer._last_edit = -1e9
         await renderer.on_text_chunk("Look: ![c](/tmp/secret-dir/chart.png)")
         assert "/tmp/secret-dir/chart.png" not in "".join(text for text, _ in client.sent)
@@ -406,7 +399,7 @@ class TestOutboundImages:
         # leaving it makes that transient frame the turn's FINAL text message,
         # sitting above the picture forever.
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         renderer._buf = ["![c](/tmp/chart.png)"]
         renderer._last_edit = -1e9
         await renderer.on_tool_call("t1", "render_chart")
@@ -422,7 +415,7 @@ class TestOutboundImages:
     @pytest.mark.asyncio
     async def test_an_extraction_failure_costs_the_picture_not_the_answer(self) -> None:
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         renderer._buf = ["The answer. ![c](/tmp/chart.png)"]
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
@@ -473,7 +466,7 @@ class TestUploadRejections:
         from kiro_crew.messaging.outbound_files import ExtractResult
 
         renderer, client = _renderer()
-        renderer.authorize_upload_root(_UPLOAD_ROOT)
+        renderer.authorize_upload_root("/tmp")
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
                 "kiro_crew.telegram.renderer.extract_local_refs_off_loop",

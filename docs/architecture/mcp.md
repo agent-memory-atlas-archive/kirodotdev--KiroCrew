@@ -712,23 +712,7 @@ answers `tools/list` from):
   `browse_outline`, `browse_search`
 - **Workflows and hooks:** `workflow_author`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
-- **Diagnostics:** `resource_status`, `issue_radar_record_investigation`,
-  `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
-  the agent can self-diagnose a rejected turn. Reads log files only: never the
-  fenced identity/token stores, and never the conversation-bearing sources
-  (`kiro-chat.log`, session transcripts), each of which is one shared host file
-  per gateway that would disclose another session's conversation. That scope
-  holds only while mcp.log / lsp.log record protocol traffic rather than full
-  frame bodies, since they share the chat log's single-fixed-path,
-  all-sessions-interleaved shape and an MCP `tools/call` frame carries
-  conversation-derived arguments. Measured on kiro-cli 2.21.1: mcp.log is empty
-  across a session of continuous MCP tool calls, every lsp.log record is a
-  single-line `<timestamp> ERROR <module>: <message>` with no JSON-RPC envelope
-  and a longest line of 313 bytes, and sentinel strings passed as tool-call
-  arguments appear in neither file. Because that measures one version of a
-  component this repo does not pin, a source whose text carries serialized frames
-  is REFUSED whole and visibly, so a kiro-cli that starts logging payloads
-  surfaces as a refusal instead of a silent widening
+- **Diagnostics:** `resource_status`, `issue_radar_record_investigation`
 - **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
   process holds the gateway's internal secret and forwards only a frozen
   (method, path) allowlist of Ops Mission Control routes; the agent never

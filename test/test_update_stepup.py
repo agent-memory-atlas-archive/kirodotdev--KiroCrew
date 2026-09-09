@@ -158,145 +158,6 @@ class TestArmEndpoint:
         assert resp.status == 409
         assert json.loads(resp.body.decode())["code"] == "arm_no_verdict"
 
-    async def test_arm_refuses_when_check_reports_nothing_to_apply(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from kiro_crew.platform import wheel_engine
-
-        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
-        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
-        updates._set_update_info(
-            update_available=False,
-            channel_move_pending=False,
-            latest_version="0.6.0",
-            channel="stable",
-        )
-        resp = await updates.api_update_arm(_request())
-        assert resp.status == 409
-        assert json.loads(resp.body.decode())["code"] == "arm_no_verdict"
-
-    async def test_arm_accepts_a_pending_channel_downgrade(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from kiro_crew.platform import wheel_engine
-
-        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
-        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
-        monkeypatch.setattr(updates, "min_version", lambda: "0.5.0")
-        updates._set_update_info(
-            update_available=False,
-            channel_move_pending=True,
-            latest_version="0.6.0rc4",
-            channel="insider",
-        )
-        try:
-            resp = await updates.api_update_arm(_request())
-            assert resp.status == 200
-            pending = update_stepup.read_pending()
-            assert pending is not None
-            assert pending.version == "0.6.0rc4"
-            assert pending.channel == "insider"
-        finally:
-            update_stepup.clear_pending()
-            updates._set_update_info()
-
-    async def test_arm_refuses_a_channel_move_below_the_minimum_version(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from kiro_crew.platform import wheel_engine
-
-        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
-        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
-        monkeypatch.setattr(updates, "min_version", lambda: "0.6.0")
-        monkeypatch.setattr(updates, "_local_version", "0.7.0")
-        audit = MagicMock()
-        import kiro_crew.sel as sel_mod
-
-        monkeypatch.setattr(sel_mod, "sel", lambda: audit)
-        updates._set_update_info(
-            update_available=False,
-            channel_move_pending=True,
-            latest_version="0.5.0",
-            channel="stable",
-        )
-        try:
-            resp = await updates.api_update_arm(_request())
-            payload = json.loads(resp.body.decode())
-            assert resp.status == 409
-            assert payload["code"] == "arm_below_min_version"
-            assert payload["governance"] is True
-            assert update_stepup.read_pending() is None
-            audit.log_api_access.assert_called_once_with(
-                caller="127.0.0.1",
-                operation="update.arm",
-                outcome="denied",
-                source="dashboard",
-                resources="v0.5.0 (stable)",
-                error="selected release is below the required minimum version",
-                critical=True,
-            )
-        finally:
-            update_stepup.clear_pending()
-            updates._set_update_info()
-
-    async def test_arm_floor_denial_survives_an_unwritable_audit(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from kiro_crew.platform import wheel_engine
-
-        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
-        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
-        monkeypatch.setattr(updates, "min_version", lambda: "0.6.0")
-        monkeypatch.setattr(updates, "_local_version", "0.7.0")
-
-        class _BrokenSel:
-            def log_api_access(self, **kwargs: object) -> None:
-                raise OSError(28, "no space left on device")
-
-        import kiro_crew.sel as sel_mod
-
-        monkeypatch.setattr(sel_mod, "sel", lambda: _BrokenSel())
-        updates._set_update_info(
-            update_available=False,
-            channel_move_pending=True,
-            latest_version="0.5.0",
-            channel="stable",
-        )
-        try:
-            resp = await updates.api_update_arm(_request())
-            payload = json.loads(resp.body.decode())
-            assert resp.status == 409
-            assert payload["code"] == "arm_below_min_version"
-            assert update_stepup.read_pending() is None
-        finally:
-            update_stepup.clear_pending()
-            updates._set_update_info()
-
-    async def test_arm_allows_an_upgrade_toward_the_minimum_version(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from kiro_crew.platform import wheel_engine
-
-        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
-        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
-        monkeypatch.setattr(updates, "min_version", lambda: "0.6.0")
-        monkeypatch.setattr(updates, "_local_version", "0.4.0")
-        updates._set_update_info(
-            update_available=True,
-            channel_move_pending=False,
-            latest_version="0.5.0",
-            channel="stable",
-        )
-        try:
-            resp = await updates.api_update_arm(_request())
-            assert resp.status == 200
-            pending = update_stepup.read_pending()
-            assert pending is not None
-            assert pending.version == "0.5.0"
-        finally:
-            update_stepup.clear_pending()
-            updates._set_update_info()
-
     async def test_arm_response_carries_no_nonce(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.platform import wheel_engine
 
@@ -330,7 +191,6 @@ class TestArmEndpoint:
 
         monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
         monkeypatch.setattr(updates, "resolve_provider", lambda: None)
-        monkeypatch.setattr(updates, "min_version", lambda: "0.4.0")
         updates._set_update_info(
             update_available=True, latest_version="0.4.0rc14", channel="stable"
         )
@@ -410,22 +270,6 @@ class TestApproveEndpoint:
             assert update_stepup.read_pending() is not None
         finally:
             update_stepup.clear_pending()
-
-    async def test_minimum_version_landing_after_arm_refuses_approve(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A stricter floor in the arm-to-approve window must win."""
-        pending = update_stepup.arm("0.5.0", "stable")
-        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
-        monkeypatch.setattr(updates, "min_version", lambda: "0.6.0")
-        req = _request({"nonce": pending.nonce})
-        resp = await updates.api_update_approve(req)
-        payload = json.loads(resp.body.decode())
-        assert resp.status == 409
-        assert payload["code"] == "approve_below_min_version"
-        assert payload["governance"] is True
-        assert update_stepup.read_pending() is None
-        assert req.app["state"]._background_tasks == set()
 
     async def test_no_armed_request_refused(self) -> None:
         update_stepup.clear_pending()

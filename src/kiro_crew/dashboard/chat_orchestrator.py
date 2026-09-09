@@ -242,9 +242,9 @@ def _round_cap_message(
 ) -> str | None:
     """The halt notice when *stage_num* has spent its round budget, else ``None``.
 
-    ``MAX_STAGE_ROUNDS`` enforces the "max 3 rounds per stage" the orchestrator
-    prompt promises: recording a round without consulting it here would leave that
-    promise unenforced. Rounds are recorded in ONE place -- the
+    ``MAX_STAGE_ROUNDS`` was recorded but never consulted on the dashboard path, so
+    the "max 3 rounds per stage" the orchestrator prompt promises was unenforced
+    here (issue #1783). Rounds are recorded in ONE place -- the
     subagent-completion handler in the Slack gateway, once per completed wave on
     this same tracker -- which is how a dashboard stage reaches the cap at all.
     The loop itself enters a stage through ``start_stage``, which spends no round,
@@ -295,7 +295,7 @@ def _is_plan_approval_entry(entry: dict) -> bool:
     Matches ONLY the structural kind="plan_approval" tag (queue_append's
     classify-by-metadata contract). Deliberately NOT content: an untagged
     "go" in the queue is a plain user message (e.g. a linked Slack user's
-    text) and dropping it is data loss. Nor is
+    text) and dropping it is data loss (GPT CI finding, round 6). Nor is
     content matching needed for safety: a drained untagged entry dispatches
     through _run_chat as an ordinary turn — the queue drain never re-enters
     api_chat's typed-go branch, and _stage_loop's entry latch blocks any
@@ -340,11 +340,11 @@ async def _exit_cancelled_plan(state: "DashboardState", slot: "_ChatSlot") -> No
     # refusing — the plan-action handler queues one (kind="plan_approval") when
     # the slot is busy (a pending loop counts as busy), so two Go clicks racing
     # a Cancel leave a second approval in the queue. Handing that entry to
-    # _start_next_queued_turn would execute a revoked action through _run_chat.
-    # Button approvals are classified by the structural kind
+    # _start_next_queued_turn would execute a revoked action through _run_chat
+    # (GPT CI finding). Button approvals are classified by the structural kind
     # tag per queue_append's contract; a TYPED "go"/"go all" queued through
     # /api/chat carries no tag by definition, so those fall back to normalized
-    # content. Filtered here at drain time — not in the
+    # content (second GPT finding). Filtered here at drain time — not in the
     # cancel handler — so approvals queued AFTER the cancel but before this
     # pending loop ran are caught too.
     if slot._queue:
@@ -401,10 +401,10 @@ async def _load_plan_budgets(slot: "_ChatSlot", tracker: OrchestrationTracker) -
     except Exception:
         # Both budgets are set to the dataclass defaults, not left as they are.
         # The tracker constructs with ``_plan_timeout = 0``, and 0 means DISABLED
-        # everywhere it is read -- so leaving them alone on an unreadable or invalid
-        # config.json would remove the whole-plan ceiling entirely while the stage
-        # budget quietly fell back to its own default. A failed load lands on exactly
-        # the budgets a default config would have produced.
+        # everywhere it is read -- so an unreadable or invalid config.json used to
+        # remove the whole-plan ceiling entirely while the stage budget quietly
+        # fell back to its own default. A failed load now lands on exactly the
+        # budgets a default config would have produced (Opus finding).
         tracker.stage_timeout_seconds = OrchestratorConfig.stage_timeout_seconds
         tracker.max_plan_duration_seconds = OrchestratorConfig.max_plan_duration_seconds
         logger.debug(
@@ -437,7 +437,7 @@ async def _stage_loop(
     Iterates through plan stages, calling ``_run_chat`` once per stage.
     Stage boundaries are enforced by Python code, not LLM prompts.
     """
-    # Cancelled-plan latch: checked BEFORE the lazy tracker creation
+    # Cancelled-plan latch (#6046): checked BEFORE the lazy tracker creation
     # below. A Cancel processed after the Go POST was accepted but before this
     # coroutine ran found no tracker to stop; without this check the loop would
     # build a fresh (unstopped) tracker and advance stage 1 against a revoked
@@ -458,9 +458,9 @@ async def _stage_loop(
     # lightweight executor, not a task runner, and a plan nobody was watching is
     # not resumed across a restart. But `mode` IS persisted and the transcript
     # keeps its `[OPTION: Go | Go All | Cancel]` row, so a restored slot offers
-    # buttons with no plan behind them. Clicking one would run zero stages and
+    # buttons with no plan behind them. Clicking one used to run zero stages and
     # return in silence -- the loop's range is empty, and the completion message is
-    # gated on `start_idx < total`, so the user would get no response at all.
+    # gated on `start_idx < total`, so the user got no response at all.
     #
     # Say so instead. Also covers a plan turn that parsed no stages, which reaches
     # this the same way, so the wording names the state rather than a cause.
@@ -531,7 +531,7 @@ async def _stage_loop(
     # stage turn can queue a recovery/continue turn (empty-response re-queue,
     # stale/tool-stall recovery) that runs slightly later on the same slot; a
     # per-call clear would drop the guard before that recovery ran, letting its
-    # plan-shaped output re-arm/re-count the plan. The flag is
+    # plan-shaped output re-arm/re-count the plan (GPT finding). The flag is
     # cleared once in the outer `finally` when the loop actually exits (pause,
     # completion, break, or error) — so a later Cancel + re-plan can arm again.
     #
@@ -577,18 +577,18 @@ async def _stage_loop(
 
             # Whole-plan watchdog. The per-stage timeout below bounds ONE stage;
             # multiplied by stage count it bounds nothing useful, so a long plan
-            # could run unattended for hours. Checked at the stage
+            # could run unattended for hours (issue #1783). Checked at the stage
             # boundary rather than mid-turn: the stage that is already running has
             # its own ceiling, and cutting a plan between stages leaves the work
             # so far captured on disk and resumable.
             #
             # AUTO-RUN ONLY. The budget bounds UNATTENDED runtime, and the clock is
             # wall-clock from the plan's first round, so a stage-gated plan spends
-            # most of it sitting at an approval prompt: enforcing it there would cut
-            # a plan the user is actively stepping through, counting their own
+            # most of it sitting at an approval prompt: enforcing it there cut a
+            # plan the user was actively stepping through, having counted their own
             # review time between Go clicks against them. A plan that advances only
             # when the user asks it to needs no ceiling, because the user is the
-            # ceiling.
+            # ceiling (Opus finding).
             if auto_run and tracker.is_plan_timed_out():
                 _halt_plan(
                     state,
@@ -989,9 +989,9 @@ async def _stage_loop(
             # The cap exists to stop an UNATTENDED plan from spinning; an attended
             # stage that spent exactly its 3 allowed waves and then finished has
             # done nothing wrong, and the user is about to be asked for Go anyway.
-            # Halting it here would read "Auto-run stopped" on a plan that was never
-            # in auto-run and, worse, would skip the Go row below, stranding the
-            # step-through.
+            # Halting it here read "Auto-run stopped" on a plan that was never in
+            # auto-run and, worse, skipped the Go row below, stranding the
+            # step-through (Opus finding).
             _cap = _round_cap_message(tracker, stage_num) if auto_run else None
             if _cap:
                 _halt_plan(
@@ -1203,15 +1203,15 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
         # state — the Slack gateway lazily creates a fresh UNSTOPPED tracker on
         # an orchestrator slot when a subagent result lands, so a result arriving
         # between two Cancels would make a tracker-based read report the plan as
-        # live again and write a duplicate '🛑 Plan cancelled.' row. The
-        # unconditional tracker.stop() below still stops such a
+        # live again and write a duplicate '🛑 Plan cancelled.' row (Opus review
+        # finding). The unconditional tracker.stop() below still stops such a
         # gateway-created tracker on every cancel POST.
         already_cancelled = slot._plan_cancelled
         # Set unconditionally — NOT only when a tracker exists. The tracker is
         # created lazily inside _stage_loop, so a Cancel processed in the window
         # between a Go POST being accepted and its _stage_loop coroutine running
         # would otherwise no-op entirely and the plan would advance while the
-        # transcript says cancelled. _stage_loop checks this latch
+        # transcript says cancelled (#6046). _stage_loop checks this latch
         # before creating a tracker.
         slot._plan_cancelled = True
         if tracker and not tracker.stopped:

@@ -194,9 +194,7 @@ def glab_api(
             argv += ["--method", method]
         input_text = None
         if body is not None:
-            # Strict GitLab instances reject a body without an explicit
-            # Content-Type as HTTP 415; glab does not set one for stdin input.
-            argv += ["--header", "Content-Type: application/json", "--input", "-"]
+            argv += ["--input", "-"]
             input_text = json.dumps(body)
 
         proc = run(argv, host=host, timeout=timeout, input_text=input_text)

@@ -239,8 +239,8 @@ def _on_disk_mcp_servers(installed_path: Path) -> dict[str, Any] | None:
     corrupt, or holding a non-object ``mcpServers`` all answer ``None``: there is
     nothing authoritative to read, and this editor is the user's repair path for
     exactly that state, so failing the PUT closed would leave a broken agent
-    unfixable from the dashboard. Neither rule then acts and the snapshot lands
-    verbatim; enabled apps re-register their servers on the next gateway
+    unfixable from the dashboard. Neither rule then acts and the snapshot lands as
+    it did pre-fix; enabled apps re-register their servers on the next gateway
     start (``reconcile_enabled_app_resources``), so the loss self-heals.
 
     The CALLER holds bridges' flock across this read and the spec write, so no
@@ -261,7 +261,7 @@ def _on_disk_mcp_servers(installed_path: Path) -> dict[str, Any] | None:
 def _drop_unbacked_app_entries(
     config: dict[str, Any], existing: dict[str, Any] | None
 ) -> tuple[str, ...]:
-    """Drop submitted ``<app>:<server>`` entries the installed spec does not hold.
+    """Drop submitted ``<app>:<server>`` entries the installed spec does not hold (#7089).
 
     THE STALE-SNAPSHOT AXIS, the mirror of ``_merge_unowned_servers``. That rule
     decides what happens to a name the submission OMITS. This one decides one
@@ -269,8 +269,8 @@ def _drop_unbacked_app_entries(
     name in the app-namespace region THROUGH THIS PUT? Not while the installed spec
     is READABLE -- so a submitted namespaced name with no row on disk is dropped.
     The readability qualifier is not a hedge: an unreadable spec answers nothing, so
-    the submission lands unfiltered, and a rule stated without it would contradict
-    the best-effort path below.
+    the submission lands as it did pre-fix, and a rule stated without it would
+    contradict the best-effort path below.
 
     THE REGION IS RESERVED FROM THIS ENDPOINT, not owned by a single writer, and
     the distinction is worth stating because the weaker claim is false. Two paths
@@ -303,9 +303,9 @@ def _drop_unbacked_app_entries(
 
     WHAT THIS DELIBERATELY DOES NOT DO: it never rewrites a submitted value. Where
     the name is on disk AND in the submission, the submitted row still wins
-    untouched -- the editor-snapshot-wins contract, pinned by
-    ``test_app_owned_entry_present_in_the_snapshot_is_updated``. Reversing it needs
-    a maintainer ruling.
+    untouched -- the editor-snapshot-wins contract kept in #5899 and re-affirmed
+    for #6664, pinned by ``test_app_owned_entry_present_in_the_snapshot_is_updated``.
+    Reversing it needs a maintainer ruling and is tracked separately.
 
     THE DECLARED-NAME CENSUS IS DELIBERATELY NOT CONSULTED, and this is the one
     part a later change is most likely to undo, so the reason is here rather than
@@ -327,7 +327,7 @@ def _drop_unbacked_app_entries(
     submitted = config.get("mcpServers")
     if not isinstance(submitted, dict) or not submitted:
         # Absent, empty, or a shape kiro-cli rejects outright: nothing to decide,
-        # so the submission persists verbatim.
+        # and the existing verbatim-persist behaviour is unchanged.
         return ()
     if existing is None:
         # The spec could not be read, so nothing is authoritative. See
@@ -350,11 +350,11 @@ def _merge_unowned_servers(
 ) -> tuple[str, ...]:
     """Re-add ``mcpServers`` entries the submitting client does not own.
 
-    MERGE-ON-WRITE. This PUT persists a whole-file snapshot the client read
-    earlier, and ``apps/bridges.py::_register_mcp_servers`` writes app MCP
-    bridges into that same file under its own flock. Without the merge, a
-    registration landing between the client's read and its PUT is silently
-    clobbered and the app's tools stop resolving with nothing logged anywhere.
+    MERGE-ON-WRITE (#6664). This PUT persists a whole-file snapshot the client
+    read earlier, and ``apps/bridges.py::_register_mcp_servers`` writes app MCP
+    bridges into that same file under its own flock. A registration landing
+    between the client's read and its PUT was therefore silently clobbered, and
+    the app's tools simply stopped resolving with nothing logged anywhere.
 
     The rule, in one sentence: **preservation requires positive evidence of app
     or host ownership.** An on-disk entry absent from the submission is kept only
@@ -366,60 +366,64 @@ def _merge_unowned_servers(
 
     The inverse test -- "keep anything no mcp.json scope declares" -- reads as
     equivalent and is not. A server added through this same editor lives ONLY in
-    the installed spec, which is not a scope, so it would look unowned and be
+    the installed spec, which is not a scope, so it looked unowned and was
     re-inserted on every attempt to remove it: not merely preserved against the
-    user's wishes, but permanently undeletable, because each retry re-reads the
+    user's wishes, but permanently undeletable, because each retry re-read the
     same entry. Requiring evidence costs an app bridge nothing, since a bridge is
     always positively identifiable.
 
-    The census is NOT consulted. Subtracting every scope-declared name from the
-    candidates ahead of the ownership test can only ever remove a name that IS
-    provably owned, because ownership is matched by exact manifest name: a user
-    who also declares ``demo:notes`` in their own mcp.json would then make every
-    stale PUT delete app ``demo``'s live bridge. Proven ownership therefore outranks a
+    The census is NOT consulted, and the reason is worth naming because an
+    earlier cut did consult it: it subtracted every scope-declared name from the
+    candidates ahead of the ownership test, as precedence carried over from the
+    prefix-matching era. With ownership matched by exact manifest name that
+    subtraction could only ever remove a name that IS provably owned, so a user
+    who also declared ``demo:notes`` in their own mcp.json made every stale PUT
+    delete app ``demo``'s live bridge. Proven ownership therefore outranks a
     declaration, and a name with no proven owner is deleted whether a scope
     declares it or not -- which leaves the census unable to change any verdict.
 
     Two consequences worth naming rather than discovering:
 
     * A host-MANAGED server the rebuild RE-ADDS (``agent.emission_eligible_mcp_servers``)
-      is preserved. The rebuild re-adds those entries unconditionally, so removing
-      one through this editor does not stick. The qualifier is load-bearing: a
-      managed entry the rebuild would NOT emit (an ``opt_in`` grant, or one whose
-      ``spec_gate`` is shut) is deleted like any other absent entry, because
-      nothing re-adds it and preserving it would make the grant unrevocable and
-      the gated backend resurrectable.
-    * An app bridge cannot be removed through this endpoint. That is the rule's
+      is preserved. That is not a new restriction -- the rebuild re-adds those
+      entries unconditionally, so removing one through this editor never stuck.
+      The qualifier is load-bearing: a managed entry the rebuild would NOT emit
+      (an ``opt_in`` grant, or one whose ``spec_gate`` is shut) is deleted like
+      any other absent entry, because nothing re-adds it and preserving it made
+      the grant unrevocable and the gated backend resurrectable.
+    * An app bridge cannot be removed through this endpoint. That is the issue's
       explicit intent; the app lifecycle (disable/uninstall, which calls
       ``_deregister_mcp_servers``) is what removes it.
 
-    BEST-EFFORT ON AN UNREADABLE SPEC, deliberately -- and the read itself
+    BEST-EFFORT ON AN UNREADABLE SPEC, deliberately -- and the read itself now
     lives in :func:`_on_disk_mcp_servers`, performed once on this rule's behalf and
     on :func:`_drop_unbacked_app_entries`'s, so both directions decide from the
     SAME bytes instead of from two reads that could disagree. A corrupt installed
     spec has no parseable entries to preserve, and this editor is the user's repair
     path for exactly that state -- failing the PUT closed would leave a broken
     agent with no way to fix it from the dashboard. So an unreadable spec preserves
-    nothing and the snapshot lands verbatim; enabled apps re-register
+    nothing and the snapshot lands as it did pre-fix; enabled apps re-register
     their servers on the next gateway start
     (``reconcile_enabled_app_resources``), so the loss self-heals.
 
-    WHAT REMAINS. The caller holds bridges' flock across this read and the spec
-    write (see :func:`_commit_agent_config`), and every writer of this file
+    WHAT REMAINS, now that the caller holds bridges' flock across this read and
+    the spec write (see :func:`_commit_agent_config`). Every writer of this file
     INSIDE the gateway takes that same flock -- ``_register_mcp_servers``,
     ``_deregister_mcp_servers``, ``reregister_app_mcp_servers``, the agent
     rebuild, and ``handlers/mcp.py``'s spec syncs -- so no app registration or
-    deregistration can interleave with this read, in either direction. That
-    window is closed rather than narrowed, which matters because the
-    deregistration direction does not self-heal: startup reconciliation only
+    deregistration can interleave with this read any more, in either direction.
+    The earlier writeup here claimed a bounded, self-healing residual for that
+    window; that was wrong twice over, and both halves are now moot: the
+    deregistration direction was never self-healing (startup reconciliation only
     re-registers ENABLED apps, so a resurrected bridge from a disabled or
-    uninstalled app would persist indefinitely.
+    uninstalled app persisted indefinitely), and the window itself is closed
+    rather than narrowed.
 
     The residual that is real is a writer OUTSIDE this process that does not take
     the flock -- kiro-cli writing the spec itself, or a user editing the file by
     hand. Nothing in the gateway can serialize against those, and the same
     exposure applies to every other writer here, so it is a property of the file
-    rather than of this rule. Torn reads are not part of it: the in-process
+    rather than of this change. Torn reads are not part of it: the in-process
     writers all go through ``atomic_write``, so a reader sees the whole old file
     or the whole new one.
 
@@ -446,13 +450,15 @@ def _merge_unowned_servers(
     absent = {name: spec for name, spec in existing.items() if name not in submitted_servers}
     if not absent:
         return ()
-    # POSITIVE EVIDENCE decides, and nothing overrides it. Ownership is the EXACT
-    # manifest-declared set, so subtracting every scope-declared name from the
-    # candidates BEFORE the ownership test could only ever remove a name that IS
-    # provably owned -- a user who also declares ``demo:notes`` in their own
-    # mcp.json would make every stale PUT delete app ``demo``'s live bridge. A
-    # name with no proven owner is deleted whether a scope declares it or not, so
-    # the census cannot change any verdict and is not consulted.
+    # POSITIVE EVIDENCE decides, and nothing overrides it. An earlier cut
+    # subtracted every scope-declared name from the candidates BEFORE ownership
+    # was tested, as a precedence rule inherited from the prefix-matching era.
+    # Once ownership became the EXACT manifest-declared set, that subtraction
+    # could only ever remove a name that IS provably owned -- a user who also
+    # declares ``demo:notes`` in their own mcp.json made every stale PUT delete
+    # app ``demo``'s live bridge. A name with no proven owner is deleted whether
+    # a scope declares it or not, so the census cannot change any verdict and is
+    # no longer consulted.
     owned = _app_or_host_owned(absent)
     preserved = {name: spec for name, spec in absent.items() if name in owned}
     if not preserved:
@@ -542,7 +548,7 @@ def _app_declared_server_names() -> frozenset[str]:
     host-managed, gate RAISES    n/a (host, not an app)      DELETE (gate reads closed)      test_a_managed_server_whose_gate_raises_is_deleted
     edition extra                n/a (host, not an app)      PRESERVE                        test_an_edition_contributed_server_is_preserved
     edition extra with ``:``     host-owned AND namespaced   PRESERVE (host outranks)        test_a_namespaced_edition_extra_is_preserved_by_host_ownership
-    host spec not a mapping      n/a (host-produced only)    PRESERVE (no readable verdict)  test_a_malformed_host_spec_does_not_fail_the_put
+    host spec not a mapping      n/a (host-produced only)    PRESERVE (pre-fix verdict)      test_a_malformed_host_spec_does_not_fail_the_put
     plain (no ``:``)             n/a -- no app can own it    DELETE                          test_direct_client_entry_deletes_on_a_sequential_add_then_remove
     scope-declared, app-owned    enabled, declared           PRESERVE                        test_a_scope_declaration_does_not_defeat_proven_ownership
     scope-declared, not owned    n/a -- no owner to name     DELETE                          test_a_scope_declared_name_with_no_proven_owner_is_deleted
@@ -560,12 +566,12 @@ def _app_declared_server_names() -> frozenset[str]:
     any                          apps child unstattable      FAIL ``app_ownership_unreadable``  test_an_unstattable_apps_root_child_fails_the_put
     ===========================  ==========================  ==============================  =====================
 
-    THE HOST ROWS ARE NOT ONE ROW, and collapsing them is a defect. A
+    THE HOST ROWS ARE NOT ONE ROW, and collapsing them was a shipped defect. A
     host-managed entry is preserved *because the rebuild re-adds it*, so the
     justification only reaches the entries the rebuild actually emits. It does not
     reach an ``opt_in`` server (``kirocrew-dashboard``: never auto-emitted, and a
     refresh keeps an existing grant current without ever re-granting a removed
-    one), which preservation makes undeletable through the only surface that can
+    one), which preservation made undeletable through the only surface that can
     revoke the grant; nor a server whose ``spec_gate`` is CLOSED
     (``kirocrew-computer`` on an unsupported platform, or with computer use off),
     which both spec writers ``pop`` — preserving it resurrects exactly the backend
@@ -575,28 +581,29 @@ def _app_declared_server_names() -> frozenset[str]:
 
     ABSENCE IS PROVEN BY ``lstat`` RAISING ``FileNotFoundError``, nothing weaker.
     ``Path.is_file()`` and ``Path.is_dir()`` answer False for a malformed path as
-    readily as for a missing one, so screening on them alone reads a broken
+    readily as for a missing one, so screening on them alone read a broken
     symlink, a directory-where-a-file-belongs, or an unstattable path as "not
-    installed" and makes that app's live bridges deletable. Every present-but-wrong
+    installed" and made that app's live bridges deletable. Every present-but-wrong
     shape raises instead -- see :func:`_require_present_shape`, which screens the
     shape at the CALL SITE so ``manager.app_enabled_state`` keeps the contract its
     other callers rely on. The ENUMERATION obeys the same rule: each child of the
     apps root is stat'ed explicitly rather than filtered through ``is_dir()``,
     because pathlib routes that fault through ``_ignore_error`` and hands back a
     plain False for ENOENT, ENOTDIR, EBADF and ELOOP alike -- so a child that is a
-    symlink loop reads as a regular file and is skipped, deleting the bridges
+    symlink loop looked like a regular file and was skipped, deleting the bridges
     of the app under that name. Only a resolved stat may exclude a child, and only
     by proving it is not a directory.
 
     Four justifications carry the rows that are not self-evident:
 
-    * A SCOPE DECLARATION DOES NOT OUTRANK PROVEN OWNERSHIP. Subtracting every
-      scope-declared name from the candidates ahead of this test could only ever
-      remove a name that IS provably owned, because ownership is matched against
-      EXACT manifest names: a user who also declares ``demo:notes`` in their own
-      mcp.json would make every stale PUT delete app ``demo``'s live bridge. A
-      declared name with no proven owner is deleted anyway, by the general rule,
-      so the census cannot change a verdict and is not consulted.
+    * A SCOPE DECLARATION DOES NOT OUTRANK PROVEN OWNERSHIP. An earlier cut
+      subtracted every scope-declared name from the candidates ahead of this test,
+      as precedence carried over from the prefix-matching era. Against EXACT
+      manifest names that subtraction could only ever remove a name that IS
+      provably owned: a user who also declares ``demo:notes`` in their own mcp.json
+      made every stale PUT delete app ``demo``'s live bridge. A declared name with
+      no proven owner is deleted anyway, by the general rule, so the census cannot
+      change a verdict and is not consulted.
 
     * DISABLED ⇒ DELETE. The disable lifecycle owns bridge removal
       (``_deregister_mcp_servers``), and a deregistration that FAILED during
@@ -633,15 +640,15 @@ def _app_declared_server_names() -> frozenset[str]:
         raise AppOwnershipUnreadable(f"installed-apps directory unreadable: {exc}") from exc
     entries: list[Path] = []
     for child in children:
-        # ONE MORE SHAPE SCREEN, for the same reason as the two above. ``p.is_dir()``
-        # is unusable here: it routes its fault through pathlib's ``_ignore_error``
-        # and returns a plain False for ENOENT, ENOTDIR, EBADF and ELOOP -- the
-        # same False a regular file gets. A child that is a symlink LOOP would
-        # then be skipped as "not an app", making the absent bridges of the app
-        # under that name deletable. Only a resolved stat may exclude a child, and
-        # only by PROVING it is not a directory.
+        # ONE MORE SHAPE SCREEN, for the same reason as the two above. The filter
+        # here used to be ``p.is_dir()``, which routes its fault through pathlib's
+        # ``_ignore_error`` and returns a plain False for ENOENT, ENOTDIR, EBADF
+        # and ELOOP -- the same False a regular file gets. A child that is a
+        # symlink LOOP was therefore skipped as "not an app" and the absent bridges
+        # of the app under that name became deletable. Only a resolved stat may
+        # exclude a child, and only by PROVING it is not a directory.
         try:
-            st = child.stat()  # follows symlinks, exactly as ``is_dir()`` does
+            st = child.stat()  # follows symlinks, exactly as ``is_dir()`` did
         except FileNotFoundError:
             # Absence, and only absence, is a skip: an uninstall completing
             # between the listing and this stat leaves precisely this state, and a
@@ -719,10 +726,10 @@ def _app_or_host_owned(names: dict[str, Any]) -> frozenset[str]:
       see :func:`_app_declared_server_names`.
 
     ON A FAILED READ THIS RAISES rather than guessing, because both guesses are
-    wrong. Preserving every namespaced entry makes entries permanently
-    undeletable; treating the declared set as empty deletes live app bridges
-    over a fault that may be transient -- the very clobber merge-on-write exists
-    to prevent. The PUT turns the raise
+    wrong and each one is a defect this span has already shipped. Preserving
+    every namespaced entry makes entries permanently undeletable; treating the
+    declared set as empty deletes live app bridges over a fault that may be
+    transient -- the very clobber #6664 exists to fix. The PUT turns the raise
     into a 500 the client can retry, and because this runs at step (0a) before
     any durable write, all three targets stay byte-identical.
 
@@ -747,12 +754,13 @@ def _app_or_host_owned(names: dict[str, Any]) -> frozenset[str]:
 def _write_installed_config(path: Path, config: dict[str, Any]) -> None:
     """Write the installed agent spec. The CALLER holds bridges' file lock.
 
-    The lock lives in :func:`_commit_agent_config`, which holds it across the
-    merge's on-disk READ as well as this write -- reacquiring it here would
-    deadlock, because ``flock`` is per open file description and a second fd on
-    the same file blocks against the first from the same thread.
+    The lock used to be taken here. It moved out to
+    :func:`_commit_agent_config`, which now holds it across the merge's on-disk
+    READ as well as this write -- reacquiring it here would deadlock, because
+    ``flock`` is per open file description and a second fd on the same file
+    blocks against the first from the same thread.
 
-    Runs in a worker thread, which is what makes the caller's synchronous
+    Still runs in a worker thread, which is what makes the caller's synchronous
     flock legal -- on the event loop it would stall the gateway whenever app
     registration held it.
     """
@@ -817,7 +825,7 @@ def _commit_agent_config(
       are governed like any other — see step (0a). It is in the unit at all for
       the same reason as the read at (1): its on-disk read must be adjacent to
       the write it feeds, or an app registration landing during the flock wait
-      is clobbered.
+      is clobbered exactly as it was pre-fix.
     * The governance filter is FIRST among the steps that decide what is
       persisted, and it is in here at all so that the grant decision cannot be
       made against a ceiling that changes before the write publishes it — see
@@ -825,15 +833,16 @@ def _commit_agent_config(
       fail-closed raise costs no partial write.
     * The read is FIRST among the writes' own inputs. It is the only
       fallible-by-decision I/O step, and running it here — immediately adjacent
-      to the write it feeds — is what closes the lost-update window: reading the
-      baseline in the caller and writing it back one executor hop later leaves a
-      gap in which a concurrent writer's unrelated fields are silently
-      reverted.
+      to the write it feeds — is what closes the lost-update window: on the
+      previous shape the caller read the baseline and the worker wrote it back
+      one executor hop later, so a concurrent writer landing in that gap had its
+      unrelated fields silently reverted.
     * The bookkeeping lift runs AFTER the ``config.json`` write (so prefix 2
-      leaves the sidecar untouched) but BEFORE the spec write, because it STRIPS
-      Kiro Crew keys (``model_managed`` / ``cc_model``) out of the same *config*
-      dict the spec write then persists — reverse the two and the spec lands with
-      fields kiro-cli's ``deny_unknown_fields`` rejects.
+      leaves the sidecar untouched, restoring the pre-lock ordering) but BEFORE
+      the spec write, because it STRIPS Kiro Crew keys (``model_managed`` /
+      ``cc_model``) out of the same *config* dict the spec write then persists —
+      reverse the two and the spec lands with fields kiro-cli's
+      ``deny_unknown_fields`` rejects (#2570).
 
     Everything else fallible has already been decided by the caller: *config* is
     parsed and validated, *removed_per_key* is the computed ``removedTools`` map,
@@ -846,16 +855,16 @@ def _commit_agent_config(
     # (0) Governance floor, immediately before the writes it governs and inside
     # the same synchronous unit, which is what its own contract asks for
     # ("every whole-config writer MUST call this immediately before it
-    # persists"). Running it in phase 1 would decide against a profile snapshot
-    # taken BEFORE two lock acquisitions, so a contended transaction flock —
-    # unbounded, cross-process — could let the ceiling change during the wait and
-    # the PUT would persist a grant governance had since withheld. Here no
+    # persists"). It ran in phase 1 until R7: there it decided against a profile
+    # snapshot taken BEFORE two lock acquisitions, so a contended transaction
+    # flock — unbounded, cross-process — let the ceiling change during the wait
+    # and the PUT persisted a grant governance had since withheld. Here no
     # await, no lock release and no other task can land between the decision and
     # the write that publishes it. Same reasoning that put the read at (1).
     #
     # First in the unit, so a raise from the filter (``may_skip_gate_now`` fails
     # closed) leaves all three targets byte-identical, exactly as a phase-1
-    # failure does. Its SEL withhold record is infrastructure, not payload, and
+    # failure did. Its SEL withhold record is infrastructure, not payload, and
     # is best-effort inside the filter — it cannot fail this unit.
     #
     # Imported lazily: platform.governance is not a module-level dependency of
@@ -870,15 +879,15 @@ def _commit_agent_config(
     # because ``reconcile_enabled_app_resources`` only re-registers ENABLED apps
     # and skips the one whose bridge came back.
     #
-    # LOCK ORDER: transaction -> config -> bridge-file. The caller already holds
-    # the outer two before dispatching this unit, so widening the innermost hold
-    # adds no edge and inverts nothing. The cost is that app registration waits
-    # on the ``config.json`` and bookkeeping writes too -- the same accepted
-    # trade ``remove_provider_entry`` documents for holding the MCP lock across
-    # its unlinks, and the alternative (a second, later lock hold for just the
-    # spec write) is what reopens the window above.
+    # LOCK ORDER IS UNCHANGED: transaction -> config -> bridge-file. The caller
+    # already holds the outer two before dispatching this unit, so widening the
+    # innermost hold adds no edge and inverts nothing. The cost is that app
+    # registration now waits on the ``config.json`` and bookkeeping writes too --
+    # the same accepted trade ``remove_provider_entry`` documents for holding the
+    # MCP lock across its unlinks, and the alternative (a second, later lock hold
+    # for just the spec write) is what reopens the window above.
     #
-    # Taken once. ``_write_installed_config`` deliberately does not lock: with
+    # Taken once. ``_write_installed_config`` deliberately no longer locks: with
     # ``flock`` being per open file description, a nested reacquisition from this
     # same thread would block against this hold forever.
     from kiro_crew.platform.governance import sanitize_agent_config_governance
@@ -913,13 +922,13 @@ def _commit_agent_config_locked(
     # that governs the map they produce. Inside the unit for the same reason as
     # (0) and (1): the on-disk read has to be adjacent to the write it feeds, or a
     # bridge registration landing during the (unbounded, cross-process) flock wait
-    # is clobbered. BEFORE the filter, not after, so the
+    # is clobbered exactly as before the fix. BEFORE the filter, not after, so the
     # entries the merge re-adds are governed too -- re-injecting them afterwards
     # would hand an ``autoApprove`` on a preserved entry a path around step (0).
     #
     # ONE read for the two rules, so they cannot disagree about their baseline:
-    # the merge decides names ABSENT from the submission, and the drop rule
-    # decides namespaced names PRESENT in a stale one. Their order is immaterial (see
+    # #6664's merge decides names ABSENT from the submission, #7089's rule decides
+    # namespaced names PRESENT in a stale one. Their order is immaterial (see
     # :func:`_drop_unbacked_app_entries`).
     existing = _on_disk_mcp_servers(installed_path)
     dropped = _drop_unbacked_app_entries(config, existing)
@@ -1056,8 +1065,8 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # 2. ``_get_config_lock`` is the in-process lock every other
             #    ``config.json`` read-modify-writer in the dashboard takes
             #    (messaging channel savers, security, the MCP handlers, agent
-            #    create/update/delete). This PUT's own RMW spans an executor
-            #    hop, so the event loop does not serialize it for free: without
+            #    create/update/delete). This PUT's own RMW now spans an executor
+            #    hop, so the event loop no longer serializes it for free: without
             #    this lock a sibling RMW can read the same baseline and the last
             #    atomic rename silently reverts the other side's unrelated
             #    settings. Held ACROSS the offload for exactly the reason
@@ -1097,7 +1106,7 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # Per-key dict so removing from allowedTools only doesn't affect tools.
             #
             # Computed HERE, from the SUBMITTED config, because the governance
-            # filter has not run yet: it runs in the commit unit (step 0), so
+            # filter has not run yet: it now runs in the commit unit (step 0), so
             # this diff still sees the pre-governance map. A ceiling-withheld
             # allowedTools ref is not a user removal, and diffing after the
             # filter would record it as one and suppress that tool on every
@@ -1124,13 +1133,13 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # PUT could otherwise restore a ceiling-governed @denied grant or a
             # governed server's autoApprove that the per-ref writers strip.
             #
-            # NOT in phase 1. Running the filter here would place the grant
-            # decision BEFORE both lock acquisitions: the transaction flock is
-            # cross-process and its wait is unbounded, so a ceiling revoked
-            # during a contended wait is already stale by the time the write
-            # lands, and the PUT would restore a grant governance had withheld.
-            # ``_commit_agent_config`` step (0) runs it synchronously adjacent
-            # to the writes it governs — see that docstring. It costs a
+            # NOT in phase 1. The filter used to run here, and that placed the
+            # grant decision BEFORE both lock acquisitions: the transaction flock
+            # is cross-process and its wait is unbounded, so a ceiling revoked
+            # during a contended wait was already stale by the time the write
+            # landed, and the PUT restored a grant governance had withheld.
+            # ``_commit_agent_config`` step (0) now runs it synchronously
+            # adjacent to the writes it governs — see that docstring. It costs a
             # per-ref directory scan inside the locks, which is the price of the
             # decision being current; and one call, not two, so the filter is
             # never applied to a config it already filtered.
@@ -1262,8 +1271,8 @@ async def api_default_agent(request: web.Request) -> web.Response:
 
         # This read-modify-write must hold the SAME in-process lock every other
         # ``config.json`` RMW in the dashboard takes (agent create/update/delete,
-        # capability install/uninstall, the agent-config PUT). The event loop does
-        # not serialize it for free: the PUT's own RMW runs in a WORKER
+        # capability install/uninstall, the agent-config PUT). The event loop no
+        # longer serializes it for free: the PUT's own RMW now runs in a WORKER
         # THREAD, holding this lock across the offload, so an unlocked read here
         # can capture a baseline the worker is about to republish — and the last
         # atomic rename silently reverts the other side's unrelated settings.
@@ -1730,7 +1739,7 @@ def _normalize_model_key(name: str) -> str:
     Mirrors ``normalizeModelKey`` in ``website/src/lib/model.ts``: both route a
     model id through the shared canonical registry (``model_registry.json``) so
     "same model?" has ONE definition across the dashboard (dropdown dedup, slot
-    display, and the subagent downgrade flag).
+    display, and the #5306 subagent downgrade flag).
 
     Resolution order:
     1. ``auto``/``default``/unset -> the ``auto`` sentinel (both mean "let the
@@ -1742,10 +1751,10 @@ def _normalize_model_key(name: str) -> str:
        (``us.anthropic.claude-opus-4-8[1m]`` == ``claude-opus-4.8`` ->
        ``opus-4.8-1m``) while keeping DISTINCT registry entries distinct -- the
        advertised dashed ``claude-opus-4-8`` (200K, ``opus-4.8``) does NOT fold
-       onto dotted ``claude-opus-4.8`` (1M, ``opus-4.8-1m``); a bare
-       ``.``->``-`` fold conflates those two different-window models.
+       onto dotted ``claude-opus-4.8`` (1M, ``opus-4.8-1m``); the old
+       ``.``->``-`` fold conflated those two different-window models (#5339).
     3. Fallback for an id the registry does not list (GPT/DeepSeek/Qwen, future
-       models, operator-typed ids): a lossless fold -- lowercase,
+       models, operator-typed ids): the historical lossless fold -- lowercase,
        ``.``->``-`` -- so behavior is identity-preserving off the registered set,
        matching ``from_provider_id``'s pass-through contract.
     """
@@ -1755,9 +1764,9 @@ def _normalize_model_key(name: str) -> str:
     if string_fold in ("default", "auto"):
         return "auto"
     # Registry lookups are exact and its keys/aliases/provider-ids are all
-    # lowercase, so resolve on the lowercased id. canonical_key resolves
-    # acp-first then claude_code AND peels a known routing prefix, so it covers
-    # both spelling halves above; a miss returns None.
+    # lowercase, so resolve on the lowercased id (the old helper lowercased too).
+    # canonical_key resolves acp-first then claude_code AND peels a known routing
+    # prefix, so it covers both #5339 halves; a miss returns None.
     resolved = model_registry.canonical_key((name or "").strip().lower())
     if resolved is not None:
         return resolved
@@ -1810,12 +1819,13 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     """Narrow the ``--list-models`` catalog to what a live session advertises.
 
     ``kiro chat --list-models`` is a CATALOG, not an entitlement: it returns the
-    same rows whatever the account's tier, so after a downgrade it still offers
-    (and still SHOWS as selected) a model no turn can run. The per-session
-    ``session/new`` ``availableModels`` list is the tier-aware one — the same
-    signal ``model_is_unusable`` pre-flights against before the wire — so when a
-    live session has one, it wins here too. Same rule as the claude_code branch
-    in :func:`_cc_models`: advertised is authoritative when present.
+    same rows whatever the account's tier, so after a downgrade the picker kept
+    offering (and kept SHOWING as selected) a model no turn can run. The
+    per-session ``session/new`` ``availableModels`` list is the tier-aware one —
+    the same signal ``model_is_unusable`` pre-flights against before the wire —
+    so when a live session has one, it wins here too. Same rule #1549 applied to
+    the claude_code branch in :func:`_cc_models`: advertised is authoritative
+    when present.
 
     The keep/drop decision delegates to ``model_is_unusable`` rather than
     comparing ids here, so the picker cannot disagree with the wire about what
@@ -1914,15 +1924,15 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     only source that reflects entitlement: claude-agent-acp captures it at session
     init from what the signed-in account is actually served. The registry is a
     static catalog of everything KiroCrew knows how to name, so a free-tier user
-    shown it unfiltered is offered the full flagship list and discovers the truth
-    only when a prompt fails.
+    used to be offered the full flagship list and only discovered the truth when a
+    prompt failed.
 
     So when anything is advertised, registry rows are FILTERED DOWN to it (keeping
     the registry's cleaner display names for the survivors), and advertised models
     the registry does not list are appended for forward-compat.
 
     When NOTHING is advertised the registry is shown unfiltered. That is not a
-    preference for the unfiltered list -- an empty advertised set means
+    fallback to the old behaviour by preference -- an empty advertised set means
     "no session has initialized yet", which is indistinguishable from "this account
     gets nothing", and showing an empty picker on a cold dashboard would be worse
     than showing a superset.
@@ -1930,8 +1940,8 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     ``auto`` is always present and always FIRST. It is the configured default
     (``config.agent.model``) and a sentinel rather than a real model, so it is
     never filtered by entitlement. It leads the list because the registry's own
-    ``default: true`` flag sorts the current flagship to the top, which would
-    present a specific paid model as the default in the picker.
+    ``default: true`` flag sorts the current flagship to the top, which presented
+    a specific paid model as the default in the picker.
     """
     advertised = _advertised_cc_models(request)
     registry_rows = model_registry.display_list("claude_code")
@@ -2520,8 +2530,8 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         # Never persist Kiro Crew bookkeeping into the kiro spec —
                         # kiro-cli rejects unknown fields and drops the agent. Same
                         # shared helper as the PUT handler and migrate_agent_specs(),
-                        # so this fourth writer can't drift from the other three.
-                        # The model branch above may have just set the
+                        # so this fourth writer can't drift from the other three
+                        # (#2570). The model branch above may have just set the
                         # sidecar explicitly; the helper only lifts a stale key out
                         # of `data` when the sidecar is still unset, so it can't
                         # clobber that just-written value. Offloaded like the PUT
@@ -2626,7 +2636,7 @@ def _roster_mask(value: object) -> str:
     persisting that view (``_carries_mask``) has to recognise it by
     recomputing the transform -- which breaks in two ways a sentinel does not:
 
-    * **Redaction-chain drift.** This same response is also wrapped in
+    * **Redaction-chain drift.** #8465 wraps this same response in
       ``redact_record_strings``, whose order differs from ``_redact_external``'s.
       A recomputed-equality rule would stop matching and silently persist the
       redacted text; an exact sentinel survives, because scrubbing
@@ -2805,7 +2815,7 @@ def _agent_roster_row(
     who never looked at this endpoint (internal bookkeeping, a filesystem path, a
     capability hint, a credential-shaped one) ships to the browser by omission.
     Naming each field inverts the default: nothing leaves unless it is added here
-    deliberately. Both row sources go through this one function, so the
+    deliberately (#8454). Both row sources go through this one function, so the
     ``cfg.agents`` rows and the project-scope rows cannot drift into different
     key sets.
 
@@ -2815,10 +2825,11 @@ def _agent_roster_row(
     ``api_kirocrew_agent_update``; neither is correct alone, and an end-to-end
     test does the GET then the PUT to prove the pair.
 
-    Uniform rather than per-field on purpose: exempting the fields the agents
-    page happens to write back would encode a claim about the CLIENT that this
-    side cannot enforce -- and a false one, because
-    ``api_kirocrew_agent_update`` accepts ``description`` and ``source`` too.
+    Uniform rather than per-field on purpose: an earlier revision exempted the
+    fields the agents page happens to write back today, which encoded a claim
+    about the CLIENT that this side could not enforce -- and it was already
+    wrong, because ``api_kirocrew_agent_update`` accepts ``description`` and
+    ``source`` too.
 
     ``name`` is the single exception, and only for the owner: it is the row's
     IDENTITY, addressing ``/api/agents/{name}`` for edit and delete and keying
@@ -2826,12 +2837,12 @@ def _agent_roster_row(
     write-side rule cannot protect it. Masking it would make the row
     unaddressable. An ``app`` token cannot reach those owner-gated routes, so the
     exemption buys it nothing and ``name`` is masked there. A credential-shaped
-    name is refused at CREATION (``_name_would_be_masked``), closing the hazard
+    name is now refused at CREATION (``_name_would_be_masked``), closing the hazard
     at its source rather than at this one read site -- but only for names arriving
     through that route, so an already-stored one still reaches here and is still
-    masked for every caller but the owner. Named cost: an app that feeds a roster
-    name to another route sees the mask, which happens only for a name containing
-    credential- or URL-shaped text.
+    masked for every caller but the owner. Named cost: an app that feeds a roster name to another route sees the
+    mask, which happens only for a name containing credential- or URL-shaped
+    text.
 
     ``scope`` is never masked: it is a literal written here, not record content.
     The annotation is ``dict[str, object]`` rather than ``dict[str, str]`` because
@@ -2863,12 +2874,12 @@ def _agent_roster_row(
         # masked here rather than reasoned away.
         #
         # Named cost: a project agent whose FILENAME is credential- or
-        # URL-shaped is not selectable, because the picker dispatches by
+        # URL-shaped is no longer selectable, because the picker dispatches by
         # this value (``AgentSelector.tsx:127`` ``onChange(a.name)``). That is
         # confined to names the redactors would alter; an ordinary project agent
         # name is byte-identical.
         "name": _roster_mask(name) if (redact or scope == "project") else name,
-        # The project-scope tag: "project" rows dispatch only from the
+        # The #1684 project-scope tag: "project" rows dispatch only from the
         # slot whose project they were scanned from. Handler-added, not a
         # record field.
         "scope": scope,
@@ -2895,8 +2906,8 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     Also surfaces the requesting session's project-scope agents
     (``<project>/.kiro/agents``, resolved via ``X-Session-Key``) tagged
     ``scope="project"`` — these dispatch from that slot because kiro-cli runs
-    with the slot's project as cwd, so the picker must offer them. A config
-    alias of the same name is listed once, as the alias:
+    with the slot's project as cwd, so the picker must offer them (#1684's
+    headline). A config alias of the same name is listed once, as the alias:
     dispatch resolves aliases first, so the alias is what would answer.
     """
     cfg = KiroCrewConfig.load()
@@ -2997,7 +3008,7 @@ class _AgentExistsError(Exception):
     which excludes in-process races only; a cross-process create (the CLI)
     can land between that check and the write. The delta mutate re-checks
     against the document as read inside the sidecar lock and raises this,
-    which the handler maps to the same 409.
+    which the handler maps to the same 409 (#4767).
     """
 
     def __init__(self, name: str) -> None:
@@ -3138,7 +3149,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         try:
             # The caller (api_kirocrew_agents_sync) holds _get_config_lock().
             # Persist as a DELTA read-modify-write inside a single sidecar-
-            # flock hold: the adds and prunes decided on the snapshot
+            # flock hold (#4767): the adds and prunes decided on the snapshot
             # above are re-applied to the document as read inside the lock,
             # so a concurrent writer's unrelated settings are untouchable --
             # a whole-document save() would publish the stale snapshot over
@@ -3158,7 +3169,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     # while the in-lock entry still equals the snapshot entry:
                     # an agent (re)added or edited between the discovery
                     # snapshot and this lock hold is newer evidence than the
-                    # stale discovered_names and must survive.
+                    # stale discovered_names and must survive (#4767 round 8).
                     for aname, snap_entry in prune_candidates.items():
                         if agents.get(aname) == snap_entry:
                             del agents[aname]
@@ -3280,7 +3291,8 @@ async def _refresh_session_defaults(request: web.Request, crew: str) -> None:
     path never re-pushes effort.
 
     Best-effort: the write is already durable, so a crew save must not fail
-    because the refresh did. A failure costs one gateway lifetime of staleness.
+    because the refresh did. A failure costs one gateway lifetime of staleness,
+    which is what the behaviour was before this call existed.
     """
     state = request.app.get("state")
     sessions = getattr(state, "sessions", None)
@@ -3420,13 +3432,14 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    # The template pointer must be EXPLICIT. Defaulting it to "kirocrew" would
-    # make every crew created without naming a template an alias for the DEFAULT
-    # agent: dispatch flattens an alias to its `kiro_agent`
-    # (config.loader.resolve_agent_bindings), so the crew is offered in the chat
-    # picker and then the default answers. "kirocrew" is a perfectly valid CHOICE
-    # here (a crew booting the built-in agent against its own workspace/memory
-    # store is the common case); only the silent default is refused.
+    # The template pointer must be EXPLICIT. It used to default to "kirocrew",
+    # which made every crew created without naming a template an alias for the
+    # DEFAULT agent: dispatch flattens an alias to its `kiro_agent`
+    # (config.loader.resolve_agent_bindings), so the crew was offered in the chat
+    # picker and then the default answered — the "picker reverts to default"
+    # report behind #1684. "kirocrew" is still a perfectly valid CHOICE here (a
+    # crew booting the built-in agent against its own workspace/memory store is
+    # the common case); only the silent default is refused.
     kiro_agent = str(body.get("kiro_agent") or "").strip()
     if not kiro_agent:
         return web.json_response(
@@ -3539,7 +3552,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
 
         # Under _get_config_lock() (the async with above): persist as a DELTA
         # read-modify-write of this one agent entry inside a single sidecar-
-        # flock hold -- a whole-document save() would publish the
+        # flock hold (#4767) -- a whole-document save() would publish the
         # handler's snapshot and could revert a concurrent writer's unrelated
         # settings. _drained_to_thread, not bare to_thread: a cancellation at
         # the await must not release the asyncio lock while the worker is

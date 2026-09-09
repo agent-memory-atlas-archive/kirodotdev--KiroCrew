@@ -283,10 +283,11 @@ class RefreshStateManager:
 
         Called at initial mint (the ``?token=`` exchange) and re-stamped on each
         rotation. The binding is ALSO signed into the refresh token itself; this
-        server-side copy is a second, independent authority: a signed claim binds
-        only a chain whose mint path remembered to set it. A record the presented
-        token cannot influence is what makes a forgetful mint path fail closed
-        rather than unbound.
+        server-side copy is a second, independent authority, because the gap this
+        closes (issue #2417) was one mint path carrying the signed claim while
+        every other one silently did not. A record the presented token cannot
+        influence is what makes the next forgetful mint path fail closed rather
+        than unbound.
 
         An empty ``peer_key`` is a no-op rather than a stored empty: absent means
         "unbound, today's semantics", and writing a blank record would make an
@@ -317,8 +318,9 @@ class RefreshStateManager:
         """The peer key ``chain_id`` is bound to, or ``""`` when unbound.
 
         ``""`` covers both a chain opened with no verified peer and every chain
-        that predates this record — absent binding means unbound semantics, so an
-        upgrade does not log out the whole outstanding 30-day window.
+        that predates this record — the migration rule from issue #2417: absent
+        binding means today's unbound semantics, so an upgrade does not log out
+        the whole outstanding 30-day window.
         """
         with self._lock:
             entry = self._chain_peers.get(chain_id)
@@ -525,9 +527,9 @@ class RefreshStateManager:
             )
             return
         # Hold the lock across the FULL serialize+write+rename so concurrent
-        # writers cannot clobber each other's atomic-rename. Without this, thread
-        # A can snapshot state S1, thread B can mutate + persist S2, and A's later
-        # os.replace
+        # writers cannot clobber each other's atomic-rename. Per a security
+        # review finding: without this, thread A can snapshot
+        # state S1, thread B can mutate + persist S2, and A's later os.replace
         # overwrites S2 with stale S1 -- losing B's consumed-jti record. After
         # a restart, reuse detection would silently fail to fire for that jti.
         # Holding the lock during file I/O is acceptable: callers run inside
@@ -796,7 +798,7 @@ def refresh_token_requires_peer(token: str) -> bool:
     """Whether this chain may only rotate for a daemon-verified tailnet peer.
 
     Set on the QR "persistent" session shape and on every ordinary Phase-3
-    session whose chain was opened by a verified peer, i.e. on any
+    session whose chain was opened by a verified peer (issue #2417), i.e. on any
     chain whose safety rests on identity rather than on this process's lifetime.
     Same read-only, validate-first contract as :func:`refresh_token_boot`, and
     the same conservative failure direction is NOT available here: a decode

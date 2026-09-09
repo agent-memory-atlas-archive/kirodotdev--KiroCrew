@@ -17,7 +17,7 @@
 // byte-for-byte unaffected -- CI runs the analyze build and then this script.
 import path from 'path'
 import { pathToFileURL } from 'url'
-import { checkChunkBudgets, failGate, formatBytes, loadSummaryOrExit } from './lib/bundleReport.mjs'
+import { checkChunkBudgets, formatBytes, loadBundleSummary } from './lib/bundleReport.mjs'
 
 const KB = 1024
 
@@ -115,7 +115,7 @@ export const CHUNK_BUDGETS = {
   App: 3530 * KB, // measured 3360 KB on main @ 6ae74179d (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
-  // -- one deliberate `codeSplitting` group, see vite.config.ts.
+  // -- one deliberate `manualChunks` bucket, see vite.config.ts.
   'vendor-markdown': 712 * KB, // measured 678 KB
 
   // Mermaid's own prebuilt internal chunk; the name comes from mermaid's build,
@@ -154,7 +154,7 @@ export const CHUNK_BUDGETS = {
   'chunk-K2UTITRG': 550 * KB, // measured 522 KB (excalidraw 0.18.1 font-subsetting internals)
 
   // Graph/network visualization stack (vis-network, sigma, graphology,
-  // cytoscape) -- one deliberate `codeSplitting` group, see vite.config.ts.
+  // cytoscape) -- one deliberate `manualChunks` bucket, see vite.config.ts.
   'vendor-graph': 606 * KB, // measured 577 KB
 
   // The SPA entry chunk: router, providers, and the eager page skeleton.
@@ -163,14 +163,29 @@ export const CHUNK_BUDGETS = {
 
 const REPORT_PATH = path.resolve('dist', 'bundle-report.json')
 
-// This gate's own exit code, beyond the 2 (missing) / 3 (malformed) that
-// loadSummaryOrExit owns: 4 = report valid but lists no chunks. That one is
-// checked here rather than there because an empty report is legitimate for
+function fail(message, code = 1) {
+  process.stderr.write(`${message}\n`)
+  process.exit(code)
+}
+
+// Exit-code mapping for this gate: 2 = report missing, 3 = report malformed or
+// unsupported version, 4 = report valid but lists no chunks. The contract itself
+// (existence/shape/version) lives in the shared loadBundleSummary; 4 is checked
+// here rather than there because an empty report is legitimate for
 // bundle-report.mjs, which simply has nothing to render.
+function loadSummary(file) {
+  const { summary, error } = loadBundleSummary(file, {
+    hint:
+      'Run `vite build --mode analyze` first -- a plain `npm run build` deliberately ' +
+      'does not write one, so the normal build stays unaffected.',
+  })
+  if (error) fail(error.message, error.code === 'missing' ? 2 : 3)
+  return summary
+}
 
 export function main(argv = process.argv.slice(2)) {
   const reportPath = argv[0] ? path.resolve(argv[0]) : REPORT_PATH
-  const summary = loadSummaryOrExit(reportPath)
+  const summary = loadSummary(reportPath)
   const { breaches, unusedBudgets, checkedCount } = checkChunkBudgets(summary, {
     budgets: CHUNK_BUDGETS,
     defaultBudget: DEFAULT_BUDGET_BYTES,
@@ -184,7 +199,7 @@ export function main(argv = process.argv.slice(2)) {
   // unused-budget warnings, so the actionable line is not buried under one
   // warning per allowlist entry (11 of them today).
   if (checkedCount === 0) {
-    failGate(
+    fail(
       `no chunks in ${reportPath} -- the gate measured nothing, so it cannot ` +
         'certify anything. Re-run `vite build --mode analyze` and check it ' +
         'emitted a bundle.',
@@ -215,9 +230,9 @@ export function main(argv = process.argv.slice(2)) {
         `by ${formatBytes(b.overage)} (chunk '${b.logicalName}')\n`
     )
   }
-  failGate(
+  fail(
     `${breaches.length} chunk(s) over budget. Either shrink the chunk (prefer a lazy ` +
-      'import() boundary or a codeSplitting group -- see website/vite.config.ts), or, if the ' +
+      'import() boundary or a manualChunks split -- see website/vite.config.ts), or, if the ' +
       'growth is genuinely irreducible, add/adjust its entry in CHUNK_BUDGETS in ' +
       'scripts/check-bundle-size.mjs with a comment saying why, and justify it in the PR.'
   )

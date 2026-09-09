@@ -32,15 +32,8 @@ export interface AutoNudgeLoop {
   banner?: string
 }
 
-/** `GET /api/autonudge`: every loop record the service holds, active or stopped.
- *  A STRUCTURED MONITOR is included as a REDUCED row -- that route has no owner
- *  gate, so it publishes only presence, cadence and state, and withholds
- *  `message`, `banner`, the sentinel path and the cycle accounting, which its
- *  tick path never maintains. The fields below are therefore absent on such a
- *  row even though they are typed as required; marking them optional belongs
- *  with the popover rendering that reads them. Such a row also carries no
- *  positive marker: it is told apart by that absence. The full monitor record
- *  lives on the owner-gated `/api/monitors`. (The module spec reserves an optional `denied` array beside
+/** `GET /api/autonudge`: every prompt-loop record the service holds, active or
+ *  stopped. (The module spec reserves an optional `denied` array beside
  *  `loops` for refused arms; no backend emits it yet, so it is deliberately
  *  not typed here — a consumer must not render a verdict nothing produces.) */
 export interface AutoNudgeListResponse {

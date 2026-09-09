@@ -28,7 +28,6 @@ These pin the three seams:
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -219,19 +218,13 @@ class TestPreflightEmitsFrontendSkipOnlyWhenProven:
 
 def _echo_step(label, rc, tmp_path, stash=None):
     """A step that writes a sentinel file then exits rc, so a skip is observable
-    by the sentinel's ABSENCE.
-
-    Invoked through ``sys.executable`` rather than a literal ``python3``: an
-    ordinary Windows install has no ``python3`` on PATH (only ``python.exe``), so
-    the step failed with cmd's 9009 "not recognized" and every verdict below read
-    as a plain failure. The interpreter running the suite is the one program
-    guaranteed to exist on every host."""
+    by the sentinel's ABSENCE."""
     ran = tmp_path / f"ran-{label.replace(' ', '_')}"
     st = {
         "label": label,
         "env": {},
         "argv": [
-            sys.executable,
+            "python3",
             "-c",
             "import sys,pathlib;pathlib.Path(sys.argv[1]).write_text('x');sys.exit(int(sys.argv[2]))",
             str(ran),

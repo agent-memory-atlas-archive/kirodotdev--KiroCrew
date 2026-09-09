@@ -14,10 +14,10 @@ Whose credits are these?
 ------------------------
 Several credentials can be readable at once (an IDE cache, a kiro-cli store, a
 leftover file from a profile the user has since signed out of), and "unexpired"
-does not mean "the one kiro-cli is actually using": a token for a signed-out
-profile stays valid at the API until it expires on its own. Picking by fixed path
-order therefore reports that profile's credits after a profile switch, and a
-gateway restart does not help because the order is the same on boot.
+does not mean "the one kiro-cli is actually using": a token for the previous
+profile stays valid at the API until it expires on its own. Picking by fixed
+path order therefore showed the OLD profile's credits after a profile switch,
+and a gateway restart did not help because the order was the same on boot.
 
 So the caller passes ``expected_arn`` — the profile ARN ``kiro-cli whoami``
 reports for itself — and a candidate is only used when its own

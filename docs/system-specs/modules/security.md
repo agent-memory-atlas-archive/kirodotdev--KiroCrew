@@ -221,8 +221,8 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 
 **Write-only config protection** (`is_sensitive_write_path` in `security.py` + `hooks.py`) — runtime config files are protected against *modification* by agent tools while staying *readable*:
 - `~/.kiro/crew/config.json` and `~/.kiro/crew/config.local.json` are in a write-only tier (`_WRITE_PROTECTED_HOME_PATHS`, expanded under every `_CREW_HOME_PREFIXES` entry so the pre-move legacy copy is covered too), deliberately NOT in the read+write `_SENSITIVE_HOME_DIRS` list above — the dashboard file viewer, `cat`, and knowledge indexing legitimately read config.
-- `is_sensitive_write_path(path)` is a superset of `is_sensitive_path(path)`, sharing the same `_path_in_home_dirs` resolve/casefold core so the two gates can't drift. `hooks.on_tool_call` denies a file-EDIT tool call whose target resolves to a config file — a call is on the write plane when it declares the ACP `edit` kind OR its tool_call frame carried a `{"type": "diff"}` content block naming a path (`platform.tool_paths.is_edit_call`: the diff block is the edit's target of record, and only a call declaring a file change carries one, so the spec-optional `kind` field is never the gate). The judged target set is the same union the always-enforced tier judges (`platform.tool_paths.edit_target_candidates`: every accepted path spelling in the params plus the diff block's `event.diff_path`), a write-plane call that carries params (any dict, `{}` included) or a diff block but whose union is empty is denied rather than passed unjudged, and a diff-block path still relative after `~`/env expansion is denied as unverifiable (it would resolve against the gateway CWD, not the agent workspace) (#9297); a call carrying neither params nor a diff block falls through, matching the always-enforced tier, which such a call never reaches. The read allowance is keyed on the ABSENCE of a diff block: a kindless call without one stays a read. Pinned by `test_hooks_edit_gate_diff_path.py`.
-- Empty/unknown ACP tool kinds without a diff content block are intentionally left to the load-time clamp backstop rather than hard-denied, to avoid over-blocking config reads that arrive without a kind (governance's shape inference can apply both read+write scopes because it is a permissive policy intersection; this gate is a hard deny). Bash writes (`tee`, `>`, `sed -i`) likewise fall to the clamp.
+- `is_sensitive_write_path(path)` is a superset of `is_sensitive_path(path)`, sharing the same `_path_in_home_dirs` resolve/casefold core so the two gates can't drift. `hooks.on_tool_call` denies a file-EDIT tool call (ACP `edit` kind) whose `path`/`file_path` resolves to a config file.
+- Empty/unknown ACP tool kinds are intentionally left to the load-time clamp backstop rather than hard-denied, to avoid over-blocking config reads that arrive without a kind (governance's shape inference can apply both read+write scopes because it is a permissive policy intersection; this gate is a hard deny). Bash writes (`tee`, `>`, `sed -i`) likewise fall to the clamp.
 - The operator edits config out-of-band via the dashboard config API / CLI, which do not route through this gate.
 
 **Array-nested target paths bind on both planes (issue #6558).** A batch-shaped tool carries its real targets inside an array argument (`{"operations": [{"mode": "Line", "path": …}]}`). The sensitive-path keystone in `hooks.py` (`target_paths` / `TargetPaths`) was made nesting-aware first; the governance INTERSECTION plane (`platform/governance.py` `_tool_arg_paths` / `classify_tool_args`) previously read only the TOP level, so a nested path produced no `(scope, item)` pair, `gate_decision` hit its permit-by-default `if not pairs` branch, and an operator ceiling denying `filesystem.read`/`filesystem.write` outside the workspace never bound on the nested spelling. The bounded, depth-aware, iterative walk now lives in ONE shared lower-level module, `kiro_crew.platform.tool_paths` (stdlib-only, imports neither `hooks` nor `governance`, so there is no cycle — `hooks` imports `governance`), and BOTH planes delegate to it. The third extractor, `hooks._SEARCH_DENY_ARG_KEYS`, stays flat by design (documented residual below) and is out of scope.
@@ -1299,11 +1299,7 @@ authentication middleware and the handler require the internal-secret trust
 marker before the supplied `X-Session-Key` is resolved, with no browser-cookie
 fallback. Allow and deny decisions are best-effort SEL audited with operation and
 coarse reason only.
-Legacy AutoNudge reads return a structured record REDUCED to what a caller with
-no owner gate is entitled to -- presence, cadence, liveness and state, with the
-monitor record itself plus `message` (which on a structured monitor holds the wake
-instructions), `banner` and the sentinel path all withheld -- so the full record
-stays readable only through the owner-gated monitor routes. Structured WebSocket
+Legacy AutoNudge reads exclude structured records, and structured WebSocket
 state is sent only to the owner-authorized client set. If a structured id is
 presented to the legacy DELETE route, that route applies the same owner gate
 before delegating to the monitor stop authorizer.
@@ -1742,17 +1738,7 @@ it only when their extractors actually produced an identity pair (a frame
 without `_meta.kiro` populates nothing and asserts no provenance), and
 `_to_llm_event` copies it; it mirrors
 `raw_params_trusted`, so a future inline population path fails closed instead
-of counting as verified on non-emptiness alone). `child_mcp_identity_trusted`
-does NOT require a resolved shell classification: a backend may omit `kind` on
-its MCP `tool_call` frames, leaving the shell cache unwritten, and the trusted
-transport identity is itself proof the call is MCP-served and not a host shell
-command (a host shell or builtin never carries a server name — `acp-client.md`
-§ Tool Permission Protocol). That proof stays confined to the identity-only
-property: minting a resolved `shell_classified` from it would flip
-`child_low_fidelity` to `False` and un-gate the content-matching auto-approve
-paths for a kindless mutating call with a read-looking, agent-authored title.
-A `kind` that resolved to execute still caches `is_shell=True`, which keeps
-the identity split closed for shell calls. The grant-eligibility
+of counting as verified on non-emptiness alone). The grant-eligibility
 expression is hoisted to one place,
 `AcpEvent.child_unconditional_grant_eligible`
 (`not child_low_fidelity or child_mcp_identity_trusted`), consumed by all

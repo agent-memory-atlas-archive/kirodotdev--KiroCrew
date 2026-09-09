@@ -234,13 +234,9 @@ async def _answer_approval(
         await asyncio.sleep(_ANSWER_POLL_SECS)
 
 
-def _context_builder(hook_result: ToolHookResult | None = None) -> MagicMock:
-    # ``allow()`` counts itself through kiro_crew.metrics. As a DEFAULT ARGUMENT it
-    # ran at import, before any pin existed, and built the process-global recorder
-    # from the operator's real config: an exporter bound to the real
-    # ~/.kiro/crew/metrics for the life of the worker. Built per call instead.
+def _context_builder(hook_result: ToolHookResult = ToolHookResult.allow()) -> MagicMock:
     cb = MagicMock()
-    cb.hooks.on_tool_call.return_value = hook_result if hook_result is not None else ToolHookResult.allow()
+    cb.hooks.on_tool_call.return_value = hook_result
     cb.build_message.return_value = ("hello", None)
     return cb
 

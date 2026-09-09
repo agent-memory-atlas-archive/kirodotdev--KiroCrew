@@ -320,8 +320,8 @@ def _read_open_slots_keys() -> list[object]:
     """Read and parse ``open_slots.json``, returning its raw ``keys`` list.
 
     Pure disk work with no slot state touched, so the async driver can hoist the
-    whole thing into ``asyncio.to_thread``: inline, the read plus the JSON parse
-    run on the event loop during startup.
+    whole thing into ``asyncio.to_thread``: the read plus the JSON parse were
+    running on the event loop during startup (#895).
 
     Entries are returned UNVALIDATED — the file is attacker-writable, so every
     caller must pass each one through :func:`_sanitize_open_slot_key` before it
@@ -360,8 +360,8 @@ def _sanitize_open_slot_key(raw: object) -> str | None:
     if "/" in raw or "\\" in raw:
         logger.warning("restore_open_slots: rejecting key with path separators: %r", raw)
         return None
-    # Fold to the canonical (filename-charset) key. An on-disk snapshot may
-    # carry a raw display-style key (e.g.
+    # Fold to the canonical (filename-charset) key. Snapshots written before
+    # slot-key normalization landed may carry a raw display-style key (e.g.
     # "Artifact: My Doc") alongside its sanitized twin — after folding, the
     # second form hits the caller's dedup guard instead of restoring a duplicate
     # sidebar session backed by the same transcript.
@@ -496,8 +496,8 @@ def _deletion_during_read(
 
     Returns a short reason for logging, or ``None`` when it is safe to build.
 
-    Offloading a transcript read opens a window an atomic on-loop read-then-build
-    does not have: ``ConversationLog.delete_session``
+    Offloading a transcript read (#895) opened a window that did not exist when
+    read-then-build ran atomically on the loop: ``ConversationLog.delete_session``
     leaves **no tombstone** — its own docstring notes that once the delete
     releases the lock "a concurrent writer can recreate the session" — so a slot
     published from content we already hold rewrites, on its next flush, a file
@@ -660,7 +660,7 @@ def restore_open_slots(state: DashboardState) -> int:
 
 
 async def restore_open_slots_async(state: DashboardState) -> int:
-    """:func:`restore_open_slots`, with the disk reads off the loop.
+    """:func:`restore_open_slots`, with the disk reads off the loop (#895).
 
     Restoring a tab reads and redacts a transcript, so a user with many large
     tabs can spend tens of seconds in here. Doing that synchronously monopolizes
@@ -975,10 +975,10 @@ def _rehydrate_slot_from_history(
         # Restore the remote executor marker INDEPENDENTLY of its target fields.
         # history JSONL is a file on disk, so a truncated write or a hand-edit can
         # leave the ``executor="remote"`` marker without a valid instance_id /
-        # remote_slot. Dropping the marker in that case would fail
-        # OPEN: the session would come back as an ordinary local slot and its next
-        # send would run the crew's turn on THIS machine — the wrong-host execution
-        # the remote binding exists to prevent. Fail CLOSED instead: keep the
+        # remote_slot. Dropping the marker in that case (the old behaviour) failed
+        # OPEN: the session came back as an ordinary local slot and its next send
+        # ran the crew's turn on THIS machine — the wrong-host execution the remote
+        # binding exists to prevent (GPT #7693). Fail CLOSED instead: keep the
         # marker, populate only the target fields that are valid, and let the
         # incomplete-binding guard in ``api_chat`` (``slot.executor == "remote" and
         # not slot.is_remote`` -> 409 ``remote_binding_incomplete``) plus the
@@ -1053,7 +1053,7 @@ def _rehydrate_slot_from_history(
             slot._human_seen = True
         restored_notes = sanitize_restored_deferred_notes(meta.get("deferred_notes"))
         if restored_notes:
-            # Replay the persisted deferred-note hold so the
+            # Replay the persisted deferred-note hold (issue #4093) so the
             # existing flush_deferred_notes() call sites deliver it on the
             # first turn after the restart. Sanitized, and bounded by the
             # DURABLE CEILING (2x the live cap): every durable entry is a
@@ -1340,10 +1340,10 @@ async def rehydrate_slot_from_history_async(
         )
         return None
     # DELETION race, the same window and the same remedy the two bulk restore
-    # drivers apply. This wrapper's read is offloaded too, so it carries the same
-    # window — the guard is folded in here rather than left as the one uncovered
-    # instance, because a class of defect handled at two of three call sites
-    # simply returns through the third.
+    # drivers apply. This wrapper's read has always been offloaded, so the window
+    # predates #895 — the guard is folded in here anyway rather than left as the
+    # one uncovered instance, because a class of defect fixed at two of three
+    # call sites simply returns through the third.
     #
     # NOT gated on ``adopt_closed``: that opt-in is about the ``closed`` FLAG (an
     # app-owned worker slot whose lifecycle belongs to the app), not about the
@@ -1395,7 +1395,7 @@ def _prefetch_recent_session(
     folders_only: bool,
     cutoff: float | None,
 ) -> tuple[dict | None, list[dict] | None, tuple[str, str] | None]:
-    """Read one candidate session's metadata + transcript, off the loop.
+    """Read one candidate session's metadata + transcript, off the loop (#895).
 
     Applies the selection filters BETWEEN the two reads so a session that is
     going to be skipped never pays for its transcript walk — the metadata read is
@@ -1411,8 +1411,8 @@ def _prefetch_recent_session(
     """
     meta = conv_log.get_metadata(key)
     if not meta:
-        # No metadata line at all. ``list_sessions()`` is a SNAPSHOT taken one
-        # thread hop before this read, so a session can be
+        # No metadata line at all. ``list_sessions()`` is a SNAPSHOT, and since
+        # #895 it is taken one thread hop before this read, so a session can be
         # deleted in between and still appear in the list — or the read itself
         # came back empty. Either way there is nothing to build from, and
         # building anyway is destructive rather than merely useless: an empty
@@ -1594,7 +1594,7 @@ def _apply_recent_session(
     # the committed-filter delta has a transcript owner.
     slot._dropped_note_ids.update(committed_filtered_note_ids(_sanitized_notes, restored_notes))
     if restored_notes:
-        # Replay the persisted deferred-note hold — see the
+        # Replay the persisted deferred-note hold (issue #4093) — see the
         # mirror in _rehydrate_slot_from_history (committed rows dropped by a
         # pure scan of the already-prefetched messages; no file I/O here,
         # this apply half runs on the event loop).
@@ -1734,7 +1734,7 @@ def restore_recent_sessions(
 async def restore_recent_sessions_async(
     state: DashboardState, window_minutes: int = 30, *, folders_only: bool = False
 ) -> int:
-    """:func:`restore_recent_sessions`, with the disk reads off the loop.
+    """:func:`restore_recent_sessions`, with the disk reads off the loop (#895).
 
     Same rationale as :func:`restore_open_slots_async` — keeps the stall-watchdog
     heartbeat alive while a large restore proceeds, and holds
@@ -2158,8 +2158,8 @@ def _build_message_entry_uncached(m: dict) -> dict | None:
 # ``_build_message_entry``). A window-region disk line carrying one of these is
 # not a real message and is never treated as a cross-process append to preserve.
 # Canonically defined in ``state`` (imported above) so the trim path that must
-# count durable rows shares the same set; re-exported here for this module's
-# other readers (session_control, chat_handlers).
+# count durable rows shares the same set; re-exported here unchanged for this
+# module's historical readers (session_control, chat_handlers).
 
 
 def _foreign_tail_ts(foreign_lines: list[str]) -> str | None:
@@ -2369,7 +2369,7 @@ def _frozen_prefix_and_foreign_appends(
     # window entry absorbs AT MOST ONE disk line. Identity is checked in four
     # tiers of decreasing confidence:
     #   (0) ``meta.mid`` — the stable id stamped at append time and carried onto
-    #       durable copies; an id match IS the same message, resolved
+    #       durable copies (PR #5133); an id match IS the same message, resolved
     #       first across ALL disk lines so no heuristic tier can steal the
     #       entry, and an id-carrying line whose id matches NO entry is foreign
     #       regardless of body (two distinct identical-content messages carry
@@ -2774,9 +2774,10 @@ def _save_slot_to_history(
             # A FORCED (or closing) save of a message-less slot is a metadata
             # mutation (folder filing/unfiling, a tag assignment, a pin, a
             # pinned title, a mode switch, a close) -- the full save below has no window to
-            # write, but the mutation still has to reach disk. `session_create`
-            # persists `folder_id` at birth, so an empty newborn HAS a metadata
-            # line and any acknowledged metadata change before its first message must
+            # write, but the mutation still has to reach disk. This became
+            # reachable when `session_create` started persisting `folder_id`
+            # at birth (#6118): an empty newborn HAS a metadata line, so any
+            # acknowledged metadata change before its first message must
             # overwrite that line, or a restart resurrects the birth state the
             # user already changed. The merge carries every slot-owned field a
             # force/closed save is responsible for -- not just `folder_id`:
@@ -2926,7 +2927,7 @@ def _save_slot_to_history(
                     return False
                 merged_fields.clear()
                 merged_fields.update(_fresh_fields())
-                # Held /note lines: a MERGE writer, so it unions
+                # Held /note lines (issue #4093): a MERGE writer, so it unions
                 # with the on-disk hold and never shrinks it. A live-state
                 # mirror here could race a turn-end flush that just delivered
                 # rows into a window this empty-window save does not write —
@@ -3230,7 +3231,7 @@ def _save_slot_to_history(
                 # SLOT_OWNED_META_KEYS and survive via carry_unowned_metadata
                 # even on a save by a slot that has not learned the flag yet.
                 meta_line["human_seen"] = True
-            # Durable copy of the held /note lines. OWNED
+            # Durable copy of the held /note lines (issue #4093). OWNED
             # (in SLOT_OWNED_META_KEYS), so this rebuild decides the key's
             # whole value — and retirement is ROW-DERIVED: an entry is
             # retired exactly when the window THIS save writes contains its
@@ -3735,7 +3736,7 @@ async def save_slot_off_loop(
     session was permanently deleted while the save awaited the lock (the
     delete-won guard in :func:`_save_slot_to_history`), or the routing moved
     off ``expected_history_key``. Neither skip raises, for either
-    ``best_effort`` mode, so a clean return does NOT prove a committed write.
+    ``best_effort`` mode, so a clean return NO LONGER proves a committed write.
     Callers that go on to republish the slot's content elsewhere (fork, the
     transfer export) must check the return; archival callers (close/cleanup)
     may ignore it — the delete already disposed of what they were archiving.

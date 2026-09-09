@@ -320,7 +320,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
         # local dispatch chokepoint (`_run_chat`, keyed on `executor == "remote"`)
         # would append the prompt and emit a WS-only `chat_done`, leaving this HTTP
         # caller waiting forever on a turn the peer never received and history
-        # holding an unsent turn. Refuse BEFORE any mutation — keyed on
+        # holding an unsent turn (GPT #7693). Refuse BEFORE any mutation — keyed on
         # `executor` (not `is_remote`) so a half-open binding is refused too,
         # matching the chokepoint and the `api_chat` incomplete-binding guard. A
         # freshly-created slot is always local, so this only rejects an existing

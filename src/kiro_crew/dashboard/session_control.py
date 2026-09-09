@@ -16,7 +16,7 @@ delivers a message the target runs as its next turn, redacted through
 envelope so it can never render as something the person typed. An IDLE target runs
 it under the authorization that admitted it; a BUSY target queues it, and the
 generic drain re-asserts the target-side containment before the entry becomes a
-turn: producers stamp the constraints that held at admission
+turn (issue #5911): producers stamp the constraints that held at admission
 (:func:`containment_meta`), and ``chat_runner``'s drain drops — with a visible
 notice and an SEL record — any entry for which a constraint holds at delivery
 that did not hold at admission. A human-typed queued message shares the same
@@ -481,7 +481,7 @@ def _probe_channel_mirror(state: "DashboardState", slot: "_ChatSlot") -> str | N
     because a mirror can be RETARGETED while a queue waits: rebinding session
     mirror A to channel B keeps the boolean true from admission to drain while
     substituting the audience — exactly the republication change the drain
-    re-check exists to catch.
+    re-check exists to catch (#5911).
 
     Read on the EFFECTIVE session key, because that is the key the mirror is
     registered under -- the slot key would miss a mirror on a session whose turns
@@ -528,7 +528,7 @@ def _has_channel_mirror(
     return on_probe_failure if probed is None else bool(probed)
 
 
-# ── Drain-time re-validation of queued prompts ──
+# ── Drain-time re-validation of queued prompts (issue #5911) ──
 #
 # Authorization is decided when a prompt is ADMITTED — `authorize_target` for
 # `session_send`, the authenticated composer for a human — but a busy target
@@ -570,8 +570,8 @@ _NON_CONSTRAINT_KEYS = frozenset({"mirror_unverified"})
 # exempt: directive content can be authored by any allowed human in a linked
 # thread while only the session owner adds outbound mirror links, so a NEW
 # mirror widens the audience beyond anything the message's author controlled —
-# the exact republication this drain re-check catches. `session_send` and
-# automation entries never carry the flag and stay fully enforced.
+# the exact republication issue #5911 closes. `session_send` and automation
+# entries never carry the flag and stay fully enforced.
 _AUDIENCE_CONSTRAINTS = frozenset({"linked"})
 
 
@@ -916,7 +916,7 @@ async def create_session(
     than at entry, so revoking mid call yields an untrusted child. See the block
     around the assignment.
 
-    ``folder_id`` files the slot as part of creation: it is assigned in
+    ``folder_id`` files the slot as part of creation (#6118): it is assigned in
     the same synchronous window that configures the slot, the whole
     allocation-to-persist span runs under ``suspend_slots_push`` so the slot's
     first broadcast frame already shows it filed, and the placement rides in the
@@ -1196,8 +1196,8 @@ async def create_session(
     # `get_or_create_slot` broadcasts on a leading edge, so without the suspend an
     # idle gateway serializes and sends the new slot BEFORE `folder_id` is
     # assigned -- every client (and any app on `slots:user`) would render the
-    # session at the top level for a frame -- the observable unfiled state this
-    # suspend removes. It also covers the persist and its failure retraction, so
+    # session at the top level for a frame, the observable unfiled state #6118
+    # exists to remove. It also covers the persist and its failure retraction, so
     # a slot whose birth write fails is never broadcast at all. Same pattern the
     # move path uses ("file the slot before the coalesced broadcast").
     with state.suspend_slots_push():
@@ -1274,8 +1274,8 @@ async def create_session(
             slot.project = project_dir
         if folder_id:
             # Filed inside the same synchronous window that configures the slot, so
-            # the session is never observable unfiled -- that atomicity is the point.
-            # Existence was confirmed under the store lock above, and folder
+            # the session is never observable unfiled -- the atomicity #6118 exists
+            # for. Existence was confirmed under the store lock above, and folder
             # mutations run on this loop, so the folder cannot have been deleted
             # between that check and this assignment. No `_folder_changed` flag: the
             # slot's first turn carries the armed first-turn breadcrumb injection
@@ -1702,7 +1702,7 @@ async def stop_target(
     within ``stop_retry.WINDOW_SECS`` of this caller's first stop of this target, a
     repeat returns the existing "stop already in progress" no-op instead. A stop
     arriving after that window still escalates, so a genuine second decision keeps
-    the capability — only a blind retry cannot reach it.
+    the capability — only a blind retry cannot reach it (issue #5074).
 
     Withholding the escalation never costs the caller the stop it asked for: a
     repeat that finds the target running again soft-stops it as a first call would.
@@ -1918,7 +1918,7 @@ async def send_to_target(
     a busy one queues the message for its next turn. Both outcomes are reported
     distinctly — ``started`` says which happened — because "it ran" and "it will
     run later" must not look the same to a caller coordinating several sessions.
-    A queued delivery is re-validated at the drain: the entry
+    A queued delivery is re-validated at the drain (issue #5911): the entry
     carries the containment that held here, and a constraint newly held at
     delivery time drops it with a visible notice instead of executing it under
     the weaker authorization that admitted it.
@@ -1959,8 +1959,8 @@ async def send_to_target(
     # on THIS machine and diverge the local and peer transcripts, the same failure
     # the send / regenerate / rewind / continue paths refuse. Relaying a
     # cross-session send is a separate mechanism (open a peer turn, mirror it
-    # back); until that exists the send is refused rather than run locally.
-    # Keyed on ``executor``, so a half-open binding is refused too.
+    # back); until that exists the send is refused rather than run locally
+    # (GPT #7693). Keyed on ``executor``, so a half-open binding is refused too.
     if slot.executor == "remote":
         raise SessionControlError(
             "that session runs on a remote crew; sending into a crew-bound "

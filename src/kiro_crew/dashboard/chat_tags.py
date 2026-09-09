@@ -114,7 +114,7 @@ def validate_folder_tag_ids(raw: Any, state: DashboardState) -> list[str]:
 
 
 def _tags_write_lock(state: Any) -> LoopBoundLock:
-    """Return (lazily create) the per-state lock for tag writes (loop-bound)."""
+    """Return (lazily create) the per-state lock for tag writes (loop-bound, #4800)."""
     lock = _TAGS_WRITE_LOCKS.get(state)
     if lock is None:
         lock = LoopBoundLock()

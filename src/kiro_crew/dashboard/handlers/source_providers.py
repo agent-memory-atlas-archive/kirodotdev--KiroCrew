@@ -2111,8 +2111,8 @@ def _github_thread_map(payload: Any) -> dict[str, dict[str, Any]]:
 # not been evaluated recently returns "not known yet" (GitHub ``UNKNOWN``,
 # GitLab ``checking``/``unchecked``) *and* kicks off the computation, so the
 # real answer is only available on a later read. A single read therefore reports
-# a conflicting pull request as having no merge blocker at all — which would show
-# the panel's conflict banner only once the user hit refresh.
+# a conflicting pull request as having no merge blocker at all — which is why
+# the panel's conflict banner used to appear only once the user hit refresh.
 # These bound a short re-read of the merge fields alone (not the whole fanout),
 # issued concurrently with the secondary provider calls so most of the wait is
 # absorbed by work the request was already doing.
@@ -2315,7 +2315,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
     # resolves a `--json` field set atomically, so bundling the rollup (which
     # needs Checks read access that fine-grained tokens commonly lack) would
     # fail the whole panel read over the one section the token cannot see. The
-    # rollup rides a separate degradable read below.
+    # rollup rides a separate degradable read below (#5115).
     fields = ",".join(
         [
             "additions",
@@ -2764,7 +2764,7 @@ async def _github_rollup_read(ref: SourceRef) -> tuple[list[dict[str, Any]], str
     ``gh pr view`` resolves a ``--json`` field set atomically: one unreadable
     field fails the whole read. ``statusCheckRollup`` needs Checks read access
     that fine-grained tokens commonly lack, so it must never share a field set
-    with data the token IS authorized for — every rollup consumer
+    with data the token IS authorized for (#5115) — every rollup consumer
     routes through this one isolated query instead of growing its own copy.
     ``headRefOid`` rides along (core pull-request data, readable whenever the
     PR itself is) so callers that pair this read with a separate core read can
@@ -3431,15 +3431,14 @@ _MD_BLOCK_LEAD_RE = re.compile(r"^([ \t]*)(?:([-+#=])|(\d{1,9})([.)]))", re.MULT
 #
 # Whitespace is deliberately NOT here even though the class excludes it. A space
 # genuinely ends a URL: the renderer's own autolinker stops there too, so text
-# after it is prose rather than part of a fetchable address. Encoding it would
-# treat the two as one URL and destroy benign content -- `see <url>?id=7
-# <40-char sha> for detail` would collapse to `see%20[REDACTED: suspicious URL
-# ...]`, losing every word after the URL.
+# after it is prose rather than part of a fetchable address. Encoding it treated
+# the two as one URL and destroyed benign content -- `see <url>?id=7 <40-char
+# sha> for detail` collapsed to `see%20[REDACTED: suspicious URL ...]`, losing
+# every word after the URL.
 #
 # This table is a SHADOW of that scanner's terminator set and exists only while
-# the scanner truncates. Retire it once the scanner's own set is fixed rather
-# than keeping both: two copies of one set drift, and the copy that matters is
-# the scanner's.
+# the scanner carries the bug. Retire it when #7611 lands rather than keeping
+# both: two copies of one set drift, and the copy that matters is the scanner's.
 _URL_SCAN_ESCAPES = str.maketrans(
     {
         '"': "%22",
@@ -3617,9 +3616,9 @@ def _md_link_target(url: str) -> str | None:
     NOT redacted with it, and no credential-pattern pass covers a bare blob.
 
     So the scan here is run against a form with every character that terminates
-    that match percent-encoded -- not just the parenthesis, which is one member
-    of that class. The encoded form only ever informs the DECISION: a URL that
-    passes is emitted exactly as it arrived.
+    that match percent-encoded -- not just the parenthesis, which was the one
+    member of the class this gate originally covered. The encoded form is only
+    ever used to DECIDE: a URL that passes is emitted exactly as it arrived.
     Encoding a handful of characters cannot trip the heavy-encoding rule, which
     needs 20 consecutive octets, and a URL pathological enough to reach that is
     dropped rather than leaked. A link that fails is dropped rather than emitted
@@ -3627,9 +3626,9 @@ def _md_link_target(url: str) -> str | None:
     vanishes.
 
     This shields the hrefs THIS converter emits. The truncation itself is in the
-    shared scanner and every other caller still has it, so it is tracked against
-    that scanner rather than left recorded only here; fixing a shared security
-    regex is a different blast radius than a Jira rendering change.
+    shared scanner and every other caller still has it, so it is filed as #7611
+    rather than left recorded only here; fixing a shared security regex is a
+    different blast radius than a Jira rendering change.
     """
     if not url:
         return None
@@ -3986,11 +3985,11 @@ def _adf_inline_sequence(
     Redaction is checked ONCE, over the whole run, against the plain-text
     rendition a seamless walk would produce -- every node's own text in order,
     with no markup between any of it. That string is exactly what the
-    payload-level ``_redact_provider_data`` pass sees, so checking it is what
-    preserves a catch this converter would otherwise break: escaping puts a
+    payload-level ``_redact_provider_data`` pass used to see, so checking it is
+    what preserves a catch this converter would otherwise break: escaping puts a
     backslash inside ``ghp_``, and marks put delimiters between the halves of a
-    secret split across siblings, so a credential contiguous in the plain-text
-    rendition is not contiguous in the marked-up one.
+    secret split across siblings, so a credential contiguous in the old output is
+    not contiguous in this one.
 
     Checking the WHOLE run rather than some span of it is deliberate. Any
     narrower boundary has to answer "which nodes contribute text seamlessly", and
@@ -4057,10 +4056,11 @@ def _adf_merge_marked_text(span: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _adf_plain_text(node: Any, *, _depth: int) -> str:
     """The plain text a node contributes, with no markup of any kind.
 
-    This is the markup-free rendition of a node, and it serves two callers for
-    the same reason -- both want the characters, not the markup: a code block's
-    literal body, and the redaction gate in ``_adf_inline_sequence``, which has
-    to see what the payload-level redactor sees.
+    This is the rendition the old plain-text walk produced, and it serves two
+    callers for the same reason -- both want the characters, not the markup: a
+    code block's literal body, and the redaction gate in
+    ``_adf_inline_sequence``, which has to see what the payload-level redactor
+    used to see.
 
     A label-bearing node contributes its label WITHOUT the markup this converter
     would wrap it in -- a mention's bare name, not ``@name``; a card's URL, not
@@ -4344,7 +4344,7 @@ def _jira_pick_fix_version(fix_versions: list[dict[str, Any]]) -> dict[str, Any]
 
     The Issue panel's milestone chip renders only the version's name, with no
     released/archived signal, so surfacing a shipped release reads as if it
-    were the pending one.  Prefer the first version that is
+    were the pending one (issue #7595).  Prefer the first version that is
     neither released nor archived; when every version has shipped, fall back
     to the first usable entry so the ticket still shows a release rather than
     dropping to no milestone at all.
@@ -4785,10 +4785,9 @@ async def _fetch_pull_request_uncached(
 
 
 # ── Conditional revalidation of an expired GitHub payload ────────────────────
-# An expired full payload would otherwise mean the whole provider fanout again
-# (the core `gh pr view`, the files, review-comment and rollup reads, and the
-# merge-state re-reads) even when nothing about the pull request has moved.
-# GitHub's REST
+# An expired full payload used to mean the whole provider fanout again (the core
+# `gh pr view`, the files, review-comment and rollup reads, and the merge-state
+# re-reads) even when nothing about the pull request had moved. GitHub's REST
 # API honours `If-None-Match`, and an authenticated `304 Not Modified` is free on
 # the primary rate limit, so an expired github.com payload is first REVALIDATED
 # with small conditional GETs; only when one reports a change does the fanout
@@ -5101,7 +5100,7 @@ async def fetch_issue(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
         raise ValueError("This URL points at a pull request or merge request, not an issue.")
     # Jira issues require configured credentials. When none are available, the
     # ValueError propagates to the frontend which shows the "Open in Jira"
-    # link-out fallback (the same behaviour as a zero-config install).
+    # link-out fallback (same as the zero-config default before #2361).
     now = time.monotonic()
     deadline = now + _DIRECT_FETCH_WAIT_SECS
     while True:
@@ -7044,8 +7043,8 @@ _visibility_inflight: set[str] = set()
 # entry closed. ``_refresh_repo_visibility`` captures this at start and refuses
 # to write a positive (public) result if the generation changed while it was
 # fetching — i.e. a public->private force-invalidation landed mid-flight — so a
-# stale in-flight read can never RESTORE public across a flip. The next refresh
-# reconfirms from a fail-closed baseline.
+# stale in-flight read can never RESTORE public across a flip (GPT #6789
+# round-14). The next refresh reconfirms from a fail-closed baseline.
 _visibility_force_gen: dict[str, int] = {}
 _VISIBILITY_TASKS: set[asyncio.Task] = set()
 # Jira has no public-repo concept and its status is credential-gated regardless,
@@ -7099,7 +7098,7 @@ async def _fetch_repo_visibility(ref: SourceRef) -> bool | None:
             # isPrivate is False for BOTH public AND internal (GitHub Enterprise)
             # repos, but an internal repo is visible only to enterprise members —
             # NOT anonymously — so classifying it public would leak credential-
-            # backed status to a non-owner. Read `visibility` and
+            # backed status to a non-owner (GPT #6789). Read `visibility` and
             # require exactly "public" (mirrors the GitLab "public"-only gate);
             # "internal"/"private" → owner-only. isPrivate is kept only as a
             # belt-and-braces private check.
@@ -7129,7 +7128,7 @@ async def _fetch_repo_visibility(ref: SourceRef) -> bool | None:
             # merge_requests_access_level / builds_access_level can be "private"
             # (members only) or "disabled" even when the project is public, so a
             # credentialed refresh would otherwise surface member-only MR/CI
-            # status to a non-owner. Require the project to be public
+            # status to a non-owner (GPT #6789). Require the project to be public
             # AND both feature levels to be "enabled" (available at the project's
             # public visibility, i.e. anonymously readable) before treating the
             # PR/MR lifecycle + CI status as public. GitHub has no such per-
@@ -7153,7 +7152,7 @@ async def _fetch_repo_visibility(ref: SourceRef) -> bool | None:
             # public_jobs (a.k.a. "Public pipelines") is a SEPARATE gate: when
             # False, a public project with builds_access_level "enabled" still
             # hides pipeline/job status from non-members, so a credentialed
-            # refresh would leak private CI state to a non-owner.
+            # refresh would leak private CI state to a non-owner (GPT #6789).
             # Require it True (missing → fail closed) before treating CI status
             # as anonymously public.
             public_jobs = data.get("public_jobs")
@@ -7175,7 +7174,7 @@ async def _refresh_repo_visibility(
     # refresh fails this key closed WHILE we are fetching (generation bumps), our
     # read is stale w.r.t. that public->private flip, so we must NOT write back a
     # positive result that would restore ``public`` — we leave the fail-closed
-    # unknown standing and let the next refresh reconfirm.
+    # unknown standing and let the next refresh reconfirm (GPT #6789 round-14).
     start_gen = _visibility_force_gen.get(key, 0)
     # The RENDERED gate value before this refresh: True only if a fresh public
     # entry exists (mirrors ``is_repo_public``'s TTL check). A change in this
@@ -7186,7 +7185,7 @@ async def _refresh_repo_visibility(
     # the force path would read its own just-written (now, None) as prev_public
     # =False, so a genuine public->private transition compares False==False and
     # fires no update — leaving connected non-owners on the stale public chip
-    # indefinitely. The override restores the true baseline so the
+    # indefinitely (GPT #6789). The override restores the true baseline so the
     # hide-the-chip update is queued.
     if prev_public_override is not None:
         prev_public = prev_public_override
@@ -7231,8 +7230,8 @@ async def _refresh_repo_visibility(
     _trim_visibility_cache()
     # Notify only when the RENDERED public flag flipped: a cold->public repo now
     # shows its chip status, and a public->private (or aged-out) repo hides it.
-    # Without this a fresh visibility read never re-serializes the sidebar, so a
-    # chip could stay bare until an unrelated push.
+    # Without this a fresh visibility read never re-serialized the sidebar, so a
+    # chip could stay bare until an unrelated push (GPT #6789).
     new_entry = _visibility_cache.get(key)
     new_public = bool(new_entry and new_entry[1] is True)
     if on_update is not None and new_public != prev_public:
@@ -7287,18 +7286,18 @@ def schedule_visibility_refresh(
             # value. A forced refresh means "the status just moved, revalidate
             # now"; any visibility read already in flight (which may have started
             # before a public->private flip) must be treated as stale and
-            # refused write-back. Gating this bump on "currently public" is a
+            # refused write-back. Gating this bump on "currently public" was a
             # hole: an entry already dropped to unknown (e.g. a first force
             # landed, then a second arrives while the pre-privacy fetch is still
             # in flight) would skip the bump, and that in-flight positive read
-            # could then restore ``public``.
+            # could then restore ``public`` (GPT #6789 round-15).
             _visibility_force_gen[key] = _visibility_force_gen.get(key, 0) + 1
             if entry is not None and entry[1] is True:
                 # Capture the TRUE rendered-public baseline BEFORE clobbering, so
                 # the refresh's on_update comparison measures the flip against
                 # what non-owners currently see (public), not the unknown we are
                 # about to write. Otherwise a public->private transition compares
-                # False==False and never hides the chip.
+                # False==False and never hides the chip (GPT #6789).
                 prev_public_override = (now - entry[0]) < _VISIBILITY_TTL_SECS
                 # Synchronously fail the entry closed so ``is_repo_public``
                 # returns None for the whole in-flight window; the refresh
@@ -7528,7 +7527,7 @@ def record_full_payload_status(url: str, payload: dict[str, Any]) -> None:
         # single repeating A→B loop and falsely damp legitimate CI churn (e.g.
         # three real re-runs of the same job).
         _clear_check_flap(url)
-        # Lockstep visibility revalidation: the full-payload writer
+        # Lockstep visibility revalidation (GPT #6789): the full-payload writer
         # is a SECOND authoritative status writer alongside _refresh_check_status.
         # A public->private change whose owner detail fetch refreshes status here
         # would otherwise be served to a non-owner against a still-cached-public
@@ -7744,7 +7743,7 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
     if not changed:
         return
     assert status is not None  # narrowed by `changed`
-    # Lockstep visibility revalidation — FIRST, before flap handling
+    # Lockstep visibility revalidation (GPT #6789) — FIRST, before flap handling
     # and before the first ``await``. A status refresh can land a freshly-fetched
     # (possibly now-private) status while this URL's visibility entry is still
     # within its TTL, so ``is_repo_public`` would authorize the new status
@@ -7753,7 +7752,7 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
     # (it pre-invalidates before spawning the refresh task), so it must run
     # before any ``await`` yields the event loop and before the flap path's
     # early return — otherwise a concurrent slots push (or the flap path, which
-    # returns before a later call site would run) could observe the newly-cached
+    # returns without reaching the old call site) could observe the newly-cached
     # private status against an un-invalidated public flag. Bounded to real
     # status transitions only.
     with contextlib.suppress(Exception):
@@ -7821,11 +7820,11 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         )
         return projected or None
     if ref.provider == "github":
-        # The rollup is read separately from the core fields: `gh` resolves a
-        # `--json` field set atomically, so bundling `statusCheckRollup` here
-        # would make a token without Checks read access lose the state/draft/merge
-        # data it IS authorized to read. The two reads run concurrently; only the
-        # core read is load-bearing.
+        # The rollup is read separately from the core fields (#5115): `gh`
+        # resolves a `--json` field set atomically, so bundling
+        # `statusCheckRollup` here made a token without Checks read access lose
+        # the state/draft/merge data it WAS authorized to read. The two reads
+        # run concurrently; only the core read is load-bearing.
         data_raw, rollup_raw = await asyncio.gather(
             _run_json(
                 "gh",

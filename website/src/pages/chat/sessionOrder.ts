@@ -147,7 +147,7 @@ export function comparePinnedThenSort(
  * two day indices allocates no `Date` where re-probing three midnights did.
  * It is the shape the command palette's own relative-time formatter already uses.
  */
-export function localDaysAgo(now: Date, then: Date): number {
+function localDaysAgo(now: Date, then: Date): number {
   const DAY_MS = 86_400_000
   const nowDay = Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY_MS)
   const thenDay = Math.floor(Date.UTC(then.getFullYear(), then.getMonth(), then.getDate()) / DAY_MS)

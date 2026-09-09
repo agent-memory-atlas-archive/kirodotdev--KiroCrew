@@ -17,9 +17,6 @@ import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
-import PinnedPrompt from '../pages/chat/PinnedPrompt'
-import { usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
-import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
@@ -35,16 +32,12 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
-import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { tryQuickSend } from '../lib/quickSend'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { sendTurn, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
-import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
-import FlyingQuote from './FlyingQuote'
-import { revealComposer } from '../pages/chat/composerFocus'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -78,7 +71,6 @@ export default function ChatPane({
   frameless,
   followContentWidth,
   hideEmptyHint,
-  openSideChat,
 }: {
   slotKey: string
   focused?: boolean
@@ -112,12 +104,6 @@ export default function ChatPane({
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
    *  so the pane does not say "go" one line under a host that says "broken". */
   hideEmptyHint?: boolean
-  /** Bring a Side Chat surface for this pane's slot on screen. The selection
-   *  toolbar offers "Ask" only when the host provides it: the pane owns its
-   *  composer (so Quote is always there) but no Side Chat of its own — the
-   *  split view's lives in the chat page's activity panel, the Members page's
-   *  in its detail drawer. Capability by omission, like `onOpenFull`. */
-  openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -131,30 +117,12 @@ export default function ChatPane({
   // In-pane report of a per-slot setting write (agent / model switch) that did
   // not persist — the shared toast is transient feedback, not the error surface.
   const [switchError, setSwitchError] = useState('')
-  const [stopError, setStopError] = useState('')
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
   // Shared stick-to-bottom follow (same FollowController core as the main
   // chat's virtualizer): RO-driven re-pin on any content growth or collapse,
   // released only by a genuine user scroll up, re-armed at the bottom.
   const follow = useChatScrollFollow({ resetKey: slotKey })
-  // Pinned-prompt banner — the same hook the main chat's transcript controller
-  // wears (chat-core P5-d). The pane's transcript is unvirtualized, so the
-  // list to index comes from ChatMessageList (`onDisplayItems` turns its row
-  // indexing on) and the jump back is the hook's in-place glide.
-  const pin = usePinnedPrompt({ scrollerRef: follow.scrollerRef })
-  const { displayItemsRef: pinItemsRef, updatePinnedPrompt, onScrollPin, setPinned, setPinExpanded } = pin
-  const onDisplayItems = useCallback((items: DisplayItem[]) => {
-    pinItemsRef.current = items
-    // A new turn shifts geometry with no scroll event of its own (ChatPage
-    // recomputes on its rendered list for the same reason). Layout-effect
-    // timing: the rows carrying the new indices are already in the DOM.
-    updatePinnedPrompt()
-  }, [pinItemsRef, updatePinnedPrompt])
-  const followOnScroll = follow.onScroll
-  const onScroll = useCallback(() => { followOnScroll(); onScrollPin() }, [followOnScroll, onScrollPin])
-  // A different session starts collapsed with nothing pinned.
-  useEffect(() => { setPinned(null); setPinExpanded(false) }, [slotKey, setPinned, setPinExpanded])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
@@ -262,23 +230,6 @@ export default function ChatPane({
     window.addEventListener('mc-config-changed', reload)
     return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
   }, [])
-  // Same enablement the main chat honours (Settings → Chat → pin last prompt),
-  // read through the hook's ref so the scroll recompute never closes over a
-  // stale config.
-  useEffect(() => {
-    pin.pinEnabledRef.current = chatConfig.pinLastPrompt
-    if (!chatConfig.pinLastPrompt) setPinned(null)
-  }, [chatConfig.pinLastPrompt, pin.pinEnabledRef, setPinned])
-  // The transcript row whose bubble the banner is standing in for. The list
-  // hides it (ts-keyed, index fallback — see ChatMessageList.hiddenRow);
-  // memoised so the memo'd list does not re-render on every pane render.
-  const pinnedState = pin.pinned
-  const pinnedTs = pinnedState?.ts
-  const pinnedIdx = pinnedState?.idx
-  const pinHiddenRow = useMemo(
-    () => (pinnedIdx == null ? undefined : { ts: pinnedTs, index: pinnedIdx }),
-    [pinnedTs, pinnedIdx],
-  )
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
   // Subscribes to the store's global refresh so a default-agent write in ANY pane (or
@@ -322,15 +273,6 @@ export default function ChatPane({
   // stays identical.
   const _modelsDegraded = useModelsDegraded(provider.id)
   const shownModel = displayModel(
-    paneSlot?.model || '',
-    availableModels,
-    _modelsDegraded,
-    paneSlot?.model_withheld,
-    paneSlot?.served_model || '',
-  )
-  // What the pin alone would say; differing from `shownModel` means the chip
-  // is naming the served default an inheriting slot runs on (see ChatPage).
-  const _pinShownModel = displayModel(
     paneSlot?.model || '',
     availableModels,
     _modelsDegraded,
@@ -656,140 +598,7 @@ export default function ChatPane({
     })
   }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
 
-  // Stop mirrors ChatPage's press protocol (ChatPage.onStop): the first press
-  // is the cooperative cancel, a second press while the slot reports
-  // `soft_pending` (or a stalled `killing`) escalates to the hard kill, and a
-  // double-tap inside the arming window is ignored. Before this the pane sent
-  // a bare soft stop on every press and passed the composer no `stopState`,
-  // so a pending cancel looked exactly like an un-pressed Stop: nothing said
-  // "stopping", nothing warned that the next press discards the queue — the
-  // backend escalates on ANY second press — and the button read as dead
-  // (#9547). `handleStopPress` is the shared decision; the ref is per pane
-  // because the arming window is measured against THIS slot's soft press.
-  const softStopAtRef = useRef(0)
-  const serverStopState = paneSlot?.stop_state
-  // The server's `soft_pending` arrives a WS round-trip after the first
-  // press, and that round-trip has no upper bound on a slow link. Until it
-  // lands, the snapshot still says `idle`, so a second press would read as a
-  // fresh soft press — and the backend escalates ANY second press to a
-  // queue-clearing hard kill, silently. Hold our own soft press as an
-  // OPTIMISTIC `soft_pending` instead: the composer shows the pending state
-  // (pulse + "click again to force stop") the instant the press is made, and
-  // `handleStopPress` sees the escalation state for as long as the server
-  // has not spoken, so the second press is a deliberate force (or an ignored
-  // double-tap inside the arming window) — never a second soft. The flag is
-  // released the moment the server reports a stop state of its own, when the
-  // turn ends, when the press fails on the wire, or when the pane is
-  // re-pointed; from then on the snapshot is authoritative.
-  const [optimisticSoftPending, setOptimisticSoftPending] = useState(false)
-  useEffect(() => {
-    if (!optimisticSoftPending) return
-    if (!busy || isEscalationState(serverStopState)) setOptimisticSoftPending(false)
-  }, [optimisticSoftPending, busy, serverStopState])
-  // Everything the press protocol remembers is about ONE slot: the arming
-  // stamp, the optimistic pending state and the failure notice all reset when
-  // the pane is re-pointed, and a completion that comes back for the slot the
-  // pane USED to show is dropped (`stopSlotRef` below).
-  const stopSlotRef = useRef(slotKey)
-  useEffect(() => {
-    stopSlotRef.current = slotKey
-    softStopAtRef.current = 0
-    setOptimisticSoftPending(false)
-    setStopError('')
-  }, [slotKey])
-  const paneStopState: typeof serverStopState =
-    optimisticSoftPending && !isEscalationState(serverStopState) ? 'soft_pending' : serverStopState
-  // A press that fails on the wire must say so: a silently swallowed
-  // rejection leaves exactly the dead-looking button this fix removes. The
-  // notice clears on the next press, so a retry that succeeds retires it.
-  const stop = useCallback((force: boolean) => {
-    setStopError('')
-    void dispatch(requestStop({ slotId: slotKey, force })).then((res) => {
-      // A reply that lands after the pane was re-pointed is about the slot
-      // it was sent for, not the one now shown: acting on it here would zero
-      // the CURRENT slot's arming stamp and pending state (its next press
-      // would read as a fresh soft, which the backend escalates) and show it
-      // a notice about a stop it never pressed (GPT round 9).
-      if (stopSlotRef.current !== slotKey) return
-      const failure = requestStop.fulfilled.match(res) ? res.payload : null
-      if (!failure) return
-      // A transport failure carries only the browser's own phrase ("Failed to
-      // fetch", "NetworkError…", "Load failed"), which means nothing to a
-      // reader; say what happened instead. It is also AMBIGUOUS: the request
-      // may have reached the backend and armed the cancel with only the reply
-      // lost, and the backend escalates ANY second soft press to a
-      // queue-clearing hard kill. So the optimistic pending state and the
-      // arming stamp stay — the composer keeps saying "click again to force
-      // stop", and the retry the notice asks for is a deliberate force, not a
-      // second soft the backend may read as one (GPT round 8). Only a
-      // DEFINITE refusal (the backend answered, and said no) armed nothing:
-      // that retry must read as a fresh press, so the stamp and the pending
-      // promise are reset.
-      const ambiguous = /fetch|network|load failed/i.test(failure.error)
-      if (!ambiguous) {
-        softStopAtRef.current = 0
-        setOptimisticSoftPending(false)
-      }
-      setStopError(
-        ambiguous
-          ? i18nT('components.chatPane.stop_failed_network')
-          : i18nT('components.chatPane.stop_failed', { error: failure.error }),
-      )
-    })
-  }, [dispatch, slotKey])
-  const onStop = useCallback(() => {
-    handleStopPress(
-      isEscalationState(paneStopState),
-      Date.now(),
-      softStopAtRef,
-      () => { setOptimisticSoftPending(true); stop(false) },
-      () => stop(true),
-    )
-  }, [stop, paneStopState])
-  // Reconcile this pane's run state from the server's slot snapshot, the way
-  // ChatPage does for the active slot. The reducer only takes the idle
-  // direction for a background slot; the running direction stays with the
-  // live frames.
-  //
-  // Only on an OBSERVED running true->false transition, never on the value a
-  // snapshot happens to hold when the pane mounts: a pane opened mid-turn can
-  // hold a snapshot fetched before the turn started (`running: false`) while
-  // live frames already mark it busy, and settling on that would idle the
-  // composer and finalize an in-flight reply until the next chunk re-promotes
-  // it. The `/stop`-reply settlement covers the stuck-pane press; this path
-  // exists for the turn that ends while the tab misses its `_done`, and that
-  // end is a transition this pane sees.
-  const hasPaneSlot = !!paneSlot
-  const paneRunning = !!paneSlot?.running
-  const paneStopping = !!paneSlot?.stopping
-  const paneRunEpoch = useAppSelector((s) => selectSlotRunEpoch(s, slotKey))
-  // The observation and the slot it was made on. Reset together, inside this
-  // effect, the moment `slotKey` changes: a pane re-pointed A -> B -> A must
-  // not carry A's old observation back (it would settle A on a stale snapshot
-  // while A's live frames mark it busy), and a separate reset effect would
-  // run AFTER this one on mount and erase a fresh observation instead.
-  const observedSlotRef = useRef<string | null>(null)
-  const sawRunningRef = useRef(false)
-  // WHICH turn was observed running: the slot's `runEpoch` as of the last
-  // render in which the snapshot said `running`. The idle snapshot answers
-  // about that turn only. A newer turn's first live frame bumps the epoch —
-  // and it can land in the same render as the lagging idle snapshot, so the
-  // epoch current at settle time may already be the new turn's. The reducer
-  // compares against the observed one and drops a settlement that would idle
-  // (and split the streaming reply of) a turn this effect never saw.
-  const observedEpochRef = useRef(0)
-  useEffect(() => {
-    if (observedSlotRef.current !== slotKey) {
-      observedSlotRef.current = slotKey
-      sawRunningRef.current = false
-      observedEpochRef.current = 0
-    }
-    if (!hasPaneSlot) return
-    if (paneRunning) { sawRunningRef.current = true; observedEpochRef.current = paneRunEpoch; return }
-    if (!sawRunningRef.current) return
-    sawRunningRef.current = false
-    dispatch(syncSlotRunningFromServer({ slot: slotKey, running: false, stopping: paneStopping, epoch: observedEpochRef.current }))
-  }, [dispatch, slotKey, hasPaneSlot, paneRunning, paneStopping, paneRunEpoch])
+  const onStop = useCallback(() => { dispatch(requestStop({ slotId: slotKey, force: false })) }, [dispatch, slotKey])
   // The same queue-card recipe the single-chat surface runs (#5891), owned once
   // so the two cannot drift again the way #2240 found them drifted.
   //
@@ -833,14 +642,6 @@ export default function ChatPane({
     }),
     [slotKey, toolDisclosure, setToolDisclosureFor],
   )
-
-  // Quote / Ask on selected assistant text — the same chat-core seam the main
-  // chat uses (chat-core/composer/selectionActions), bound to THIS pane's
-  // composer and slot. Before this the pane's selection toolbar offered Copy
-  // only: the SDK's assistant row draws the actions the host hands it, and no
-  // host but ChatPage handed any.
-  const inputAreaRef = useRef<HTMLDivElement>(null)
-  const { onQuote, onAsk, quoteFlight, endQuoteFlight } = useSelectionQuoteAsk({ slot: slotKey, setInput, revealComposer, openSideChat })
 
   const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus-visible:border-accent'
 
@@ -917,34 +718,6 @@ export default function ChatPane({
         <div className="relative z-[1]">
           <EdgeFade side="top" />
         </div>
-        {/* Pinned-prompt band. Zero-height in flow, so the banner OVERLAYS the
-            scroller's top exactly as the main chat's does under its title row;
-            the fold sentinel's top edge is the line the banner sticks to — the
-            scroller's own top edge here, directly under the pane's title bar,
-            or under the HOST's header in frameless mode (the Members DM), where
-            the pane root is what this band is anchored to, so it can never
-            paint over that header. right-1.5 keeps it off the scrollbar
-            track, as on the main chat. */}
-        <div className="relative z-[2]">
-          <div ref={pin.pinFoldRef} aria-hidden className="h-0" />
-          {pinnedState && (
-            <div className="absolute top-0 left-0 right-1.5 pointer-events-none">
-              <PinnedPrompt
-                text={pinnedState.text}
-                fullText={pinnedState.full}
-                images={pinnedState.images}
-                bodyBeyondPreview={pinnedState.bodyBeyondPreview}
-                pushUp={pinnedState.push}
-                bannerH={pinnedState.bannerH}
-                expanded={pin.pinExpanded}
-                onToggleExpanded={() => setPinExpanded(p => !p)}
-                onJump={() => pin.jumpToPinnedPromptInPlace(pinnedState.idx)}
-                cardRef={pin.pinCardRef}
-                onCollapsedHeight={pin.onPinCollapsedHeight}
-              />
-            </div>
-          )}
-        </div>
 
         {/* stable theming hook 'chat-container' — see website/docs/theming-contract.md */}
         {/* overflow-x-hidden: `overflow-y-auto` alone leaves overflow-x at
@@ -953,7 +726,7 @@ export default function ChatPane({
             gives the WHOLE message list a draggable horizontal scrollbar that
             sits right above the composer. The conversation should never pan
             sideways; wide children scroll within themselves. */}
-        <div ref={follow.scrollerRef} onScroll={onScroll} className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
+        <div ref={follow.scrollerRef} onScroll={follow.onScroll} className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
           <div ref={follow.contentRef}>
           {slotDetailFailed && (
             <div className="mx-4 my-2 flex items-start gap-2">
@@ -980,7 +753,7 @@ export default function ChatPane({
               {i18nT('components.chatPane.earlier_messages_open_session')}
             </button>
           )}
-          <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} onDisplayItems={onDisplayItems} hiddenRow={pinHiddenRow} onQuote={onQuote} onAsk={onAsk} />
+          <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
           {/* The same working indicator the full chat page shows (the ghost-pose
               carousel, theme-swappable via themeBranding): a running turn in a
               pane — a member DM, a split pane — was otherwise invisible between
@@ -1061,29 +834,13 @@ export default function ChatPane({
           message={switchError}
           onDismiss={() => setSwitchError('')}
         />
-        {/* No hand-off: the composer draft is untouched by a failed stop; the
-            turn is still running, so the Stop button stays for a retry. */}
-        <ErrorNotice
-          variant="inline"
-          className="mx-4 mt-2"
-          testId="chat-pane-stop-error"
-          message={stopError}
-          onDismiss={() => setStopError('')}
-        />
 
-        {/* Quote transit: the selection flies from where it was taken into this
-            pane's composer (the wrapper below is the landing target — same
-            shape as ChatPage's inputAreaRef). */}
-        {quoteFlight && <FlyingQuote text={quoteFlight.text} from={quoteFlight.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
-        <div ref={inputAreaRef} className="relative z-10">
         <ChatInput
           value={input}
           onChange={setInput}
           onSend={doSend}
           isRunning={busy}
           onStop={onStop}
-          isQueued={streamState === 'stopping' || !!paneSlot?.stopping}
-          stopState={paneStopState}
           autoFocusKey={slotKey}
           agentName={paneAgentName}
           // The chip shows the inherited-default marker; `agentName` stays the
@@ -1095,7 +852,6 @@ export default function ChatPane({
           agentIsInheritedDefault={!paneSlot?.agent && !!paneEffectiveDefaultAgent}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
           modelName={shownModel}
-          modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
@@ -1169,7 +925,6 @@ export default function ChatPane({
           onDragOver={dropTargetProps.onDragOver}
           onDragLeave={dropTargetProps.onDragLeave}
         />
-        </div>
         </div>
 
         {/* Agent picker portal — anchored to the input-bar agent button. */}

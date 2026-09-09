@@ -1,12 +1,12 @@
 ---
 title: Security Conductor — proactive vulnerability discovery as a conductor use case
-status: partial
+status: draft
 author: zejiangg
 created: 2026-09-07
-last-audited: 2026-09-08
-audited-at: acc99f217
+last-audited: 2026-09-07
+audited-at: e992b7771
 doc-pr: 9195
-implementation-prs: [9270, 9271, 9273, 9362, 9332]
+implementation-prs: []
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -17,22 +17,8 @@ superseded-by: []
 A dedicated `kirocrew-security-conductor` agent and a `security-conductor` builtin skill that run
 proactive vulnerability discovery as a supervised worker fleet: one auditor per attack surface, an
 independent verifier per finding, and an optional fixer lane behind a human gate. The skill is the
-operating procedure of record; this document carries the intent and the decisions.
-
-**Status.** M0 is on main. The agent is registered — `kirocrew-security-conductor` in
-`UNADVERTISED_AGENTS` (`src/kiro_crew/subagent.py`) with its installer
-`_install_security_conductor_agent` in `src/kiro_crew/agent.py`
-([#9273](https://github.com/kirodotdev/KiroCrew/pull/9273)) — and the skill plus the first rules of
-engagement are on main as `src/kiro_crew/builtin_skills/security-conductor/SKILL.md` and
-`rules-of-engagement.json` ([#9271](https://github.com/kirodotdev/KiroCrew/pull/9271)), whose merge
-is the human review of the rules of engagement that M0 required as its exit criterion. M1 is half
-shipped: the SQLite findings ledger and its CLI landed as
-`src/kiro_crew/builtin_skills/security-conductor/scripts/ledger.py`
-([#9270](https://github.com/kirodotdev/KiroCrew/pull/9270), with its test guard corrected in
-[#9362](https://github.com/kirodotdev/KiroCrew/pull/9362)); the three evaluator scripts —
-`scope_check.py`, `finding_entry.py`, `verify_finding.py` — are review-ready in open
-[PR #9332](https://github.com/kirodotdev/KiroCrew/pull/9332) and **not merged**, so nothing on main
-answers a scope question yet. M2 and M3 are unstarted.
+operating procedure of record; this document carries the intent and the decisions. Nothing here is
+built.
 
 ## What a security conductor is
 
@@ -52,8 +38,7 @@ Three child roles:
   false positives. Hallucinated vulnerabilities are the dominant noise source in agentic security
   review, so every finding gets a second, independent rejection pass before a human sees it.
 - **Fixer** — optional, only for a verified High or Critical, dispatched only after a human yes. Runs
-  the `prepare-pr` skill; acceptance is PR checks green **and** `scripts/verify_fix.py` exit 0, which
-  is the golden-path half described below. Checks green alone is not acceptance.
+  the `prepare-pr` skill; acceptance is PR checks green.
 
 ## Why
 
@@ -73,47 +58,38 @@ Two properties make this a conductor rather than a cron scanner:
 
 ## Verified facts this plan rests on
 
-The pattern facts were measured at `e992b7771`; the shipped-state facts were re-measured at
-`acc99f217`.
+Measured at `e992b7771`.
 
-- The conductor pattern is now shipped three times, with one standalone installer each in
-  `src/kiro_crew/agent.py` (`_install_conductor_agent`, `_install_pipeline_conductor_agent`,
-  `_install_security_conductor_agent`), a filename constant each in `src/kiro_crew/agent_files.py`,
-  and roster hiding through `UNADVERTISED_AGENTS` in `src/kiro_crew/subagent.py`, which carries four
-  entries at `acc99f217` — `kirocrew`, `kirocrew-conductor`, `kirocrew-pipeline-conductor` and
-  `kirocrew-security-conductor`.
+- The conductor pattern is shipped twice, with one standalone installer each in
+  `src/kiro_crew/agent.py` (`_install_conductor_agent`, `_install_pipeline_conductor_agent`), a
+  filename constant each in `src/kiro_crew/agent_files.py` (`CONDUCTOR_AGENT_FILENAME`,
+  `PIPELINE_CONDUCTOR_AGENT_FILENAME`), and roster hiding through `UNADVERTISED_AGENTS` in
+  `src/kiro_crew/subagent.py`, which carries exactly three entries today.
 - "Never does the work itself" is already expressed as a spec property, not a prompt request:
   `_install_pipeline_conductor_agent`'s `tools` list omits both `fs_write` and `code`, and
   `execute_bash` is mounted but never auto-approved because `allowedTools` has no argument matching.
-  The security-conductor installer keeps the same shape.
-- The bundled-script half of the pattern is shipped for the pipeline conductor
-  (`claim_preflight.py`, `fleet_probe.py`, `credit_spend.py` under
-  `src/kiro_crew/builtin_skills/pipeline-conductor/scripts/`) and half shipped for this one: only
-  `scripts/ledger.py` is on main under
-  `src/kiro_crew/builtin_skills/security-conductor/scripts/`.
+- The bundled-script half of the pattern is shipped: `claim_preflight.py`, `fleet_probe.py` and
+  `credit_spend.py` under `src/kiro_crew/builtin_skills/pipeline-conductor/scripts/`.
 - **SQLite is this repository's established store for durable agent knowledge**, which is the pattern
   the findings ledger mirrors. `src/kiro_crew/memory.py` keeps `memory_index.db` beside the workspace
   config; `src/kiro_crew/vector_memory.py` keeps `memory.db` in WAL mode behind a `schema_version`
   table and a `_MIGRATIONS` ladder; `src/kiro_crew/knowledge/store.py` owns its own database with
   `CREATE TABLE IF NOT EXISTS` DDL and one connection per thread. All three import SQLite through the
   `src/kiro_crew/_sqlite_compat.py` shim rather than the stdlib module directly, and `data_home()` in
-  `src/kiro_crew/config/paths.py` is where a new store's path is resolved from. `ledger.py` follows
-  that shape: a `schema_version` table plus `CREATE TABLE IF NOT EXISTS` DDL for the four data
-  tables.
+  `src/kiro_crew/config/paths.py` is where a new store's path is resolved from.
 - The fixer lane has a procedure to reuse:
   `src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/SKILL.md`.
 - The three pilot surfaces are real code, not hypotheticals: the deny classifier `is_denied` in
   `src/kiro_crew/security.py`, reached through `src/kiro_crew/platform/security_authority.py` from
   the PreToolUse gate in `src/kiro_crew/hooks.py`; webhook ingest in `src/kiro_crew/webhooks.py`;
-  dashboard session and bearer handling in `src/kiro_crew/dashboard/token_auth.py`.
-- What this document proposes and main does **not** have at `acc99f217`: `scope_check.py`,
-  `finding_entry.py` and `verify_finding.py` (all three in open
-  [PR #9332](https://github.com/kirodotdev/KiroCrew/pull/9332)), `verify_fix.py`, `deny_diff.py`, the
-  `golden_paths` table, the pilot round, the retrospective lane and the fixer lane.
+  dashboard token and session handling in `src/kiro_crew/dashboard/token_auth.py`.
+- Nothing this document proposes exists. `security-conductor` and `rules-of-engagement` return zero
+  hits in the tree. `scope_check` matches only two unrelated symbols — `app_scope_check` in
+  `src/kiro_crew/dashboard/token_auth.py` and `scope_check_exception` in
+  `src/kiro_crew/dashboard/websocket_hub.py`.
 - The `security-assistance` (ARCC) skill the auditor brief depends on is **not** a builtin in this
-  repository; it is an installed skill. The shipped skill resolves this by treating an absent script
-  or skill as `UNKNOWN` rather than as permission, so the dependency is an environment precondition
-  the seed states, not a vendored copy.
+  repository; it is an installed skill. M0 must decide whether the auditor brief requires it as an
+  environment precondition or the skill is vendored.
 
 ## The agent
 
@@ -200,14 +176,8 @@ Deliverables, following the four-piece shape the pipeline conductor ships:
 5. **`scripts/ledger.py`** — the ledger CLI: init schema, add finding, record verdict, propose a
    lesson, approve a lesson, export the rules-of-engagement JSON, list. This is also the human's
    editing surface (see the learning section).
-6. **`scripts/verify_fix.py`** — the fixer lane's acceptance gate: the finding's PoC is refused
-   **and** every active golden path still passes. Exit codes carry which half failed.
-7. **`scripts/deny_diff.py`** — the denial differential: classify every active golden-path shell row
-   at the base commit and at the head commit, and report what the head newly refuses and which rows
-   it deactivated.
 
-Plus a first set of `roe_rules` rows, reviewed by a human before any auditor runs, and a first set of
-`golden_paths` rows, reviewed on the same terms.
+Plus a first set of `roe_rules` rows, reviewed by a human before any auditor runs.
 
 ## Rules of engagement are machine-checked
 
@@ -220,7 +190,7 @@ The fields, held as `roe_rules` rows and exported as `rules-of-engagement.json`:
 |---|---|
 | `scope` | Allowed repositories and paths. Everything else is out of scope by default. |
 | `allowed_techniques` | Code review, dependency audit, local unit-level PoC tests. |
-| `forbidden` | No production systems and no external hosts; no reading credential material; no denial-of-service and no broad fuzzing; no disabling safety protections; no attempting to bypass a policy block — a policy refusal IS the boundary; and no fix that introduces a code path usable on only one platform. |
+| `forbidden` | No production systems and no external hosts; no reading credential material; no denial-of-service and no broad fuzzing; no disabling safety protections; no attempting to bypass a policy block — a policy refusal IS the boundary. |
 | `severity_scale` | The adjudication vocabulary. |
 | `report_schema` | The finding shape below, so a malformed finding fails at write time. |
 | `human_approval` | Two gates: any active testing beyond static review plus a local unit-level PoC needs a human yes, and any fixer dispatch needs a human yes. |
@@ -256,33 +226,27 @@ Round 1 is this repository, two to three auditors, concurrency two to three:
    `src/kiro_crew/security.py` and its gate path through
    `src/kiro_crew/platform/security_authority.py` and `src/kiro_crew/hooks.py`.
 2. **MCP gateway and webhook ingest input validation** — `src/kiro_crew/webhooks.py`.
-3. **Session and bearer handling** — `src/kiro_crew/dashboard/token_auth.py`.
+3. **Token and session handling** — `src/kiro_crew/dashboard/token_auth.py`.
 
 Every finding goes through the verifier before it is reported. Fix PRs only after a human approves
 each one.
 
 ## Learning from past audits — the findings ledger is SQLite
 
-A round that does not remember the last one repeats its false positives. Findings, verdicts, lessons,
-the rules of engagement and the golden paths therefore live in **one SQLite database**, at
+A round that does not remember the last one repeats its false positives. Findings, verdicts, lessons
+and the rules of engagement therefore live in **one SQLite database**, at
 `<data_home>/security-conductor/findings.db`, mirroring the pattern the memory and knowledge stores
 already use in this tree (see the verified facts above): a versioned schema, `CREATE TABLE IF NOT
-EXISTS` DDL, and SQLite imported through `src/kiro_crew/_sqlite_compat.py`. Five tables:
+EXISTS` DDL, and SQLite imported through `src/kiro_crew/_sqlite_compat.py`. Four tables:
 
 ```sql
-findings     (id, surface, severity, title, paths, poc, auditor_verdict,
-              verifier_verdict, final_verdict, status, created, round_id)
-verdicts     (finding_id, role /* auditor | verifier | human */, verdict, reason, ts)
-lessons      (id, kind /* true-positive | false-positive | missed | out-of-scope */,
-              surface, pattern, guidance, source_finding_id, approved_by, ts, active)
-roe_rules    (id, field, value, reason, approved_by, ts, active)
-golden_paths (id, kind CHECK IN (shell, flow, cron), surface, command_or_flow,
-              platform CHECK IN (any, posix, windows), reason,
-              source_finding_id NULL, approved_by, ts, active DEFAULT 1)
+findings   (id, surface, severity, title, paths, poc, auditor_verdict,
+            verifier_verdict, final_verdict, status, created, round_id)
+verdicts   (finding_id, role /* auditor | verifier | human */, verdict, reason, ts)
+lessons    (id, kind /* true-positive | false-positive | missed | out-of-scope */,
+            surface, pattern, guidance, source_finding_id, approved_by, ts, active)
+roe_rules  (id, field, value, reason, approved_by, ts, active)
 ```
-
-The first four ship in `scripts/ledger.py` at `acc99f217`; `golden_paths` is the table the next
-section adds.
 
 `verdicts` is append-only, so `findings.final_verdict` is a fold and the disagreement between auditor
 and verifier stays readable rather than being overwritten by the winner.
@@ -301,198 +265,19 @@ redeploy. The same mechanism carries rule changes: a scope or `forbidden` edit i
 with a reason and an approver, `scope_check.py` reads the active rows, and a bad rule is reverted by
 flipping `active` rather than by a commit.
 
-## Fixes must keep legitimate use alive — golden paths and the denial differential
-
-A security fix in this system is almost always a rule tightened: a deny pattern widened, a scope
-narrowed, a guard moved earlier. The only question verification asked was "is the PoC now refused?"
-— and a change that refuses everything answers that question yes. Nobody asked whether the chat still
-starts, whether the cron that fired yesterday still fires, whether `prepare-pr` can still push. A fix
-that passes the first question and fails the second is an outage the audit itself caused, and it is
-worse than the finding, because the finding was hypothetical and the outage is not.
-
-Three failure modes, in the order they are likely:
-
-- **The tool is made unusable.** The newly refused shape was a false positive: a read-only query, a
-  build command, a test invocation. The rule is right about the hazard and wrong about the traffic.
-- **Existing automation breaks silently.** A cron, a monitor loop, or a conductor's own bundled
-  script stops working. Nothing fails loudly, because a refusal looks like a normal denial and an
-  unattended job has no reader.
-- **The platform is split.** A fix written and tested on Linux refuses the macOS or Windows path, or
-  introduces a code path only one platform can reach. Nothing catches this unless the check itself
-  runs on the matrix.
-
-### The golden-path corpus
-
-A fifth ledger table, `golden_paths`, holds the legitimate operations that must always pass. Its DDL
-is in the ledger section above; the columns that carry the judgment are `kind` (`shell`, `flow` or
-`cron`), `command_or_flow` (the exact operation), `platform` (`any`, `posix` or `windows`, so a
-platform-branched row is not asserted where it cannot run), `reason` (why this is legitimate),
-`source_finding_id` (set when the row was earned by a fix that broke it) and `approved_by`.
-
-The first set of rows covers the operations this system cannot lose:
-
-- Representative read-only `gh` and `git` queries — issue and PR reads, `git log`, `git show`,
-  `git merge-base`.
-- The venv `pytest` invocation the repository's own gates use.
-- Chat start plus one completed turn.
-- An existing cron firing on schedule.
-- `monitor_start` arming a loop and `autonudge_stop` ending it.
-- The `prepare-pr` commit-then-push sequence.
-- Each conductor's bundled-script calls — `claim_preflight.py`, `fleet_probe.py`, `credit_spend.py`,
-  `scope_check.py`, `finding_entry.py`, `verify_finding.py`, `ledger.py`.
-
-A row is data, so adding one is attributable and removing one is flipping `active` — the same property
-that makes `roe_rules` reviewable.
-
-**The gating corpus is a committed export.** The ledger lives at
-`<data_home>/security-conductor/findings.db`, which is per-host and invisible to a CI runner, so a
-gate reading it directly would be unenforceable in exactly the place both gates below are declared
-blocking. The active rows are therefore exported to a committed `golden-paths.json`, reusing the
-relationship `rules-of-engagement.json` already has to `roe_rules`.
-
-The export is **authoritative for gating**: both gates read the file and nothing else, and a row that
-is not in the committed export does not gate. The ledger rows remain the editing surface, the reason
-and the approver record — but they are not consulted at gate time, so two hosts' ledgers cannot
-silently disagree with the corpus that actually decides. That is the one place this differs from
-`roe_rules`, where `scope_check.py` reads the rows directly: a scope question is asked on the host
-that holds the rows, and a gate question is asked in CI, which does not.
-
-This is independent of open decision 3 below, which is about the findings — an unfixed finding in a
-public repository is a disclosure, a list of legitimate commands is not.
-
-**What each `kind` costs to run, and which ones gate.** A `shell` row is *classified*, not
-executed: the deny classifier is a function of the command string, so the entire shell corpus is
-checked in milliseconds with no session, no provider, no network and no side effect. That is what
-makes running it on the full platform matrix cheap, and it is all `deny_diff.py` ever does. A `flow`
-row ("chat starts and completes one turn") and a `cron` row ("an existing job fires on schedule") are
-a different animal: each needs a live session, a provider and real elapsed time, and none of that is
-affordable three times per fix on a CI matrix.
-
-So the gate is scoped by `kind`. **M1 gates `shell` rows only.** `deny_diff.py` runs in CI across the
-matrix; `verify_fix.py` runs where the fixer runs — in the fixer's own worktree, before it marks the
-PR ready — and checks the PoC plus the shell corpus. `flow` and `cron` rows are recorded in the
-corpus from M1, so the knowledge of what must keep working is written down and attributable, but they
-are marked as not gating until M2 builds their harness. M2 is the honest home for it: the pilot round
-already stands up live sessions and already has a cron firing, so executing those rows there costs
-almost nothing extra, and until it exists a `flow` row is a claim about a check nobody can run.
-
-This is also what keeps fail-closed defensible. Failing closed is right for a row that was supposed
-to run and could not, and wrong for a row nothing was ever able to run — the second case makes exit
-30 the *normal* result, and once the gate is normally red the cheapest way to green is deactivating
-precisely the outage-shaped rows, which is the move the paragraph below exists to forbid. A gate that
-creates pressure toward its own bypass is not a control. Scoping by `kind` keeps fail-closed strict
-where it means something.
-
-**Deactivation is gated exactly like activation.** A proposed row is `active=0` until a human
-approves it; flipping an approved row back to `active=0` needs the same human approval and carries
-the same reason and approver. Without the symmetry the gate is defeated by shrinking its own input:
-a fixer that can write the ledger deactivates the rows its fix would break, and both scripts below
-then pass on a corpus that no longer contains the broken paths. That would leave the agent able to
-loosen the ceiling it is meant to be held to, which is the one property the rules-of-engagement
-design exists to deny it.
-
-### `scripts/verify_fix.py` — both halves or nothing
-
-Given a finding id and a worktree, `verify_fix.py` asserts two things and reports which one failed:
-
-- The finding's PoC is refused or otherwise fixed, via `verify_finding.py`.
-- Every gating `golden_paths` row in the committed export whose `platform` matches this host
-  still passes — `shell` rows in M1, plus `flow` and `cron` rows once M2 harnesses them.
-
-| Exit | Meaning |
-|---|---|
-| `0` | Both hold. The fix is acceptable. |
-| `10` | The PoC still reproduces. The fix does not fix. |
-| `30` | A golden path broke. The output lists the broken rows. |
-
-It fails closed: an unresolvable golden path is a broken one, not a passing one, because a check that
-cannot run is indistinguishable from a check that runs and finds nothing.
-
-**This replaces the fixer lane's acceptance criterion.** "PR checks green" becomes "PR checks green
-AND `verify_fix.py` exit 0". Checks green proves the repository still builds; it does not prove the
-product still works, because no existing test asserts that a legitimate command is *not* refused.
-
-### The denial differential
-
-Any PR touching `src/kiro_crew/security/**`, `deny_guidance.py`,
-`src/kiro_crew/platform/security_authority.py` or a `rules-of-engagement.json` must run
-`scripts/deny_diff.py`. It classifies every active `golden_paths` row of kind `shell` with the deny
-classifier twice — once at the base commit, once at the head — and reports the rows the head newly
-refuses.
-
-- **Zero newly refused rows** — advisory. The differential is recorded and the PR proceeds.
-- **One or more** — blocking. It needs an explicit human yes naming which rows are acceptable
-  casualties and why.
-
-The differential reports rows the head **deactivated** as well, and blocks on them on the same
-terms. A row dropped from the corpus and a row the head refuses are the same event seen from two
-sides: both end with a legitimate operation no longer protected, and the deactivation is the cheaper
-one to reach, so the gate that ignored it would be the easier one to walk around.
-
-This gate is deterministic, so on this one question it **outranks model review**. A reviewer reading
-a widened regex is guessing at what the regex now matches; the classifier run against a corpus is
-not guessing. Where the two disagree about whether a legitimate command is now refused, the
-differential is correct.
-
-### Platform
-
-The golden-path gate runs on the full Linux / macOS / Windows matrix, because a fix that only refuses
-on one platform is exactly the case a single-platform run cannot see.
-
-A `posix-only-approved`-style label is scoped to **a single platform-branched line**, never to a
-whole PR. A PR-wide exemption converts a targeted exception into a blanket one and the blanket
-survives long after the line is gone.
-
-A new `roe_rules` `forbidden` row states the rule the label is an exception to: **a fix must not
-introduce a code path usable on only one platform.**
-
-### Feeding the corpus — a policy block is an event, not a finding
-
-This resolves the open decision about how an auditor's policy block is reported.
-
-A policy block hit by an auditor or a verifier is recorded as a **`policy_block` event**, not as a
-finding. The two readings that were in tension — "the fence worked" and "the fence stopped a
-legitimate step" — are not answered by the block itself, and a finding is the wrong container for an
-unanswered question: it enters the severity queue, competes with real defects, and inflates the
-false-positive rate that M3 is gated on.
-
-The retrospective is what rules on the event. For a block it confirms was a false positive, it does
-two things: propose a `false-positive` `lessons` row, and propose a `golden_paths` row for the
-operation that was wrongly refused, `active=0` until a human approves it. So the corpus grows from
-the blocks the system actually hit, rather than from a list somebody imagined up front — and the
-lesson and the golden path are proposed together, because a lesson tells a future auditor not to
-re-file it while the golden path stops a future fix from re-breaking it.
-
-The mechanism is not hypothetical. Designing this section hit the self-protection classifier several
-times on read-only `gh` queries, in a session whose entire output is a documentation diff. Each of
-those is a `policy_block` event with a confirmed false-positive reading and a golden-path row
-waiting to be written.
-
 ## Phases
 
 - **M0** — the agent, the skill, and the first set of `roe_rules` rows. The human reviews the rules of
   engagement before any auditor runs; that review is M0's exit criterion, not a formality. Includes
-  the governance-search skill dependency decision named above. **Shipped**
-  ([#9271](https://github.com/kirodotdev/KiroCrew/pull/9271),
-  [#9273](https://github.com/kirodotdev/KiroCrew/pull/9273)).
-- **M1** — the scripts and the SQLite ledger: schema plus `scripts/ledger.py`, the three evaluator
-  scripts, the `golden_paths` table with its first reviewed rows and its committed export,
-  `scripts/verify_fix.py` and `scripts/deny_diff.py` gating `shell` rows, with behaviour pinned by
-  tests — scope verdict precedence, `UNKNOWN` never
-  reported as in-scope, dedupe identity, verifier verdict mapping, append-only `verdicts`, an
-  unapproved lesson never reaching a seed message, `verify_fix` failing closed on an unresolvable
-  golden path, and `deny_diff` reporting a newly refused row on a deliberately over-wide test
-  pattern. **Ledger shipped** ([#9270](https://github.com/kirodotdev/KiroCrew/pull/9270)); evaluator
-  scripts review-ready in [#9332](https://github.com/kirodotdev/KiroCrew/pull/9332); golden paths,
-  `verify_fix` and `deny_diff` unstarted.
-- **M2** — the pilot round on this repository, including the retrospective lane, plus the harness that
-  executes `flow` and `cron` golden paths and promotes them from recorded to gating. Exit criteria:
-  every round-1 finding carries a verifier verdict, the false-positive rate is recorded, the
-  retrospective has proposed lessons a human has ruled on, and at least one `flow` row and one `cron`
-  row run green through `verify_fix.py`.
+  the ARCC-dependency decision named above.
+- **M1** — the scripts and the SQLite ledger: schema plus `scripts/ledger.py`, with behaviour pinned
+  by tests — scope verdict precedence, `UNKNOWN` never reported as in-scope, dedupe identity, verifier
+  verdict mapping, append-only `verdicts`, and an unapproved lesson never reaching a seed message.
+- **M2** — the pilot round on this repository, including the retrospective lane. Exit criteria: every
+  round-1 finding carries a verifier verdict, the false-positive rate is recorded, and the
+  retrospective has proposed lessons a human has ruled on.
 - **M3** — the fixer lane. Blocked on M2's recorded false-positive rate: a lane that dispatches fix
-  PRs from an unmeasured finding stream is worse than no lane. A fix is accepted when **PR checks are
-  green AND `scripts/verify_fix.py` exits 0** — never on checks alone.
+  PRs from an unmeasured finding stream is worse than no lane.
 
 ## Open decisions
 
@@ -501,13 +286,14 @@ waiting to be written.
    eventually stop being injected.
 2. **Whether lessons are per-repository or shared across targets.** A false-positive pattern in this
    codebase's deny classifier may generalize to any deny classifier, or may not generalize at all.
-   The same question applies to `golden_paths`: a shell row is about this product's commands, while a
-   `flow` row like "chat starts and completes one turn" is about any target running this product.
 3. **Whether the database is committed to the repository or stays in `data_home()` only.** An unfixed
    finding in a public repository is itself a vulnerability; a database only in `data_home()` is
    invisible to review and lost with the host.
 4. **Whether the verifier may use a different model than the auditor.** A different model is a
    stronger independence argument against a shared hallucination; it is also a second failure mode
    and a cost.
-5. **Whether the fixer lane is ever automatic for Low or Medium.** M3 assumes a human yes per
+5. **How an auditor's policy block is reported** — as a finding (the fence stopped a legitimate audit
+   step, which is a usability defect) or as an event (the fence worked, which is a non-finding). The
+   two answers route to different readers.
+6. **Whether the fixer lane is ever automatic for Low or Medium.** M3 assumes a human yes per
    dispatch; whether that gate is ever lifted for low-severity findings is unresolved.

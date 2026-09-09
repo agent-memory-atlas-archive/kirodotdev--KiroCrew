@@ -134,16 +134,12 @@ class _McpFileLock:
     async def __aenter__(self) -> None:
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _MCP_LOCK_PATH.touch(exist_ok=True)
-        # Open the lock fd WRITABLE and non-truncating. Windows msvcrt.locking()
-        # requires write access on the handle -- an "r" fd fails with EACCES and
+        # Open the lock fd WRITABLE. Windows msvcrt.locking() requires write
+        # access on the handle — an "r" fd fails with EACCES and
         # platform_compat.acquire_lock swallows that (best-effort semantics),
         # silently degrading this to a no-op and letting concurrent
         # /api/mcp/toggle requests race the atomic-rename write of mcp.json
-        # (one flip is lost). "r+" keeps the shared file present (no truncate);
-        # see platform_compat.open_lock_file for the full Windows rationale
-        # (GH-9248). Kept inline rather than routed through that helper: the fd
-        # is stored on self._fd and released in __aexit__, so it must OUTLIVE
-        # this method -- the with-scoped helper would close it at method return.
+        # (one flip is lost). "r+" keeps the shared file present (no truncate).
         fd = open(_MCP_LOCK_PATH, "r+")
         # Run blocking lock acquire in a thread to avoid blocking the event
         # loop. Bind self._fd ONLY AFTER a successful acquire — otherwise a
@@ -191,8 +187,6 @@ class _McpFileLockSync:
     def __enter__(self) -> None:
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _MCP_LOCK_PATH.touch(exist_ok=True)
-        # Non-truncating "r+", kept inline for the same reason as
-        # :class:`_McpFileLock` above.
         fd = open(_MCP_LOCK_PATH, "r+")
         try:
             platform_compat.acquire_lock(fd.fileno(), exclusive=True)
@@ -222,7 +216,7 @@ def _get_mcp_lock_sync() -> _McpFileLockSync:
 # pointing at a removed package. This coarse async mutex spans BOTH phases so
 # apply calls are fully serialized; the narrower file lock is retained inside for
 # cross-process coordination with bridges.py. Loop-bound via the shared
-# LoopBoundLock.
+# LoopBoundLock (#4800).
 _apply_lock = LoopBoundLock()
 
 
@@ -708,8 +702,8 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     and ``~/.kiro/settings/mcp.json``), and provider-global entries. This
     handler describes what the DASHBOARD shows; it makes no claim about which
     of these sources kiro-cli itself loads at session time — that is backend
-    behaviour this repo cannot verify: agent-level and disabled entries have
-    been seen initializing there anyway.
+    behaviour this repo cannot verify (see issue #2946, where agent-level and
+    disabled entries still initialized).
     """
     global _mcp_probe_in_progress
     from kiro_crew.mcp_discovery import list_servers  # circular import
@@ -1062,7 +1056,7 @@ async def api_mcp_quarantine_clear(request: web.Request) -> web.Response:
     Deliberately does NOT touch ``disabled`` in any config file: this clears only
     the count Kiro Crew accumulated on its own, so a server the user had switched
     off by hand stays off. It does not mount or unmount anything either -- the
-    server was never unmounted.
+    server was never unmounted (issue #6171).
     """
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
@@ -1311,12 +1305,12 @@ def _string_identifier(body: dict, field: str) -> tuple[str, web.Response | None
     """Read one mutation identifier the dashboard's forms post.
 
     The field must be a STRING before normalization: a truthy non-string
-    (array/object/number from a malformed client) otherwise reaches ``.strip()``
-    and surfaces as HTTP 500 before any validation runs — past the point where
+    (array/object/number from a malformed client) used to reach ``.strip()``
+    and surface as HTTP 500 before any validation ran — past the point where
     such a handler would already hold the config lock or have touched
-    persistence. Missing or blank leaves the handlers' required-field responses
-    alone; only the TYPE contract is enforced here, and its 400 carries a stable
-    machine-readable ``code``.
+    persistence. Missing or blank keeps the handlers' existing required-field
+    responses untouched; only the TYPE contract is new, and its 400 carries a
+    stable machine-readable ``code``.
     """
     raw = body.get(field)
     if raw is None:
@@ -1596,10 +1590,10 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
                 _write_mcp_json(data)
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
-        # Hold the config lock across the offloaded read-modify-write: the sync
-        # runs in a worker thread, so without the lock two concurrent DELETE/PUT
-        # requests would both read kirocrew.json and the last write would drop
-        # the other's change.
+        # Hold the config lock across the offloaded read-modify-write: since the
+        # sync now runs in a worker thread, two concurrent DELETE/PUT requests
+        # would otherwise both read kirocrew.json and the last write would drop
+        # the other's change (the event loop used to serialize this for free).
         async with _get_config_lock():
             await asyncio.to_thread(lambda: _sync_mcp_to_agent(name, False, remove=True))
         sel().log_api_access(
@@ -2652,11 +2646,11 @@ def _record_stub_decisions(section: dict, names: list[str], stub: bool) -> None:
     Call AFTER :func:`_freeze_stub_servers`, which settles what the roster is;
     this writes only the operator's deviation from it.
 
-    Rewriting ``stub_servers`` instead would make the roster un-shippable. That
-    key is the layer a distribution owns, so a handler that persists the resulting
-    set into it takes ownership away on the first click: every later roster change
-    arrives into a file that already answers the question, and the addition
-    silently never takes effect. Writing the decision
+    Rewriting ``stub_servers`` was the old behaviour and it is what made the
+    roster un-shippable. That key is the layer a distribution owns, so a handler
+    that persists the resulting set into it takes ownership away on the first
+    click: every later roster change arrives into a file that already answers the
+    question, and the addition silently never takes effect. Writing the decision
     instead leaves the roster alone, so the two layers can both keep moving.
 
     A decision that AGREES with the roster deletes the override rather than
@@ -3431,12 +3425,13 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
 
     async with _MCP_GATEWAY_APPLY_LOCK:
         overlay = _local_overlay_section()
-        # BOTH keys this handler can write. The decision lands in
+        # BOTH keys this handler can write. The decision now lands in
         # ``stub_overrides``, and ``config.local.json`` wins the deep merge
         # per-key, so an overlay that names it would shadow the base write: the
-        # click would answer 200 while the gateway kept routing the previous way.
-        # That is the same silent never-takes-effect failure the guard prevents
-        # for the roster, so the check covers this key too.
+        # click would answer 200 while the gateway kept routing the old way. That
+        # is the same silent never-takes-effect failure the guard already prevents
+        # for the roster, and relocating the write is exactly what would have
+        # reintroduced it on the new key.
         shadowed = _overlay_shadowed_keys(overlay, ("stub_servers", "stub_overrides"))
         if shadowed:
             return web.json_response(

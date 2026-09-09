@@ -459,12 +459,6 @@ async def ingest_artifact(
             original_name=f"{title}{ext}",
             source_id=source_id,
             old_item_ids=old_item_ids,
-            # Automated artifact synchronization, not a user's one-shot import, so
-            # it is exempt from the explicit-import chunk budget (like the folder
-            # watcher path). Counting it would let an exhausted budget make this
-            # upsert raise -- leaving the old chunks searchable and dropping the
-            # sync event, a worse outcome than the cost the budget prevents.
-            count_toward_import_budget=False,
             # Fires inside the finalize hop, only on the fully-committed branch
             # -- the same branch that reports status 'completed' below -- and
             # persists the ownership row there (see _record_ownership).
@@ -960,15 +954,8 @@ class ArtifactKnowledgeSync:
         the row outlives the feature being switched off, so gating on creation
         leaves an opt-in unable to repair the drift from that window. See the
         module docstring.
-
-        The get-or-create runs in a worker thread: this coroutine runs on the
-        gateway loop at every start, and a contended knowledge DB would
-        otherwise busy-wait the whole loop (watchdog heartbeat included) for
-        the connection's busy timeout.
         """
-        source_id, created = await asyncio.to_thread(
-            ensure_artifact_source, self.kstore
-        )
+        source_id, created = ensure_artifact_source(self.kstore)
         logger.info(
             "artifact KB sync started: source=%s created=%s kinds=%s",
             source_id,

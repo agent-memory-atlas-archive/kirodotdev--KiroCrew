@@ -234,8 +234,8 @@ def _cache_without_scrape(
     frontend's existing signal to hide the pill instead of rendering blanks.
     ``reason`` (when given) rides that unavailable marker so the frontend can
     explain WHY instead of hiding silently: the opt-in scrape being off is a
-    permanent, user-addressable state, unlike a cold-start failure, and hiding
-    it leaves users with no hint that a knob exists.
+    permanent, user-addressable state (#7623), unlike a cold-start failure,
+    and hiding it left users with no hint that a knob exists.
 
     Preserving is gated on ``_same_identity``: with the scrape disabled, a
     plan-less API answer recurs every refresh forever, so an unguarded preserve
@@ -402,8 +402,8 @@ def _normalize_text_usage(parsed: dict[str, object]) -> dict[str, object]:
 
     In the raw text, "Credits used:" is the OVERAGE field (0 for org accounts,
     and absent entirely on kiro-cli 2.11.x), while "(X of Y covered in plan)" is
-    the in-plan covered/limit. Total = covered + overage. When the text carries
-    no overage, this honestly reports covered==total.
+    the in-plan covered/limit. Total = covered + overage. Post-regression the
+    text carries no overage, so this honestly reports covered==total.
     """
     covered = parsed.get("credits_covered")
     plan = parsed.get("credits_plan")
@@ -755,8 +755,8 @@ async def _fetch_usage_bg() -> None:
         expected_arn = raw_arn if isinstance(raw_arn, str) and raw_arn else None
         # Primary source: the real GetUsageLimits API. It reads the live bearer
         # token kiro-cli already maintains and returns the true used/limit/overage,
-        # so it survives kiro-cli stdout format changes, including a text format
-        # that drops the overage line.
+        # so it survives kiro-cli stdout format changes (the regression that dropped
+        # the overage line).
         #
         # Both ARN values are safe to pass. An ARN anchors on identity; None
         # anchors on PROVENANCE (kiro-cli's own auth store only) — see
@@ -1041,7 +1041,7 @@ async def api_sessions(request: web.Request) -> web.Response:
     # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
     # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
     # the event loop freezes chat, heartbeat, and every other coroutine for the
-    # full duration. Offload to a worker thread.
+    # full duration. Offload to a worker thread (#3057).
     all_sessions = await asyncio.to_thread(state.conversation_log.list_sessions)
     if exclude_open:
         open_keys = _open_slot_transcript_keys(state)
@@ -1450,9 +1450,9 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     # Bind after the None guard so mypy's narrowing carries into the closure.
     log = state.conversation_log
 
-    # ONE selector, shared with the clearable-count endpoint, so the number a
-    # confirmation displays is the set this loop takes rather than a second
-    # opinion about it. It takes no age cutoff because this path accepts
+    # ONE selector, shared with the count endpoint ask 4 of #8872 needs, so the
+    # number a confirmation displays is the set this loop takes rather than a
+    # second opinion about it. It takes no age cutoff because this path accepts
     # none: a filtered count would report a subset of what this loop then
     # permanently unlinks.
     # It globs and stats every session file, so it stays off the event loop.
@@ -1504,9 +1504,9 @@ def _clearable_history_keys(
 ) -> tuple[list[str], int]:
     """The history sessions a bulk clear would remove.
 
-    ONE implementation, shared by ``api_sessions_clear`` and the clearable-count
-    endpoint, so the number a confirmation displays cannot drift from the set the
-    delete takes. Two implementations would let the dialog
+    ONE implementation, shared by ``api_sessions_clear`` and the count endpoint
+    that ask 4 of #8872 needs, so the number a confirmation displays cannot drift
+    from the set the delete takes. Two implementations would let the dialog
     promise a number the delete does not honour, which is the whole reason a
     count exists.
 
@@ -1563,9 +1563,9 @@ def _clearable_history_keys(
 async def api_sessions_clearable_count(request: web.Request) -> web.Response:
     """GET /api/sessions/clearable/count — how many sessions a bulk clear removes.
 
-    The confirmation for a bulk delete has to state how many sessions it will
-    remove, and ``DELETE /api/sessions`` offers no way to learn that before
-    committing. This answers the question and nothing else — it
+    Ask 4 of #8872: the confirmation for a bulk delete has to state how many
+    sessions it will remove, and today ``DELETE /api/sessions`` offers no way to
+    learn that before committing. This answers the question and nothing else — it
     is a GET, so no code path here can delete anything.
 
     A GET rather than a ``dry_run`` flag on the DELETE, deliberately departing

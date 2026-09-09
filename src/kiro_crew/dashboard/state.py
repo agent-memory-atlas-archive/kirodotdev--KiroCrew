@@ -275,9 +275,9 @@ def _slots_serialization_note(slots_data: object, *, path: str = "slots-broadcas
     — the coalesced broadcast, the dashboard-user WS frame (``_slots_ws_frame``),
     the WS connect snapshot, and ``GET /api/chat/slots`` all serialize the same
     shape — and the stock message — "Object of type X is not JSON serializable"
-    — names neither the slot nor the field, so such a failure reads as a
-    broadcast bug. All four paths route their dump failure through this note;
-    ``path`` names the one that raised. Values are withheld
+    — names neither the slot nor the field, which is how #6522 was first misread
+    as a broadcast bug (#8745). All four paths now route their dump failure
+    through this note; ``path`` names the one that raised. Values are withheld
     by design: slot state can carry user text, and the type is enough to find
     the producer.
 
@@ -335,12 +335,13 @@ def _slots_ws_frame(
     :meth:`DashboardState._broadcast` and the owner frame in
     :meth:`DashboardState._do_slots_broadcast` — because they must carry the SAME
     keys and nothing else enforces that. ``_send_ws_all`` skips owner sockets for
-    ``slots``, so the generic frame does not backstop an owner: a key present in
+    ``slots``, so the generic frame no longer backstops an owner: a key present in
     one envelope and not the other silently deprives every owner window, with no
-    error anywhere. Hand-building both is exactly how they drift (an owner frame
-    that is a strict subset, missing ``folders`` and ``gitlabHostsGeneration``),
-    so the remedy is one builder rather than a second careful copy — drift becomes
-    impossible by construction instead of merely detectable.
+    error anywhere. Hand-building both is exactly how they drifted before (the
+    owner frame was a strict subset, missing ``folders`` and
+    ``gitlabHostsGeneration``), so the remedy is one builder rather than a second
+    careful copy — drift becomes impossible by construction instead of merely
+    detectable.
 
     DELIBERATELY NOT used for the app-token frame in
     :meth:`DashboardState._serialize_for_client`. That envelope diverges on
@@ -365,7 +366,7 @@ def _slots_ws_frame(
         # its stale window. Process-local, like the two counters above.
         "governanceGeneration": governance_gen,
     }
-    # Same offender diagnostic as the coalesced broadcast: the
+    # Same offender diagnostic as the coalesced broadcast (#8745 class): the
     # dashboard-user frame serializes the ENRICHED projection, so a value that
     # only enrichment adds raises here and nowhere else. Diagnosis only — the
     # exception propagates unchanged. A clean-slots note ("no offending entry
@@ -940,16 +941,16 @@ _GIT_REMOTE_WRITE_SUBCOMMANDS: frozenset[str] = frozenset(
     ("add", "remove", "rm", "rename", "set-url", "set-head", "set-branches", "prune", "update")
 )
 
-# Allowlist entries that name a VERSION PROBE, matched EXACTLY rather than as a
-# prefix like every other entry, because a prefix match vouches for a trailing
-# operand too. That is not academic: `javac` does not act on `-version` and exit,
-# it prints the version and then compiles whatever else it was handed, so
+# Allowlist entries that name a VERSION PROBE, matched as a prefix like every
+# other entry — so a trailing operand was vouched for too. That is not academic:
+# `javac` does not act on `-version` and exit, it prints the version and then
+# compiles whatever else it was handed, so
 #
 #     javac -version -processorpath evil.jar -processor Evil Payload.java
 #
-# auto-approves and runs an annotation processor — ordinary compiled Java on a
-# path the caller supplies, i.e. arbitrary code execution, and the
-# highest-severity shape in this family.
+# auto-approved and ran an annotation processor — ordinary compiled Java on a
+# path the caller supplies, i.e. arbitrary code execution. Reported by #5038,
+# and the highest-severity shape in this family.
 #
 # All five probes are listed, not only `javac`. Whether an interpreter ignores a
 # trailing operand is a property of the installed release rather than of the
@@ -969,10 +970,10 @@ _EXACT_ONLY_BASH_PREFIXES: frozenset[str] = frozenset(
 # `sort` is vetted POSITIVELY: every option token must be a recognised read-only
 # flag, and anything unrecognised goes to the human prompt.
 #
-# The inversion is here because a denylist demonstrably does not converge on this
-# one tool: six distinct spellings of the same escape reach it —
+# The inversion is here because the denylist demonstrably did not converge on this
+# one tool. Five review rounds produced six distinct spellings of the same escape:
 # `-o FILE`, `--output=FILE`, attached `-oFILE`, bundled `-uo FILE`, abbreviated
-# `--o FILE`, and `--compress-program=PROG` -- which is not a write at all
+# `--o FILE`, and finally `--compress-program=PROG` -- which is not a write at all
 # but arbitrary CODE EXECUTION. Verified: with the input large enough to spill to
 # temporaries, `sort -S 1k --compress-program=./payload big.txt` ran the payload and
 # exited 0. Enumerated from this box's own `sort --help`, so it is complete for that
@@ -1373,8 +1374,8 @@ def _operands(args: list[str], value_flags: frozenset[str] = frozenset()) -> lis
 #:     git diff --{out,out}put=/tmp/pwned    shlex: `--{out,out}put=` bash: `--output=…`
 #:
 #: Matched as ONE class rather than one spelling at a time. Closing ``$'`` alone
-#: leaves ``$"`` (locale translation) and ``${…}`` (parameter expansion) open on
-#: the identical path, and the remaining forms are bounded only by bash's grammar.
+#: left ``$"`` (locale translation) and ``${…}`` (parameter expansion) open on the
+#: identical path, and the remaining forms are bounded only by bash's grammar.
 #: Un-expanding them here would mean reimplementing that grammar, so a segment
 #: carrying one is refused instead: a read-only command has no need of any of
 #: them, and a rejected segment falls through to the human approval prompt.
@@ -1391,8 +1392,7 @@ def _operands(args: list[str], value_flags: frozenset[str] = frozenset()) -> lis
 #: Positional and special parameters (``$1``, ``$@``, ``$*``, ``$?``, ``$$``,
 #: ``$!``, ``$#``, ``$-``) belong to the same class and are matched by their own
 #: alternative. Their NAME is not an identifier, so the ``$[A-Za-z_]`` branch
-#: above does not match them, and in a `bash -c` string with no positional
-#: arguments
+#: above never saw them, and in a `bash -c` string with no positional arguments
 #: ``$@`` and ``$*`` expand to NOTHING — which is what makes them the sharpest
 #: spelling here rather than a curiosity:
 #:
@@ -1425,7 +1425,7 @@ _GLOB_META_RE = re.compile(r"[*?\[]")
 
 #: Bash EXTGLOB operators, which synthesize a token the same way an ordinary glob
 #: does — `git diff @(--output=pwned)` matches a file of that name and git writes
-#: it.
+#: it. Reported by #5038, which measured it.
 #:
 #: These get their own regex and their own verdict because `fnmatch` — the test
 #: that makes the plain-glob case precise — does not implement extglob: it reads
@@ -1755,14 +1755,14 @@ def _side_effect_reason(segment: str) -> str:
                     and tok[0] == "-"
                     and tok[1] != "-"
                     # EVERY character of the cluster must be a list letter or a
-                    # digit, not merely one of them. `any` reads an attached VALUE
+                    # digit, not merely one of them. `any` read an attached VALUE
                     # as part of the cluster, which is the same trap the note on
                     # the accept-list registry records for `date -Iseconds`: the `l` in
-                    # `git tag -ulin@kiro.co` selects list mode and the bare
-                    # operand it then licenses creates a signed tag. A digit is
+                    # `git tag -ulin@kiro.co` selected list mode and the bare
+                    # operand it then licensed created a signed tag. A digit is
                     # allowed because `-n` carries an optional count (`-n5`).
                     #
-                    # A MIXED cluster (`-lv`) is NOT a listing here and falls
+                    # A MIXED cluster (`-lv`) is no longer a listing here and falls
                     # through to the prompt. That is the intended trade: the letter
                     # this cannot distinguish from a value is exactly the letter a
                     # write flag arrives on, and the ordinary spellings — a separate
@@ -1874,7 +1874,7 @@ def _side_effect_reason(segment: str) -> str:
     # an option has to be recognised as a read before it passes, so a spelling nobody
     # thought of prompts instead of being admitted. This is what a per-tool write-flag
     # denylist could not give us on these four -- see the note above the registry for
-    # the six distinct `sort` spellings a denylist has to enumerate.
+    # the six `sort` spellings that arrived one review round at a time.
     if verb in _OPTION_ACCEPT_LISTS:
         violation = _option_accept_list_violation(verb, args)
         if violation:
@@ -2010,8 +2010,8 @@ def chat_message_frame(note: dict, *, include_metadata: bool) -> dict[str, Any]:
     ONE serialiser for both delivery doors — the WebSocket arm in
     ``_broadcast_note`` and the SSE arm in ``handlers/updates.py:api_stream``.
     They are fed the same note by ``_broadcast()``, so a field added here
-    reaches both; building the frame twice is how the SSE door drifts into
-    dropping ``meta`` while the WS one carries it.
+    reaches both; building the frame twice is how the SSE door kept dropping
+    ``meta`` after #7981 fixed the WS one (#8045).
 
     ``include_metadata`` is a REQUIRED keyword and names a property of the
     TRANSPORT, not a preference: whether that door has per-client authorization
@@ -2028,9 +2028,9 @@ def chat_message_frame(note: dict, *, include_metadata: bool) -> dict[str, Any]:
     That asymmetry is load-bearing. ``meta`` carries tool/LLM content
     (``tool_input``, a live ``oauth_url``, ``approval_id``), so putting it on an
     unfiltered queue exposes it to any app token granted that route regardless
-    of its ``slots:*`` scope — the same class as leaking public-repo status onto
-    ``/api/stream`` by enriching a payload that feeds both doors. Keep enrichment
-    on the door that filters.
+    of its ``slots:*`` scope — the same class as GPT #6789, which leaked
+    public-repo status onto ``/api/stream`` by enriching a payload that feeds
+    both doors. Keep enrichment on the door that filters.
 
     ``cls``/``meta`` are conditional in BOTH directions when included: carried
     when the note has them (``meta.mid`` is the per-row delivery identity a
@@ -2311,8 +2311,8 @@ def append_and_surface(
     manual ``broadcast_ws("chat_message", ...)`` after an append ships the SAME
     row a second time. Worse, the hand-built frames carried no ``meta.mid``,
     and the frontend's redelivery guard declines mid-less frames rather than
-    guessing (``isRedeliveredMessage``), so each extra copy renders as a new
-    bubble.
+    guessing (``isRedeliveredMessage``), so each extra copy rendered as a new
+    bubble (#5981).
 
     The manual frame is emitted only in the one case append's own callback is
     suppressed (``slot._has_reader``: an HTTP stream reader is draining
@@ -2499,8 +2499,8 @@ def _project_source_links(
             # DENY decision: a non-owner dashboard user requested status on a
             # change link but the repo is not confirmed public (private /
             # unknown / stale), so status is withheld. AUTOSDE requires the
-            # denial to be audited too — deduplicated the same way.
-            # include_check_status (owner) paths never reach here, and
+            # denial to be audited too — deduplicated the same way (GPT #6789
+            # round-15). include_check_status (owner) paths never reach here, and
             # app tokens set neither flag so they are not "denied dashboard-user"
             # decisions.
             _audit_public_status_denied(link["url"])
@@ -2686,9 +2686,9 @@ HOOK_HALTED_RECOVERY_PREFIX = "[Stop-hook nudge cap reached]"
 # Prefix on the DISPLAY-ONLY row appended when a tool deny's reason was steered
 # into the running turn (see chat_runner._steer_policy_notice). Nothing is
 # queued and no turn is dispatched — the agent already has the reason — so this
-# row exists purely so the person sees the blocked-tool card, instead of only a
-# generic "Steered" chip that reads as though they had steered the turn
-# themselves.
+# row exists purely so the person sees the same blocked-tool card they used to
+# get from the recovery continuation, instead of only a generic "Steered" chip
+# that reads as though they had steered the turn themselves.
 #
 # Named into the *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py
 # keys its cross-language drift guard on that suffix — a marker outside the
@@ -3230,7 +3230,6 @@ class _ChatSlot:
         "model",
         "_model_withheld",
         "_model_withheld_for",
-        "served_model",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -3415,10 +3414,6 @@ class _ChatSlot:
         # when any of slot.model's writers re-pins the slot.
         self._model_withheld: bool = False
         self._model_withheld_for: str = ""
-        # The model id the live session resolved to, for a slot that is
-        # inheriting rather than pinning. "" = unknown. Written through
-        # `record_served_model`.
-        self.served_model: str = ""
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
@@ -3635,7 +3630,7 @@ class _ChatSlot:
         # state to an unpinned transcript while the guarded write waits.
         self._metadata_persist_inflight: int = 0
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
-        # Plan-cancel latch closing the cancel/Go race: the Cancel
+        # Plan-cancel latch closing the cancel/Go race (#6046): the Cancel
         # handler can only stop a tracker that exists, but _stage_loop creates
         # the tracker lazily, so a cancel processed between a Go POST being
         # accepted and its _stage_loop coroutine starting would no-op on the
@@ -3703,7 +3698,7 @@ class _ChatSlot:
         # does not contain it until the row drains; the run loop therefore skips
         # its own ``mark_delivered`` and the drain settles these instead, so the
         # retention TTL is measured from consumption rather than from run
-        # completion. See ``take_pending_subagent_deliveries``.
+        # completion (issue #4839). See ``take_pending_subagent_deliveries``.
         self._subagent_delivery_pending: dict[str, list[str]] = {}
         self._recovery_retrigger_count: int = 0
         self._prompt_busy_retries: int = 0
@@ -3787,7 +3782,7 @@ class _ChatSlot:
         self._promise_only_retries: int = 0
         # Monotonic _stop_generation snapshot taken when a promise-only continuation
         # is enqueued; the dispatch-point purge compares against it to catch a Stop
-        # that pressed AND resolved to idle while the continuation waited.
+        # that pressed AND resolved to idle while the continuation waited (#2696).
         self._promise_only_stop_gen: int = 0
         # One bounded synthetic continuation when the BACKEND compacted the
         # conversation mid-turn and then ended the turn without finishing the
@@ -3806,12 +3801,13 @@ class _ChatSlot:
         # cause-specific in-band correction. Same lifetime as the flag itself —
         # set together, cleared together.
         self._batch_rejected_cause: str = ""
-        # Per-turn compaction-status failure tracking. Distinct from
-        # SessionManager._compact_cooldown_until, which only gates the
-        # *proactive* session-level auto-compact trigger — this gates the
-        # per-turn EVENT_COMPACTION_STATUS notice path in chat_runner, which
-        # without a backoff appends one near-identical "Compaction failed:
-        # unknown error" message per turn indefinitely.
+        # Per-turn compaction-status failure tracking (Mesh compaction-spam
+        # fix). Distinct from SessionManager._compact_cooldown_until, which
+        # only gates the *proactive* session-level auto-compact trigger —
+        # this gates the per-turn EVENT_COMPACTION_STATUS notice path in
+        # chat_runner, which previously had no backoff at all and could
+        # append one near-identical "Compaction failed: unknown error"
+        # message per turn indefinitely.
         # Retry budget for a turn the backend abandoned after a TRANSIENT
         # compaction failure. Distinct from _compaction_fail_streak above,
         # which only paces the NOTICE: this one bounds how many times the
@@ -3844,7 +3840,7 @@ class _ChatSlot:
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
         self._deferred_notes: list[dict[str, Any]] = []
-        # Note ids dropped at the flush's rebind seam. A dropped
+        # Note ids dropped at the flush's rebind seam (issue #4093). A dropped
         # note has no delivery obligation left, but its durable entry may only
         # be retired by a save — the ids recorded here are how the next full
         # save knows to retire entries whose rows will never exist.
@@ -3960,7 +3956,7 @@ class _ChatSlot:
         # The session file is FROZEN-PREFIX (the first _disk_older_count on-disk
         # message lines, OLDER than the in-memory window) + a fresh re-serialize
         # of the whole window. The prefix is never rewritten, so a restart that
-        # loaded only a recent window cannot destroy older history. This
+        # loaded only a recent window can no longer destroy older history. This
         # caches the prefix bytes keyed by (path-mtime, path-size,
         # _disk_older_count) so a 5s flush is O(window), not O(file). The
         # (mtime, size) pair also doubles as the "did another process write this
@@ -4052,7 +4048,7 @@ class _ChatSlot:
         # "present here" always implies "present there" and no reader has to ask
         # which of the two a half-finished path left behind. Only the requeue reads
         # it: it moves the id onto the queue entry's meta so the drained row
-        # carries `meta.sendId` like an accepted steer's row does. A steer
+        # carries `meta.sendId` like an accepted steer's row does (#6751). A steer
         # that persists its own row stamps the id directly and drops this entry.
         self._steer_send_ids: dict[str, str] = {}
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
@@ -4684,38 +4680,6 @@ class _ChatSlot:
         self._model_withheld = withheld
         self._model_withheld_for = self.model or ""
 
-    def record_served_model(self, model_id: str | None) -> None:
-        """Record the model id the live session actually resolved to.
-
-        The counterpart to :meth:`record_model_withheld` for the case that
-        verdict cannot describe: an INHERITED model. A slot pinned to nothing —
-        or one whose pin was withheld — runs on whatever the backend assigned,
-        and the pin alone cannot name it, so the composer chip can only say
-        "auto". This carries the id the session reports, so the chip can name
-        the model a turn will actually use.
-
-        ``None``/``""`` forgets it (back to unknown) — what a session teardown
-        does, since the id describes that session and not the slot. Unlike the
-        withhold verdict it is NOT pinned to ``slot.model``: it answers a
-        question about the SESSION, which the pin does not determine.
-
-        DISPLAY only. Never a write source: the persisted pin stays whatever the
-        user chose.
-        """
-        self.served_model = model_id or ""
-
-    def forget_session_model_state(self) -> None:
-        """Drop every fact that described the session being torn down.
-
-        The withhold verdict and the served model id are a PAIR: both describe
-        the session that advertised the list, not the slot, so a teardown that
-        forgets one and keeps the other labels the next session with the
-        previous one's answer. Every teardown site calls this one method so a
-        site added later cannot drop half the pair.
-        """
-        self.record_model_withheld(None)
-        self.record_served_model(None)
-
     @property
     def is_restricted(self) -> bool:
         """True when memory writes (consolidation, lessons) are blocked."""
@@ -4782,7 +4746,7 @@ class _ChatSlot:
             from kiro_crew.dashboard.session_control import containment_meta
 
             # Stamp the containment constraints holding at ADMISSION, so the
-            # queue drain can re-assert them at delivery: a target
+            # queue drain can re-assert them at delivery (issue #5911): a target
             # that gains a channel/mirror link while this prompt waits must not
             # execute it under the weaker constraints that admitted it.
             self.queue_append(prompt, meta=containment_meta(state, self))
@@ -5146,15 +5110,15 @@ class DashboardState:
         # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
         #
         # Deliberately here and not on ``_ChatSlot``: a plain Slack thread often
-        # has no dashboard slot at all, and a slot-held record is simply dropped
-        # for those sessions — the whole expiry lifecycle never engages and the
-        # stale click it exists to prevent stays possible. Keying by
+        # has no dashboard slot at all, and a slot-held record was simply dropped
+        # for those sessions — so the whole expiry lifecycle never engaged and the
+        # stale click it exists to prevent stayed possible (#1694). Keying by
         # session key makes the slotless case ordinary rather than special.
         #
         # One store, not a slot field plus a fallback: a slot can come into
         # existence at any moment (the channel surface reconciler creates one), so
         # a fallback map would go invisible the instant one appeared. It also
-        # avoids the two-store divergence that lets a record be filed under one
+        # removes the two-store divergence that let a record be filed under one
         # index and cleared under another.
         self._slack_options_by_key: dict[str, tuple[PostedOptions, ...]] = {}
         self._slot_counter = 0
@@ -5190,11 +5154,11 @@ class DashboardState:
         # Malformed chat_pins.json entries dropped at load time, kept verbatim
         # so save_chat_pins round-trips them back instead of erasing bytes a
         # hand-edit left in a shape the loader could not validate (mirrors the
-        # cron-folder unparsed-entry preservation).
+        # cron-folder unparsed-entry preservation, #5768/#5792).
         self._unparsed_chat_pin_entries: list[Any] = []
         # Serializes pin mutation + persistence so concurrent requests cannot
         # interleave snapshots and replace chat_pins.json out of order.
-        # LoopBoundLock, not asyncio.Lock: DashboardState outlives any
+        # LoopBoundLock, not asyncio.Lock (#4800): DashboardState outlives any
         # single event loop (in-process gateway restart, test loops).
         self._chat_pins_lock = LoopBoundLock()
         # Serializes read-modify-write of the folder store; see
@@ -5202,7 +5166,7 @@ class DashboardState:
         # concurrent first-callers cannot each make their own lock and
         # serialize against nothing. LoopBoundLock binds no loop at
         # construction, so building it off-loop is safe — and it stays valid
-        # across the loop changes this long-lived state survives.
+        # across the loop changes this long-lived state survives (#4800).
         self._folders_lock = LoopBoundLock()
         # Identifies the current folder-TREE snapshot; bumped by mutate_folders
         # (the store's only writer) on each confirmed write. See
@@ -5214,7 +5178,8 @@ class DashboardState:
         # save round-trips them back instead of erasing bytes a hand-edit left
         # in a shape the loader could not validate. This store's save path runs
         # DURING load (seed/back-fill), so without preservation a single
-        # hand-edited-but-malformed row is wiped at boot with no user action.
+        # hand-edited-but-malformed row is wiped at boot with no user action
+        # (#5792, the worst of the sibling cases).
         self._unparsed_tag_entries: list[Any] = []
         # True once load_tags() parsed tags.json successfully (or seeded a
         # fresh install). False means the vocabulary state is UNKNOWN (parse
@@ -5226,7 +5191,7 @@ class DashboardState:
         self._tag_boards: list[dict[str, Any]] = []
         # Malformed tag-board (sidebar column) entries dropped at load time,
         # kept verbatim so a save round-trips them back rather than erasing a
-        # hand-edited-but-typo'd column.
+        # hand-edited-but-typo'd column (#5792).
         self._unparsed_tag_board_entries: list[Any] = []
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         # Gateway replacement is process-wide, not an ordinary repeatable
@@ -5591,7 +5556,7 @@ class DashboardState:
             # The recycle ended the child that owned any open MCP OAuth
             # banner's loopback listener; push the read gate's verdict so an
             # open tab withdraws the dead Authorize link without waiting for
-            # its next refetch.
+            # its next refetch (issue #8149's RSS-recycle path).
             try:
                 _broadcast_expired_oauth_banners(self, slot)
             except Exception:
@@ -6516,7 +6481,7 @@ class DashboardState:
             # request-layer paths a person actually drives (chat-send
             # auto-create, new-chat tab, fork) opt in, so agent-minted USER
             # slots (the session-control create verb) do not satisfy the
-            # survey gate on their own. The
+            # survey gate on their own (#6139). The
             # origin conjunct stays as the invariant floor: a caller can never
             # count a non-USER slot, flag or not. Best-effort:
             # the helper swallows its own I/O errors and never raises into
@@ -6919,13 +6884,13 @@ class DashboardState:
     def load_chat_pins(self) -> None:
         """Load pinned chat messages from disk, dropping malformed records.
 
-        A pin without a ``mid`` field is preserved as-is; new pins always carry
-        ``mid``.
+        Legacy pins (pre-mid era) may lack the ``mid`` field — they are preserved
+        for backward compatibility; new pins always carry ``mid``.
 
         Individual malformed entries are dropped from the active list but kept
         verbatim in ``_unparsed_chat_pin_entries`` so the next ``save_chat_pins``
         round-trips them back to disk rather than silently erasing a user's
-        hand-edited-but-typo'd pin (mirrors the cron-folder contract).
+        hand-edited-but-typo'd pin (mirrors the cron-folder contract, #5792).
 
         Error classification:
         - Missing file: normal (first run) → empty list.
@@ -7108,7 +7073,7 @@ class DashboardState:
                     # Keep rows the active list dropped verbatim so the seed/
                     # back-fill save below (and every later save) round-trips
                     # them back instead of erasing a hand-edited-but-typo'd row
-                    # at boot with no user action.
+                    # at boot with no user action (#5792).
                     self._tags, unparsed = self._partition_preserving(
                         raw,
                         lambda t: isinstance(t, dict) and bool(t.get("id")),
@@ -7156,7 +7121,7 @@ class DashboardState:
                 if isinstance(raw, list):
                     # Preserve dropped columns verbatim so a later save
                     # round-trips them rather than erasing a hand-edited-but-
-                    # typo'd column.
+                    # typo'd column (#5792).
                     self._tag_boards, unparsed_cols = self._partition_preserving(
                         raw,
                         lambda c: isinstance(c, dict) and bool(c.get("id")),
@@ -7187,7 +7152,7 @@ class DashboardState:
         Appends any malformed entries preserved at load time
         (``_unparsed_tag_entries``) so a save — including the seed/back-fill
         save that runs during ``load_tags`` itself — cannot erase bytes a
-        hand-edit left in a shape the loader could not validate.
+        hand-edit left in a shape the loader could not validate (#5792).
         """
         unparsed = getattr(self, "_unparsed_tag_entries", [])
         self._atomic_write_json(config_dir() / self._TAGS_FILE, [*self._tags, *unparsed])
@@ -7202,7 +7167,7 @@ class DashboardState:
         ``save_tags`` -- keeping tests that patch it working unchanged.
 
         Malformed entries preserved at load time (``_unparsed_tag_entries``)
-        are appended so this write path preserves them too.
+        are appended so this write path preserves them too (#5792).
 
         Raises on I/O failure so callers can roll back in-memory state and
         surface HTTP 5xx rather than silently losing data.
@@ -7215,7 +7180,7 @@ class DashboardState:
 
         Appends any malformed columns preserved at load time
         (``_unparsed_tag_board_entries``) so a save cannot erase bytes a
-        hand-edit left in a shape the loader could not validate.
+        hand-edit left in a shape the loader could not validate (#5792).
         """
         unparsed = getattr(self, "_unparsed_tag_board_entries", [])
         self._atomic_write_json(
@@ -7234,7 +7199,7 @@ class DashboardState:
 
         Malformed columns preserved at load time
         (``_unparsed_tag_board_entries``) are appended so this write path
-        preserves them too.
+        preserves them too (#5792).
 
         Raises on I/O failure so callers can roll back in-memory state and
         surface HTTP 5xx rather than silently losing data.
@@ -7253,7 +7218,7 @@ class DashboardState:
 
         The shared "partition malformed rows at load, keep them verbatim so a
         later save round-trips them back" mechanic behind ``load_cron_folders``,
-        ``load_chat_pins``, ``load_tags`` and the tag-board load.
+        ``load_chat_pins``, ``load_tags`` and the tag-board load (all #5792).
         A row is active when ``predicate`` returns truthy; every other row is
         collected into ``unparsed`` so the caller's save path can re-append it
         (``[*active, *unparsed]``) at write time rather than silently erasing
@@ -7394,7 +7359,7 @@ class DashboardState:
         # Both the status read and the visibility revalidation below run the
         # operator's `gh`/`glab` credentials, so this turn-boundary refresh runs
         # ONLY when an OWNER window is open. A non-owner dashboard window never
-        # drives it: the owner's own connection keeps the caches warm
+        # drives it (GPT #6789): the owner's own connection keeps the caches warm
         # and non-owner windows render the result read-only via the fail-closed
         # is_repo_public gate. With no owner window open there is nobody entitled
         # to drive a credentialed read, so this is a no-op.
@@ -7413,7 +7378,7 @@ class DashboardState:
             # force=True: the status read above bypasses the TTL, so visibility
             # MUST be revalidated in lockstep — otherwise fresh (now-private)
             # status could be projected against a still-cached-public visibility
-            # entry, leaking private status to a non-owner. Runs
+            # entry, leaking private status to a non-owner (GPT #6789). Runs
             # AFTER the status schedule: both are fire-and-forget schedulers, and
             # ordering the status call first preserves the turn-boundary contract
             # while the downstream render gate (`_project_source_links` ->
@@ -7518,12 +7483,12 @@ class DashboardState:
             # Real on EVERY row, origin included: the conversation a session was
             # born in can be disconnected too, so it stops syndicating there and
             # the session carries on in the dashboard. `direction` still records
-            # the provenance the sidebar mark needs; it does not decide whether
+            # the provenance the sidebar mark needs; it no longer decides whether
             # the row has a control.
             #
             # Keyed to the row's SOURCE, not just its channel: a session born in
             # Discord that also mirrors to Telegram draws two non-Slack rows, and
-            # if both read one value, muting either silently mutes the other.
+            # while both read one value, muting either silently muted the other.
             if channel_type == SLACK_NAMESPACE:
                 paused = slack_paused
             elif direction == "origin":
@@ -7721,7 +7686,7 @@ class DashboardState:
         itself fails while the body's own exception is unwinding annotates its
         exception (`PEP 678`) so the buried original stays visible — the flush's
         exception otherwise replaces the body's in the caller's view, demoting
-        the actual fault to ``__context__``.
+        the actual fault to ``__context__`` (how #6522 was first misread).
         """
         self._slots_push_suspend += 1
         try:
@@ -7879,16 +7844,16 @@ class DashboardState:
         # ``_serialize_for_client`` -> ``filter_slots_for_app`` before delivery,
         # so widening the general list here never leaks status to an app scope.
         # SSE carries the BARE list (see below); the WS dashboard-user frame
-        # carries the enriched one. The general ``_slots_list`` feeds BOTH the SSE
-        # queue (which has NO per-app filtering) and the WS frame, so enriching it
-        # here leaks public-repo status onto ``/api/stream`` for any app token
-        # allowed that route. Keep the broadcast list bare and put
+        # carries the enriched one. GPT #6789: the general ``_slots_list`` feeds
+        # BOTH the SSE queue (which has NO per-app filtering) and the WS frame,
+        # so enriching it here leaked public-repo status onto ``/api/stream`` for
+        # any app token allowed that route. Keep the broadcast list bare and put
         # the public-repo enrichment only on the WS path, where
         # ``_serialize_for_client`` re-filters app tokens.
         slots_data = self.serialize_slots()
         slots_data_ws = self.serialize_slots(dashboard_user=True)
         # The evidenced way this broadcast fails is a non-serializable value in
-        # slot state: the dump raises, and the bare TypeError
+        # slot state (#6522, #8745): the dump raises, and the bare TypeError
         # names neither the slot nor the field. Serialize up front and annotate
         # the failure with the offender so one traceback is enough to find it.
         # Both coalescing branches (leading edge and trailing timer) funnel
@@ -7961,10 +7926,11 @@ class DashboardState:
         )
         # The owner frame is the owner's ONLY slots frame — `_send_ws_all` skips
         # owner sockets for `slots` (see there for why), so this envelope has to
-        # carry every key the generic one does: `folders` seeds the first-paint
-        # folder tree and `gitlabHostsGeneration` drives the dashboard-config
-        # invalidation, so a subset here leaves the owner without them. Both frames
-        # are built by `_slots_ws_frame`, so a key cannot reach one and not the
+        # carry every key the generic one does. It previously carried a subset,
+        # which is why the owner had to receive both: `folders` seeds the
+        # first-paint folder tree and `gitlabHostsGeneration` drives the
+        # dashboard-config invalidation, and neither was here. Both frames are now
+        # built by `_slots_ws_frame`, so a key can no longer reach one and not the
         # other.
         owner_ws_clients = getattr(self, "_owner_ws_clients", None)
         if owner_ws_clients:
@@ -8406,7 +8372,7 @@ def _notification_io_executor() -> concurrent.futures.ThreadPoolExecutor:
     append landing inside a ``_rewrite_notifications`` whole-file write is simply gone,
     because the rewrite did not include it and overwrote the bytes.
 
-    Double-checked so the lock is paid once rather than on every call.
+    Double-checked so the lock is paid once rather than on every call. Issue #8788.
     """
     global _notification_io_pool
     if _notification_io_pool is None:

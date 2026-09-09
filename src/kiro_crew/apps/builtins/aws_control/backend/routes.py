@@ -369,28 +369,6 @@ def _conflict(message: str, code: str) -> web.Response:
     return web.json_response({"error": message, "code": code}, status=409)
 
 
-def _unavailable(message: str, code: str) -> web.Response:
-    """A probe this handler depends on could not run. Distinct from an empty result.
-
-    503 rather than 200-with-nothing: the client has to be able to tell "this
-    machine has none" from "we could not look", and rather than 500 because
-    nothing here is broken -- the host is simply not answering the question
-    today, so the honest instruction is to retry.
-    """
-    return web.json_response({"error": message, "code": code}, status=503)
-
-
-def _unsupported(message: str, code: str) -> web.Response:
-    """This platform cannot serve the request at all, so retrying never helps.
-
-    The pair with ``_unavailable`` is the point: 503 invites a retry, which is
-    right for a scan that failed and wrong for one that cannot run here. 501
-    with an ``unsupported_*`` code is the shape spec_builder and meetings
-    already answer with, so a client that learned it there reads this too.
-    """
-    return web.json_response({"error": message, "code": code}, status=501)
-
-
 def _ledger_corrupt(code: str) -> web.Response:
     """Map a ledger reader's corruption refusal to a coded response.
 
@@ -690,24 +668,11 @@ async def _handle_profiles_available(request: web.Request) -> web.Response:  # n
     snapshot redacts its own.
     """
     available = await asyncio.to_thread(deploy_profiles.discover_aws_profiles)
-    # Discovery is POSIX-only, so the two reasons it returns nothing get
-    # different answers. On Windows the platform is the more useful thing to
-    # report and the payload already carries it, so that case keeps its 200 and
-    # its own copy (which names WSL). Anywhere else, `None` means the scan could
-    # not run: the frontend has a retryable notice for a failed scan and reads a
-    # 200 as the authoritative list, so returning one here is what turns "could
-    # not look" into "you have no profiles".
-    supported = os.name != "nt"
-    if available is None and supported:
-        return _unavailable(
-            "could not list this machine's AWS profiles",
-            "profiles_unavailable",
-        )
     reg = await asyncio.to_thread(deploy_profiles.load_registry)
     registered = {str(p.get("name", "")) for p in reg.get("profiles", [])}
     rows = [
         {"name": accounts_mod._safe_field(name), "registered": name in registered}
-        for name in (available or [])
+        for name in available
         if aws_consent._PROFILE_RE.match(name)
     ]
     return web.json_response(
@@ -715,13 +680,10 @@ async def _handle_profiles_available(request: web.Request) -> web.Response:  # n
             "profiles": rows,
             "registeredCount": len(registered),
             "max": _MAX_REGISTERED,
-            # `profiles` is empty in two cases, and `supported` is what tells
-            # them apart. False: Windows, where discovery cannot run at all, so
-            # the UI says that instead of implying the operator has none. True:
-            # the scan ran and the machine really has nothing left to register.
-            # A scan that could NOT run where it should have never reaches here,
-            # because it answered 503 above.
-            "supported": supported,
+            # An empty list on a host that HAS profiles is the Windows case
+            # (discovery is POSIX-only), and the UI must say so rather than
+            # implying the operator has none.
+            "supported": os.name != "nt",
         }
     )
 
@@ -734,10 +696,7 @@ async def _handle_profiles_register(request: web.Request) -> web.Response:
     * A name must be one ``aws configure list-profiles`` actually reports. The
       registry is agent-writable and its names reach an argv, so accepting an
       arbitrary string here would let a caller plant one -- the same class the
-      read-side validation in ``accounts.py`` closes from the other end. When
-      that listing could not run at all the batch is refused on that fact, not
-      as unknown: an unchecked name and an absent one are different refusals,
-      and only one of them tells the operator something true.
+      read-side validation in ``accounts.py`` closes from the other end.
     * The name must match the shared profile pattern, checked before it is
       compared against anything.
     * The registry cap is enforced across the whole batch, so a partial batch
@@ -756,27 +715,7 @@ async def _handle_profiles_register(request: web.Request) -> web.Response:
         return _bad_request("names must be a non-empty list", "invalid_names")
     requested = [str(n) for n in raw][:_MAX_REGISTERED]
 
-    discovered = await asyncio.to_thread(deploy_profiles.discover_aws_profiles)
-    if discovered is None:
-        # Nothing can be checked against a scan that did not run, and refusing
-        # the names as absent is the one answer the operator cannot act on: the
-        # profiles ARE on the machine, and the message would say they are not.
-        # Refuse the batch on the real reason instead, split the way the listing
-        # above splits it -- 503 asks for a retry, which clears a failed scan and
-        # never clears a platform that cannot scan at all. The listing answers
-        # Windows with a 200 because a list plus `supported: false` is a complete
-        # answer; registering is an action this platform cannot perform, so here
-        # it is an error either way and only the retry semantics differ.
-        if os.name == "nt":
-            return _unsupported(
-                "profile discovery is not supported on Windows, so no name can be checked",
-                "unsupported_platform",
-            )
-        return _unavailable(
-            "could not list this machine's AWS profiles, so no name can be checked",
-            "profiles_unavailable",
-        )
-    available = set(discovered)
+    available = set(await asyncio.to_thread(deploy_profiles.discover_aws_profiles))
     unknown = [n for n in requested if n not in available]
     if unknown:
         # Deliberately does not echo the rejected names: they are caller-supplied
@@ -2337,18 +2276,6 @@ async def _handle_backup_run(request: web.Request) -> web.Response:
     kind = str(body.get("kind", ""))
     if kind not in backup_mod.JOB_KINDS:
         return _bad_request("kind must be snapshot or sessions", "invalid_kind")
-    # A kind this HOST cannot run is refused HERE, before a run record exists.
-    # The worker would refuse too -- `run_sessions_backup` fail-closes without
-    # `openat` rather than walking agent-writable directories by name -- but it
-    # would do so as a `failed` record carrying a raised exception, which reads
-    # like a broken backup rather than a platform that never offered the feature.
-    # 501 and not 400: the request is well-formed and would be honoured on
-    # another host, so it is this server that does not implement it.
-    unavailable = backup_mod.kind_unavailable_reason(kind)
-    if unavailable is not None:
-        return web.json_response(
-            {"error": unavailable, "code": "kind_unavailable_on_platform"}, status=501
-        )
     sdk = get_job_sdk(backup_mod.APP_NAME)
     if sdk is None:
         # Enabled, but no SDK was published for it: the `jobs` grant is missing

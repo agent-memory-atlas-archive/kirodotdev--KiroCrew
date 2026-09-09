@@ -312,24 +312,6 @@ def _effective_min_version() -> str:
     return governance_floor or feed_floor
 
 
-def _downgrade_target_below_min_version(version: str, channel: str) -> bool:
-    """Whether *version* is a downgrade that crosses the enterprise floor.
-
-    A host already below the floor may still move upward toward compliance when
-    its followed lane lags the pin. Target versions may carry prerelease stamps,
-    so use this module's update comparator. A Stable feed's promoted candidate
-    is the final release despite retaining its RC stamp, so fold only that lane
-    for the floor comparison; compare direction against the raw running bytes.
-    """
-    floor = min_version()
-    if not floor:
-        return False
-    target_for_floor = base_version(version) if channel == "stable" else version
-    target_below_floor = _is_newer(floor, target_for_floor) is True
-    target_below_running = _is_newer(_local_version, version) is True
-    return target_below_floor and target_below_running
-
-
 def status_update_fields() -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
@@ -1218,7 +1200,8 @@ async def api_update_auto(request: web.Request) -> web.Response:
 
     # `update_config_locked` holds the advisory lock across the READ and the write, so no
     # other process can land between them -- the whole point, since the in-process
-    # `_get_config_lock()` does not serialize against the CLI or a second gateway.
+    # `_get_config_lock()` this endpoint used to rely on does not serialize against the CLI
+    # or a second gateway.
     #
     # Offloaded because that lock is blocking: called inline from this coroutine it would
     # stall every session and the liveness heartbeat while contended, which is what the
@@ -1402,10 +1385,10 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
             Path(proj),
             Path(sys.executable),
             _emit,
-            # 600s rather than 120s on `pip install -e .`: the bound covers a
-            # dependency install that may be resolving and downloading a set this
-            # venv has never seen — and building a wheel for one of them — where
-            # 120s is a routine, not an exceptional, overrun.
+            # 600s, not the 120s this endpoint used to put on `pip install -e .`.
+            # The bound now covers a dependency install that may be resolving and
+            # downloading a set this venv has never seen — and building a wheel for
+            # one of them — where 120s is a routine, not an exceptional, overrun.
             # It is a real bound either way: dep_sync kills the pip child on
             # expiry rather than letting the step hang on a wedged index.
             timeout=600,
@@ -1786,7 +1769,7 @@ async def api_log_level(request: web.Request) -> web.Response:
     # write of the one key this endpoint owns, inside a single sidecar-flock
     # hold (update_config_locked), dispatched off the loop with both config
     # locks via run_config_write -- the transaction shape run_config_write's
-    # docstring prescribes. A whole-document save() here would publish
+    # docstring prescribes (#4767). A whole-document save() here would publish
     # a snapshot that can revert a concurrent writer's unrelated settings.
     def _set_level(doc: dict) -> dict:
         coerce_dict_section(doc, "agent")["log_level"] = level_name
@@ -2025,15 +2008,16 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         # and the WebSocket arm in state.py are fed the same
                         # note by `_broadcast()`, and rebuilding the frame here
                         # is how `meta` (the row's `meta.mid` dedup identity)
-                        # goes missing on one transport while the other keeps it.
+                        # went missing on this transport after #7981 fixed the
+                        # other one (#8045).
                         #
                         # `include_metadata` is NOT True unconditionally. This
                         # queue has no per-app filtering — `_broadcast()` fans
                         # the raw note to every registered SSE client — so
                         # `meta` (tool_input, a live oauth_url, approval_id)
                         # would reach any app token granted this route whatever
-                        # its `slots:*` scope. Same class as leaking public-repo
-                        # status onto this endpoint. The WS
+                        # its `slots:*` scope. Same class as GPT #6789, which
+                        # leaked public-repo status onto this endpoint. The WS
                         # door may pass True because it filters downstream; this
                         # one must decide here.
                         payload = json.dumps(
@@ -2265,8 +2249,8 @@ def _loopback_peer(request: web.Request) -> bool:
 
     The NONCE is the authority — it proves the caller read the gateway host's
     filesystem. This check just refuses the obviously-remote shape early, and
-    is knowingly imperfect behind same-host proxies, which is exactly why it is
-    not the boundary.
+    is knowingly imperfect behind same-host proxies (issue #1762), which is
+    exactly why it is not the boundary.
 
     Composed from the SHARED predicates rather than a bespoke IP list: an
     AF_UNIX caller has an EMPTY ``request.remote`` (token_auth documents
@@ -2286,53 +2270,14 @@ def _loopback_peer(request: web.Request) -> bool:
     return is_loopback(request.remote or "")
 
 
-async def _audit_update_event(
-    request: web.Request,
-    *,
-    operation: str,
-    outcome: str,
-    error: str = "",
-    resources: str = "",
-    required: bool = False,
-) -> None:
-    """Write one update event to SEL without blocking the gateway loop.
-
-    A granted approval is audit-or-deny when ``required`` is true. Denials stay
-    best-effort: failure to record a refusal must never turn it into permission.
-    """
-
-    def _write() -> None:
-        # Function-local: keep SEL initialization/import work off the boot path.
-        from kiro_crew.sel import sel as _sel
-
-        try:
-            _sel().log_api_access(
-                caller="host-cli" if request.get("internal_auth") else (request.remote or "unix"),
-                operation=operation,
-                outcome=outcome,
-                source="dashboard",
-                resources=resources,
-                error=error,
-                critical=True,
-            )
-        except Exception:
-            if required:
-                raise
-            logger.debug("SEL audit for %s failed", operation, exc_info=True)
-
-    # A CRITICAL SEL write flushes inline on its calling thread by design.
-    await asyncio.to_thread(_write)
-
-
 async def api_update_arm(request: web.Request) -> web.Response:
     """POST /api/update/arm — arm a pending in-app update (SPA-callable).
 
     Arming grants nothing: it records the request and writes the approval
     nonce to a file only the host can read. The response NEVER carries the
-    nonce. Refused for every shape except the managed venv, when a downgrade
-    would cross below the active minimum-version floor, and when neither a
-    newer update nor a pending channel move is cached — an arm must name the
-    version the check reported, not whatever the feed happens to serve later (the apply
+    nonce. Refused for every shape except the managed venv, and refused when
+    no update-available verdict is cached — an arm must name the version the
+    check reported, not whatever the feed happens to serve later (the apply
     re-verifies against the signed manifest anyway).
     """
     # Function-local: boot-path rule, same as _restart_gateway's import.
@@ -2356,31 +2301,13 @@ async def api_update_arm(request: web.Request) -> web.Response:
             status=409,
         )
     available = _update_info.get("update_available")
-    move_pending = _update_info.get("channel_move_pending")
     version = str(_update_info.get("latest_version") or "")
     channel = str(_update_info.get("channel") or "")
-    if (available is not True and move_pending is not True) or not version:
+    if available is not True or not version:
         return web.json_response(
             {
                 "error": "no update-available verdict — run a check first",
                 "code": "arm_no_verdict",
-            },
-            status=409,
-        )
-    if _downgrade_target_below_min_version(version, channel):
-        error = "selected release is below the required minimum version"
-        await _audit_update_event(
-            request,
-            operation="update.arm",
-            outcome="denied",
-            error=error,
-            resources=f"v{version} ({channel})",
-        )
-        return web.json_response(
-            {
-                "error": error,
-                "code": "arm_below_min_version",
-                "governance": True,
             },
             status=409,
         )
@@ -2463,43 +2390,48 @@ async def api_update_approve(request: web.Request) -> web.Response:
             {"error": "CDN base URL contains disallowed characters", "code": "approve_bad_cdn"},
             status=409,
         )
-
     # SEL-audited at every verdict: an approval is a code-install
     # authorization, which is exactly the class of event the audit chain
     # exists to reconstruct. `caller` is the transport identity — the nonce
     # proves host-locality, not a person.
+    from kiro_crew.sel import sel as _sel
+
+    def _audit_sync(
+        outcome: str, error: str = "", resources: str = "", required: bool = False
+    ) -> None:
+        try:
+            _sel().log_api_access(
+                caller="host-cli" if request.get("internal_auth") else (request.remote or "unix"),
+                operation="update.approve",
+                outcome=outcome,
+                source="dashboard",
+                resources=resources,
+                error=error,
+                critical=True,
+            )
+        except Exception:
+            # A GRANTED verdict is a code-install authorization: if its audit
+            # record cannot be written, the install must not proceed — an
+            # unwritable SEL would otherwise let approvals happen unaudited
+            # (fail-open on the exact event the audit chain exists for).
+            # Denials stay best-effort: a failed denial audit still refuses.
+            if required:
+                raise
+            logger.debug("SEL audit for update.approve failed", exc_info=True)
+
     async def _audit(
         outcome: str, error: str = "", resources: str = "", required: bool = False
     ) -> None:
-        await _audit_update_event(
-            request,
-            operation="update.approve",
-            outcome=outcome,
-            error=error,
-            resources=resources,
-            required=required,
-        )
+        # Offloaded: a CRITICAL SEL write flushes inline on the calling thread
+        # by design (fail-closed audit), and this handler's thread is the
+        # event loop (no-blocking-call-on-event-loop).
+        await asyncio.to_thread(_audit_sync, outcome, error, resources, required)
 
     try:
         pending = await asyncio.to_thread(update_stepup.consume, body["nonce"])
     except update_stepup.StepUpError as exc:
         await _audit("denied", error=str(exc))
         return web.json_response({"error": str(exc), "code": "approve_refused"}, status=403)
-    if _downgrade_target_below_min_version(pending.version, pending.channel):
-        error = "selected release is below the required minimum version"
-        await _audit(
-            "denied",
-            error=error,
-            resources=f"v{pending.version} ({pending.channel})",
-        )
-        return web.json_response(
-            {
-                "error": error,
-                "code": "approve_below_min_version",
-                "governance": True,
-            },
-            status=409,
-        )
     try:
         await _audit("granted", resources=f"v{pending.version} ({pending.channel})", required=True)
     except Exception:

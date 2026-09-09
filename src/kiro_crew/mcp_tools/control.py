@@ -44,10 +44,6 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
     MIN_MONITOR_CADENCE_SECS,
 )
-from kiro_crew.monitoring.registry import (
-    publicly_armable_kinds,
-    publicly_armable_objectives,
-)
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -280,9 +276,9 @@ def schemas() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "kind": {"type": "string", "enum": sorted(publicly_armable_kinds())},
+                    "kind": {"type": "string", "enum": ["github_pull_request"]},
                     "target": {"type": "string", "description": "Public GitHub PR URL"},
-                    "objective": {"type": "string", "enum": sorted(publicly_armable_objectives())},
+                    "objective": {"type": "string", "enum": ["review_ready"]},
                     "interval_secs": {
                         "type": "integer",
                         "minimum": MIN_MONITOR_CADENCE_SECS,
@@ -513,7 +509,7 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "New GitHub PR URL for a structured monitor",
                     },
-                    "objective": {"type": "string", "enum": sorted(publicly_armable_objectives())},
+                    "objective": {"type": "string", "enum": ["review_ready"]},
                     "max_agent_turns": {
                         "type": "integer",
                         "minimum": 1,
@@ -876,11 +872,13 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
     hook_file = mcp_core.config_dir() / "hooks.json"
     hook_file.parent.mkdir(parents=True, exist_ok=True)
     lock_path = hook_file.parent / "hooks.json.lock"
-    # Open non-truncating; see ``platform_compat.open_lock_file`` for why ``"w"``
-    # loses the lock on Windows (GH-9248). Same file as ``webhooks.locked``
-    # guards. Parent mkdir stays (the helper does not create parent dirs).
-    with platform_compat.open_lock_file(lock_path) as lock_fd:
-        with platform_compat.flock_exclusive(lock_fd):
+    # touch + "r+", never "w": a truncating open of a lock file another holder
+    # already locked raises a sharing violation on Windows instead of waiting.
+    # Same file as webhooks.locked guards; full rationale at
+    # work_ledger._open_lock (issue #9248).
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as lock_fd:
+        with platform_compat.flock_exclusive(lock_fd.fileno()):
             # Re-read under lock to avoid lost updates
             hooks = {}
             if hook_file.exists():

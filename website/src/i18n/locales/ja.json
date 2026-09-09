@@ -5283,7 +5283,6 @@
       "this_app_provides_agents_and_skills_but_no_visua": "このアプリはエージェントとスキルを提供しますが、ビジュアルインターフェースはありません。\n            チャットからそのエージェントを使用します。"
     },
     "approvalCard": {
-      "actions_group": "承認アクション",
       "approval_no_longer_pending": "この承認は期限切れか、すでに決定済みです — エージェントはもう待機していません。",
       "approve": "承認",
       "approved": "承認済み",
@@ -5615,8 +5614,6 @@
       "skill": "スキル",
       "slash_commands": "スラッシュコマンド",
       "steer": "指示を追加",
-      "alt_action_hint_queues": "{{chord}} でこのメッセージをキューに入れる",
-      "alt_action_hint_steers": "{{chord}} でこのメッセージで今すぐステアする",
       "steer_act_on_this_right_away_desc": "今すぐ対応",
       "steer_act_on_this_as_soon_as_possible_enter": "指示を追加 — できるだけ早く対応 (Enter)",
       "stop_generation": "生成を停止",
@@ -5654,8 +5651,7 @@
       "session_control_needs_attention": "要対応",
       "session_control_ready": "準備完了",
       "session_control_chip_label": "{{label}} — {{detail}}",
-      "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
-      "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。"
+      "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -5667,8 +5663,6 @@
       "history_load_failed": "このセッションのメッセージを読み込めませんでした。",
       "model_list": "モデルリスト",
       "retry": "再試行",
-      "stop_failed": "このターンを停止できませんでした（{{error}}）。もう一度「停止」を押してください。",
-      "stop_failed_network": "サーバーに接続できず、このターンを停止できませんでした。もう一度「停止」を押してください。",
       "session_ready_type_a_message_to_start": "セッション準備完了。メッセージを入力して開始してください。",
       "split_down": "下に分割",
       "split_right": "右に分割",
@@ -6237,11 +6231,7 @@
       "message": "メッセージ",
       "message_is_required": "メッセージは必須です",
       "message_task": "メッセージ / タスク",
-      "minimal_context": "最小コンテキスト",
-      "minimal_context_description": "毎回の実行でメモリ、レッスン、ステアリング、スキル、過去のセッション履歴を読み込みません。定型的なジョブが、まったく読まないコンテキストにコストを払わなくなります。保存済みのコンテキストが必要なジョブや、スキルを動かすジョブではオフのままにしてください。",
       "minutes": "分",
-      "mode_advice_minimal_context": "このジョブはエージェントを必要としますが、保存済みのコンテキストは必要としないように見えます。最小コンテキストなら、エージェントは残して残りを省きます。",
-      "mode_advice_script": "このジョブは、推論をまったく必要としない機械的なチェックのように見えます。最も安いのはエージェントのターンを消費しないスクリプトジョブです。作成したい場合はチャットで依頼してください。ここでは最小コンテキストが次善の選択です。",
       "model": "モデル",
       "model_inherit": "モデル: 継承",
       "name": "名前",
@@ -7098,11 +7088,9 @@
       "will_be_removed_on_save": "保存時に削除されます。"
     },
     "selectionToolbar": {
-      "ask": "これについて質問",
-      "ask_hint": "選択部分を引用してサイドチャットを開きます — 送信するまで何も送られず、メインのチャットには影響しません",
+      "ask": "サイドチャットで質問",
       "copy": "コピー",
-      "quote": "引用",
-      "quote_hint": "選択部分をこの会話の入力欄に引用します — 返信はメインのチャットに送られます"
+      "quote": "引用"
     },
     "sendToInstanceSubmenu": {
       "failed": "失敗",
@@ -7204,8 +7192,6 @@
       "show_or_focus_the_kiro_crew_window": "{{productName}} ウィンドウを表示・フォーカス",
       "use_ctrl_not_option_for_chat_1_9": "チャット 1–9 には ⌃ Ctrl を使用してください (⌥ Option ではなく)",
       "use_ctrl_not_option_for_chat_1_to_9": "チャット 1 から 9 には Ctrl を使用してください (Option ではなく)",
-      "browser_reserved_hint": "ブラウザーのタブでは、これらのショートカットはページに届く前にブラウザーが処理します。代替の組み合わせはどこでも使え、デスクトップアプリでは両方が使えます。",
-      "desktop_app_only": "デスクトップアプリのみ",
       "panel_toggles": "パネルの表示切り替え",
       "unset": "未設定"
     },
@@ -8404,9 +8390,6 @@
       "name": "名前",
       "no_apps_available": "利用可能なアプリがありません",
       "no_apps_installed_yet": "まだアプリがインストールされていません",
-      "no_enabled_apps": "有効なアプリがありません",
-      "show_disabled_other": "無効なアプリを {{count}} 件表示",
-      "show_enabled_only": "有効なアプリのみ表示",
       "no_matching_apps": "一致するアプリがありません",
       "not_installed_from_apps_your_local_source_code_w": "アプリからインストールされていません — ローカルソースコードは影響を受けません。",
       "removing": "削除中…",
@@ -9083,14 +9066,7 @@
       },
       "errorCard": {
         "continue": "続行",
-        "continue_hint": "停止した箇所から再開します。ディスクに書き込まれた作業内容はそのまま残ります。",
-        "default_model": "デフォルトモデルを変更",
-        "default_model_hint": "「設定 → チャット → デフォルトモデル」を開きます。新しいセッションはこの値で始まります。",
-        "pick_model": "このセッションのモデルを選択",
-        "pick_model_hint": "モデルピッカーを開き、アカウントで利用できるモデルを選んでから、メッセージをもう一度送信してください。",
-        "both_hint": "両方を行ってください。「{{pick}}」でこのセッションを直し、「{{default}}」はデフォルトが同じモデルの場合に新しいセッションがそのモデルで始まらないようにします。その後、メッセージをもう一度送信してください。",
-        "elsewhere_hint": "モデルピッカーと「設定 → チャット」はメインのチャットウィンドウにあります。そこでモデルを選び、デフォルトモデルを変更してください。",
-        "elsewhere_settings_hint": "「設定 → チャット」はメインのチャットウィンドウにあります。そこでデフォルトモデルを変更してください。"
+        "continue_hint": "停止した箇所から再開します。ディスクに書き込まれた作業内容はそのまま残ります。"
       },
       "folderPanel": {
         "clear_search": "検索をクリア",
@@ -9223,7 +9199,6 @@
         "ask_a_side_question_2": "サイドで質問…",
         "ask_a_side_question_main_agent_keeps_working": "実行中の処理を止めずにサイドで質問できます。ここの内容はチャットには保存されません。",
         "context_from": "コンテキスト元",
-        "off_record_marker": "サイドチャット · 会話には保存されません",
         "context_only_tools_unavailable": "コンテキストのみ · ここではツールや MCP は利用できません。操作はメインチャットで依頼してください。",
         "question_too_long": "質問が長すぎます — 約 {{max}} 文字未満に短くしてください（現在は {{current}} 文字）",
         "queue_cancel_failed": "キューに入っている質問をキャンセルできませんでした",
@@ -9562,7 +9537,6 @@
       "could_not_regenerate": "再生成できませんでした",
       "could_not_set_the_agent_default_model": "エージェントのデフォルトモデルを設定できませんでした",
       "could_not_switch_variant": "バージョンを切り替えられませんでした",
-      "side_chat_pane_gone": "そのペインのサイドチャットを開けませんでした — セッションが利用できなくなっています: {{error}}",
       "could_not_start_a_new_session": "新しいセッションを開始できませんでした",
       "could_not_start_session_message_restored": "新しいセッションを開始できませんでした：{{error}}。メッセージは復元されました — もう一度送信して再試行してください。",
       "enter_split_view": "分割表示にする",
@@ -10403,7 +10377,6 @@
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "このワークスペースの一意な識別子。エージェントは名前でワークスペースを参照します。",
-      "add_crew_member": "クルーメンバーを追加",
       "additional_stores_coming_with_memory_v2": "現在はデフォルトストアのみが利用可能です — より多くのメモリストアのサポートは近日予定です。",
       "agent_template_is_required": "エージェントテンプレートは必須です",
       "agents": "エージェント",
@@ -10419,7 +10392,6 @@
       "create_a_crew_to_give_an_agent_its_own_workspace": "エージェントはアシスタントであり、独自のファイルと独自のメモリを持ちます。作業の種類ごとに 1 つ作成して、学習内容が混ざらないようにしてください。",
       "create_a_new_crew": "新しいエージェントを作成",
       "create_agent": "エージェントを作成",
-      "create_member": "メンバーを作成",
       "create_workspace": "ワークスペースを作成",
       "create_your_first_crew": "最初のエージェントを作成",
       "creating": "作成中…",
@@ -10446,7 +10418,6 @@
       "effort_resolves_to": "{{effort}} で思考",
       "effort_unavailable_on_this_model": "{{model}} は推論エフォートを受け付けないため、設定できるものはありません。",
       "failed_to_create_agent": "エージェント作成に失敗",
-      "failed_to_create_member": "メンバーを作成できませんでした",
       "failed_to_create_workspace": "ワークスペース作成に失敗",
       "failed_to_delete_agent": "エージェント削除に失敗",
       "failed_to_update_agent": "エージェント更新に失敗",
@@ -10458,9 +10429,7 @@
       "isolated_memory_and_files_for_this_crew": "このエージェントが読み書きするフォルダー。切り替えると新しいチャットは新しいフォルダーから開始され、古いものは保持されます。",
       "keep_editing": "編集を続ける",
       "manage_agent_workspace_memory_store_bindings": "異なるジョブのための個別のアシスタント。各エージェントは独自のファイルを保持します。",
-      "member_already_exists": "「{{name}}」という名前のメンバーはすでに存在します。別の名前を選んでください。",
       "memory_store": "メモリストア",
-      "memory_store_hint_member": "このメンバーが結び付けられるメモリストア。バインドは記録されますが、まだメンバー専用のメモリにはなりません。",
       "model": "モデル",
       "name": "名前",
       "name_is_required": "名前は必須です",
@@ -10479,19 +10448,14 @@
       "resolves_to": "{{model}}を使用中",
       "routing": "ルーティング",
       "runtime_binding": "このエージェントが使用するもの",
-      "runtime_binding_member": "このメンバーが使うもの",
       "save_changes": "変更を保存",
       "select_an_agent_template": "エージェントテンプレートを選択…",
-      "session_color_hint_member": "このメンバーが開始するセッションは、セッション自体に色がない限りこの色を使います。空欄にするとメンバーの色はなしになります。",
       "shared_lower": "共有",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew内のサブディレクトリで、このワークスペースがそのデータ（チャット履歴、レッスン、プロジェクト）を保存します。各ワークスペースには独自の分離されたディレクトリがあります。",
-      "template_hint_member": "このメンバーが使う初期セットアップ — ツール、接続、指示。",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "このエージェントが使用する開始設定 — ツール、接続、指示。",
       "triggers": "トリガー",
       "triggers_hint": "このエージェントにルーティングするとき — オーケストレーターが読み取る自由形式のガイダンス。このエージェントを自動選択から除外するために空のままにします。",
-      "triggers_hint_member": "このメンバーに作業を任せるタイミング — {{productName}} が判断に使う自由記述のガイダンス。空欄にすると自動選択の対象外になります。",
       "triggers_info": "メッセージがこれらのトリガーに明確に一致する場合、オーケストレーターはこのエージェントを選択し（select_crewツールを使用）、エージェントのワークスペース、メモリ、およびモデルでタスクを実行します。トリガーのないエージェントは自動選択されません。",
-      "triggers_info_member": "メッセージがこれらのトリガーに明確に一致すると、{{productName}} がこのメンバーを選び、メンバーのワークスペース、メモリ、モデルでタスクを実行します。トリガーのないメンバーは自動選択されません。",
       "triggers_placeholder": "例: インシデント、本番停止、ページャーエスカレーション",
       "used_for_all_new_chats": "すべての新しいチャットで使用",
       "view_cards": "カード",
@@ -10501,7 +10465,6 @@
       "which_store_its_lessons_and_history_are_written": "このエージェントがどのメモリストアに紐づいているか。紐づけは記録されますが、それによってエージェントが自分専用のメモリを持つようにはまだなりません。",
       "workspace": "ワークスペース",
       "workspace_2": "ワークスペース",
-      "workspace_hint_member": "このメンバーが読み書きするフォルダー。切り替えると新しいチャットは新しいフォルダーで最初から始まり、古いフォルダーは保持されます。",
       "workspace_name_is_required": "ワークスペース名は必須です",
       "yes_delete_it": "はい、削除します",
       "session_color": "セッションの色",
@@ -10512,9 +10475,7 @@
       "discard_unsaved_body": "このクルーには保存されていない編集があります。今閉じると破棄されます。",
       "discard_confirm": "変更を破棄",
       "discard_also_crew_edits": "このクルーの他の未保存の編集も一緒に破棄されます。",
-      "editor_options_load_failed": "クルーエディターのワークスペース、テンプレート、メモリストアの選択肢を読み込めませんでした。",
-      "template_edit_later_note": "いちばん近い出発点を選んでください — このエージェントのテンプレートは作成後にいつでも切り替えられます。",
-      "template_edit_later_note_member": "最も近い開始点を選んでください — このメンバーのテンプレートは作成後いつでも変更できます。"
+      "editor_options_load_failed": "クルーエディターのワークスペース、テンプレート、メモリストアの選択肢を読み込めませんでした。"
     },
     "knowledge": {
       "detailView": {
@@ -10974,9 +10935,11 @@
         "workflow_description": "説明"
       },
       "agentCfgTab": {
+        "after_saving_use": "保存後、使用",
         "agent_config_file": "エージェント設定 ({{file}})",
         "agent_config_json": "エージェント設定 JSON",
         "agent_config_tip": "{{process}} エージェント定義 — プロンプト、ツール、MCP サーバー、モデル設定。これは {{productName}} の運用バインディングとは別の実行層の設定です。",
+        "apply_restart_sessions_at_the_top_to_apply_chang": "変更を適用するには、上部の「適用してセッションを再起動」をクリックします。",
         "invalid_json": "無効な JSON",
         "loading": "読み込み中…",
         "save": "保存",
@@ -12078,18 +12041,6 @@
       "empty_failed_next_step": "「完全に削除」をもう一度お試しください。詳細はゲートウェイのログにあります。",
       "kept_identity_changed": "選択後にディスク上で変化したバッチがあったため、保持しました。"
     },
-    "sessionsPage": {
-      "page_title": "すべてのセッション",
-      "search_placeholder": "セッションを検索…",
-      "new_session": "新しいセッション",
-      "filter_all": "すべて",
-      "filter_unread": "未読",
-      "group_today": "今日",
-      "group_yesterday": "昨日",
-      "group_earlier": "それ以前",
-      "empty_title": "セッションはありません",
-      "empty_subtitle": "作成して始めましょう。"
-    },
     "sessionsTab": {
       "agent": "エージェント",
       "channel": "チャネル",
@@ -12525,9 +12476,6 @@
         "session_summaries": "セッションの要約",
         "sessions": "セッション",
         "sets_how_deep_explanations_go_plain_language_vs": "説明の詳しさを設定 — 平易な言葉と完全な技術詳細",
-        "busy_alt_action_desc": "「ステア」はテキストをすぐに処理し、「キュー」は現在の作業が終わってから実行します。{{chord}} でそのメッセージだけもう一方の動作で送信できます。送信ボタンでモードを選んだセッションはその選択を維持します。",
-        "busy_alt_action_desc_no_chord": "「ステア」はテキストをすぐに処理し、「キュー」は現在の作業が終わってから実行します。1 回だけ切り替えるショートカットは Enter で送信する設定のときのみ使えます。それ以外は送信ボタンのメニューを使ってください。送信ボタンでモードを選んだセッションはその選択を維持します。",
-        "what_enter_does_while_the_agent_is_working": "エージェントの作業中に Enter が行う動作",
         "shift_enter_for_newline": "Shift+Enter で改行",
         "show_a_confirmation_dialog_when_closing_a_sessio": "セッションを閉じるときに確認ダイアログを表示",
         "show_a_favicon_and_page_title_instead_of_the_raw": "生の URL の代わりにファビコンとページタイトルを表示します。このマシンはモデルが出力するすべてのリンクをフェッチするため、リンクされたサイトはあなたの IP アドレスからのリクエストが表示されます。",
@@ -13166,7 +13114,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "キーを押してください…",
         "search": "検索",
-        "turn_keyboard_shortcuts_on_or_off_globally": "キーボードショートカットを全体で有効または無効にします — {{chord}}（このリファレンス）は常に有効です",
+        "turn_keyboard_shortcuts_on_or_off_globally": "キーボードショートカットを全体で有効または無効にします — {{mod}} + K（このリファレンス）は常に有効です",
         "use_ctrl_not_option_for_chat_1_9": "チャット 1～9 に ⌃ Ctrl（⌥ Option ではなく）を使用します",
         "clear_shortcut": "クリア",
         "panel_toggles": "パネルの表示切り替え",
@@ -14072,11 +14020,10 @@
     "membersPage": {
       "agent_template": "エージェントテンプレート",
       "configuration": "設定",
-      "crew_summary": "メンバー概要",
       "details": "詳細",
       "edit_in_crew_manager": "クルー管理ページで編集",
       "edit_member": "メンバーを編集",
-      "empty_roster": "クルーメンバーはまだいません。",
+      "empty_roster": "クルーメンバーはまだいません。クルー管理ページで作成するとここに表示されます。",
       "inherited": "継承",
       "member_count_other": "{{count}} 名のメンバー",
       "member_gone": "{{shown}} を表示しています。「{{name}}」はメンバー一覧にありません。",
@@ -14134,6 +14081,7 @@
       "patrol_error": "このメンバーのパトロール状態を読み込めませんでした。",
       "patrol_error_roster": "メンバー一覧のパトロール状態を読み込めませんでした。",
       "patrol_badge": "パトロール中 · {{cycle}}",
+      "patrol_badge_stopped": "パトロール停止",
       "patrol_next_in": "あと{{time}}",
       "wake_patrol_every": "{{every}}ごと",
       "filter_starred": "スター付き",

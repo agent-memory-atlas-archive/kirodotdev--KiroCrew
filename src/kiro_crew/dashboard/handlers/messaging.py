@@ -130,9 +130,9 @@ _SLACK_SECRET_FIELDS = {
 #: Transports ``send_message``'s ``channel_type`` may name, which is also the set
 #: its channel ``session`` values may name. Reads the shared
 #: ``CHANNEL_SEND_NAMESPACES`` rather than subtracting the two non-targets here:
-#: a subtraction spelled at each reader drifts, and a drifted copy can leave a
-#: Webex owner DM unreachable while this module's own leg already serves it.
-#: The exclusions and their reasons are documented at the
+#: that subtraction was spelled at three separate readers, which is the same drift
+#: shape that left a Webex owner DM unreachable while this module's own leg already
+#: served it (#6514). The exclusions and their reasons are documented at the
 #: definition — ``slack`` has its own client and streaming path and is deliberately
 #: absent from ``state.channel_transports`` (``session="slack"`` is its spelling),
 #: and ``unified`` is a session-key bucket rather than a transport.
@@ -422,7 +422,7 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
             return web.json_response({"error": detail, "code": "not_running"}, status=409)
         if detail.startswith("session_starting"):
             # Transient: the run is alive but its session has not registered
-            # yet. 503 + Retry-After tells clients to retry, unlike
+            # yet (#1113). 503 + Retry-After tells clients to retry, unlike
             # the terminal 502 steer_failed.
             return web.json_response(
                 {"error": detail, "code": "session_starting"},
@@ -663,10 +663,10 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         data["elapsed"] = round(time.time() - info.started)
         # Same predicate, same present-only-while-true convention as
         # api_spawn_list. This endpoint is the one a blocking `kirocrew spawn
-        # run` polls every 2s (cli_commands.py), so leaving it out would keep the
-        # CLI silent: the caller would sit on "waiting for result..." while the
-        # answer ("a prompt is waiting for you") was only discoverable from a
-        # separate `spawn list` or a log grep.
+        # run` polls every 2s (cli_commands.py), so leaving it out is what kept
+        # the CLI reproduction of #6484 silent: the caller sat on "waiting for
+        # result..." while the answer ("a prompt is waiting for you") was only
+        # discoverable from a separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
     return web.json_response(data)
@@ -688,11 +688,12 @@ def _awaiting_spawn_approval(info: object) -> bool:
     pair, because the two handlers build their payloads independently and a
     drift between them is invisible to a behavioural test.
 
-    ``subagent_manager/terminal.py`` computes the same pair for the reap message.
-    Deliberately not extracted onto ``SubagentInfo``: that read is a plain
-    attribute read on a live run inside the manager package, whereas this one
-    must survive the info doubles the handlers are tested with (below). The
-    duplication is two lines and both sites name each other.
+    ``subagent_manager/terminal.py`` computes the same pair for the reap message
+    (#7325). Deliberately not extracted onto ``SubagentInfo``: that read is a
+    plain attribute read on a live run inside the manager package, whereas this
+    one must survive the info doubles the handlers are tested with (below), and
+    unifying them would mean editing a reap path this change does not otherwise
+    touch. The duplication is two lines and both sites name each other.
 
     ``getattr`` with a strict ``is True`` / ``is None``: these handlers are
     exercised with lightweight info doubles (SimpleNamespace / MagicMock) that
@@ -732,8 +733,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             # Present only while the run is parked on its spawn-approval
             # prompt, so the default payload is unchanged. Without it a run
             # waiting for a human is byte-identical to one that is executing --
-            # `kirocrew spawn list` would show the same hourglass for a run that
-            # has no child process and is only ever waiting to be approved.
+            # which is how #6484 presented: `kirocrew spawn list` showed the
+            # same hourglass for a run that had no child process and was only
+            # ever waiting to be approved.
             if _awaiting_spawn_approval(info):
                 entry["awaiting_approval"] = True
         # Present only when a group was actually withheld, so the default
@@ -1112,7 +1114,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     length caps. Durability mirrors the app push: a 200 awaits the persist.
     """
     state: DashboardState = request.app["state"]
-    # App tokens must never reach this endpoint: an app's
+    # App tokens must never reach this endpoint (GPT 5.6 round 16): an app's
     # declared ``permissions.api`` uses prefix-boundary matching, so an app
     # allowed ``/api/notifications`` is also admitted to this child route by
     # the auth middleware. This publish path is MCP/internal-secret only —
@@ -1121,9 +1123,10 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     # rate limits / declared-channel checks. Apps publish through
     # POST /api/notifications where their
     # token-verified ``app:<name>`` source is enforced. The middleware publishes
-    # ``request["app"]`` on app-token auth and also on the internal-secret path
-    # whenever the calling session resolves to an app, so this check bites for
-    # an app agent arriving over MCP too.
+    # ``request["app"]`` on app-token auth and, since issue #3690, also on the
+    # internal-secret path whenever the calling session resolves to an app — so
+    # this check now bites for an app agent arriving over MCP too, which it
+    # could not before.
     if request.get("app"):
         # Permission denial on a security boundary — audited before the
         # response (backend-security-controls: every denial emits SEL).
@@ -1135,7 +1138,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
             error="app tokens forbidden on the agent publish path",
         )
         return web.json_response({"error": "forbidden for app tokens"}, status=403)
-    # MCP/internal-secret ONLY: the strict-internal
+    # MCP/internal-secret ONLY (GPT 5.6 round 19): the strict-internal
     # middleware also admits loopback dashboard-COOKIE callers to this
     # route, and a browser-credentialed caller publishing source="system"
     # would bypass MCP governance. The middleware sets
@@ -1151,7 +1154,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
             error="internal-secret authentication required (cookie callers forbidden)",
         )
         return web.json_response({"error": "internal-secret authentication required"}, status=403)
-    # A caller whose own slot is GONE cannot be attributed. The
+    # A caller whose own slot is GONE cannot be attributed (issue #3690). The
     # app-token check above refuses an app by name, but a tab closed while this
     # call was in flight takes the ``_app`` that check reads with it, so an
     # app-owned session going through that race would publish source="system"
@@ -3739,8 +3742,8 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         if cmd and (len(cmd) > 32 or not all(c.isalnum() or c in "-_" for c in cmd)):
             return _deny("command must be alphanumeric/-/_ and at most 32 chars")
         # Empty input resets to the default rather than silently keeping the
-        # old value, so the slash command can be cleared. Stage only on actual
-        # change: the UI sends the field on
+        # old value — previously the slash command could be set but never
+        # cleared. Stage only on actual change: the UI sends the field on
         # every save, and command is boot-read, so staging an unchanged value
         # would flag restart_required on every save.
         new_cmd = cmd or "kirocrew"
@@ -4746,7 +4749,7 @@ async def api_teams_activity(request: web.Request) -> web.Response:
     throttled_source = "" if is_proxied_request(request) else source
     if throttled_source and webhooks.auth_throttle_blocked(throttled_source):
         # A bare enqueue: SEL is warmed at gateway startup
-        # (sel.warm_sel_singleton), so even when this route is the
+        # (sel.warm_sel_singleton, #8608), so even when this route is the
         # first request a fresh gateway serves, no construction runs here.
         _sel().log_api_access(
             caller=source,
@@ -5061,14 +5064,14 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         _raw_teams_15: dict = {}
         try:
             # Offload read_text + json.loads to a thread so a slow filesystem
-            # cannot stall the async event loop.
+            # cannot stall the async event loop (Finding 1).
             def _read_config_15() -> dict:
                 return json.loads(_p15_cfg.read_text(encoding="utf-8")) if _p15_cfg.exists() else {}
 
             _rd15 = await asyncio.to_thread(_read_config_15)
             # Guard against a malformed config.json where "teams" is not a dict
             # (e.g. someone hand-edited it to a list).  .get() on a list raises
-            # AttributeError; the isinstance check degrades gracefully.
+            # AttributeError; the isinstance check degrades gracefully (Finding 3).
             _t15 = _rd15.get("teams")
             _raw_teams_15 = _t15 if isinstance(_t15, dict) else {}
         except Exception:
@@ -5077,7 +5080,7 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         _c_app_id = await asyncio.to_thread(read_env_file_credential, CRED_MICROSOFT_APP_ID)
         _c_tenant = await asyncio.to_thread(read_env_file_credential, CRED_MICROSOFT_APP_TENANT_ID)
         # ENV-first, matching load_credentials() semantics: os.environ overrides
-        # the .env file.  A pending in-flight update still wins as
+        # the .env file (Finding 2).  A pending in-flight update still wins as
         # the outermost layer (see env_updates.get() below).
         _c_pw = os.environ.get(CRED_MICROSOFT_APP_PASSWORD, "") or _c_pw
         _c_app_id = os.environ.get(CRED_MICROSOFT_APP_ID, "") or _c_app_id
@@ -5144,7 +5147,7 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             _f_tenant = await asyncio.to_thread(
                 read_env_file_credential, CRED_MICROSOFT_APP_TENANT_ID
             )
-            # ENV-first, matching load_credentials() semantics.
+            # ENV-first, matching load_credentials() semantics (Finding 2).
             _f_pw = os.environ.get(CRED_MICROSOFT_APP_PASSWORD, "") or _f_pw
             _f_app_id = os.environ.get(CRED_MICROSOFT_APP_ID, "") or _f_app_id
             _f_tenant = os.environ.get(CRED_MICROSOFT_APP_TENANT_ID, "") or _f_tenant
@@ -5209,7 +5212,7 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         # exists in .env / os.environ (so purging the config copy is safe).
         # Do NOT purge when the password lives ONLY in legacy config.json (no .env
         # entry, no env_update) — that would erase the sole credential copy and
-        # produce a dead pair at the next restart.
+        # produce a dead pair at the next restart (Finding 1).
         # _c_pw is only populated inside ``if credential_touched`` (Phase 1.5).
         # For metadata-only saves (credential_touched=False) fall back to a
         # synchronous os.environ check — load_credentials() seeds os.environ from
@@ -5854,7 +5857,7 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
             imessage_cfg.update(changes)
             # Shield + drain so a cancellation arriving mid-write cannot
             # release the config lock while the worker thread is still
-            # replacing the file (interleaved-write race).
+            # replacing the file (interleaved-write race, Finding 3).
             _cfg_write_task_im: asyncio.Task[None] = asyncio.ensure_future(
                 asyncio.to_thread(_atomic_json_write, path, data)
             )
@@ -6716,8 +6719,8 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     # back. Reconciling here means a save that reported failure leaves no durable
     # folder change behind.
     # The staged value when we changed it, else what was already stored: `fs_cfg`
-    # is the VALIDATION snapshot and is not mutated in place — the authoritative
-    # update happens inside the lock.
+    # is the VALIDATION snapshot and is no longer mutated in place, since the
+    # authoritative update now happens inside the lock.
     _effective_folder = staged.get("session_folder", fs_cfg.get("session_folder"))
     _folder_name = stored_folder_name(_effective_folder)
     if _folder_name:

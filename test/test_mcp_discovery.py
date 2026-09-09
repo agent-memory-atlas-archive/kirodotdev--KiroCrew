@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from conftest import host_abs
 from kiro_crew import platform_compat
 from kiro_crew.mcp_discovery import (
     MCP_REDACTED_HEADER_VALUE,
@@ -953,24 +952,19 @@ class TestDiscoverNew:
         """A genuinely edited env.PATH still triggers a re-sync."""
         from kiro_crew.env import spec_env_path
 
-        # Spelled for the host (conftest.host_abs): a fragment that fails
-        # ``os.path.isabs`` is dropped by the expansion, and from Python 3.13 a bare
-        # ``/opt/old`` is not absolute under ntpath -- then old and new both expand
-        # to the bare augmentation and the edit is invisible.
-        old, new = host_abs("opt", "old"), host_abs("opt", "new")
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        cfg = {"mcpServers": {"srv": {"command": "a", "env": {"PATH": spec_env_path(old)}}}}
+        cfg = {"mcpServers": {"srv": {"command": "a", "env": {"PATH": spec_env_path("/opt/old")}}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
         mcp_json.write_text(
-            json.dumps({"mcpServers": {"srv": {"command": "a", "env": {"PATH": new}}}})
+            json.dumps({"mcpServers": {"srv": {"command": "a", "env": {"PATH": "/opt/new"}}}})
         )
         monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
         result = discover_servers_to_sync()
         assert len(result) == 1
-        assert result[0].env == {"PATH": new}
+        assert result[0].env == {"PATH": "/opt/new"}
 
     def test_discover_skips_existing_with_identical_env(self, tmp_path, monkeypatch) -> None:
         """Existing servers with identical env are not flagged for sync."""
@@ -2804,13 +2798,9 @@ class TestProbeServerProcessCleanup:
         """
         from kiro_crew.env import spec_env_path
 
-        # Spelled for the host (conftest.host_abs): the declared entry passes
-        # through the ``os.path.isabs`` filter in env._spec_path_entries, and from
-        # Python 3.13 a bare ``/opt/shims`` is not absolute under ntpath.
-        shims, usr_bin = host_abs("opt", "shims"), host_abs("usr", "bin")
-        monkeypatch.setenv("PATH", usr_bin)
+        monkeypatch.setenv("PATH", "/usr/bin")
         proc = self._make_mock_proc()
-        server = McpServerInfo(name="test", command="echo", env={"PATH": shims})
+        server = McpServerInfo(name="test", command="echo", env={"PATH": "/opt/shims"})
         captured: dict = {}
 
         def _spawn(*argv, **kw):  # noqa: ANN002, ANN003 - test shim
@@ -2826,10 +2816,10 @@ class TestProbeServerProcessCleanup:
             await probe_server(server)
 
         spawned = captured["env"]["PATH"]
-        assert spawned == spec_env_path(shims)
+        assert spawned == spec_env_path("/opt/shims")
         entries = spawned.split(os.pathsep)
-        assert entries[0] == shims
-        assert usr_bin in entries
+        assert entries[0] == "/opt/shims"
+        assert "/usr/bin" in entries
 
 
 class TestInstallAgentRemote:

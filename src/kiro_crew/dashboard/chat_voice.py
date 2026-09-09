@@ -699,11 +699,11 @@ async def api_voice_voices(request: web.Request) -> web.Response:
         return web.json_response({"voices": _voices_cache})
 
     # The catalogue lives behind a paid provider, so two gates come before the
-    # subprocess. Neither may be dropped: without them the only thing stopping
-    # this endpoint from calling AWS is the frontend declining to fetch it while
-    # Piper is selected, so any other client — or a direct request — reaches
+    # subprocess. Both used to be absent here: the ONLY thing stopping this
+    # endpoint from calling AWS was the frontend declining to fetch it while
+    # Piper was selected, so any other client — or a direct request — reached
     # `aws polly describe-voices` against whatever the ambient credential chain
-    # resolves to.
+    # resolved to.
     #
     # 1. Not the active provider: a Piper user has no business shipping a
     #    request to Polly at all.
@@ -727,7 +727,7 @@ async def api_voice_voices(request: web.Request) -> web.Response:
         # default Piper provider works without it). Resolution goes through
         # the deploy engine's shared well-known-dirs resolver, so a gateway
         # running under launchd with a minimal PATH still finds a Homebrew /
-        # official-pkg install. When the CLI genuinely is not
+        # official-pkg install (#4770). When the CLI genuinely is not
         # installed, degrade to an empty list instead of a 500 + traceback.
         # Not cached, so the list recovers as soon as `aws` becomes
         # resolvable. The probe runs in a thread so a wedged network mount
@@ -773,7 +773,7 @@ async def api_voice_voices(request: web.Request) -> web.Response:
         # Reap via communicate(), not wait(): wait_for cancelled the pipe
         # readers before the kill landed, so a child blocked writing to a
         # full stderr PIPE is never drained and wait() can hang the request
-        # handler indefinitely.
+        # handler indefinitely (#5975, same class as #5834).
         await proc.communicate()
         return web.json_response({"error": "timeout"}, status=504)
     except FileNotFoundError:

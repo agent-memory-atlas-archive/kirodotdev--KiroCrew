@@ -42,26 +42,15 @@ resolves it so the server starts under the interpreter its dependencies were
 installed against:
 
 - **A bare Python launcher** (`python`, `python3`, `py`, or the same with `.exe`)
-  resolves to the gateway's own interpreter whenever the gateway has
-  provisioned the app's `requirements.txt` (a `pip install --target` into
-  `data/.kirocrew-deps/`; python launchers run through a `site.addsitedir`
-  shim so `.pth` files are processed, other commands see the dir on
-  `PYTHONPATH`; under `data/` so app updates keep the last good install) - those
-  wheels are built by that interpreter, so it is the only ABI-consistent
-  choice. Without an active provisioned tree (never provisioned, or
-  provisioning failed), it resolves to the app's own venv
-  interpreter (`.venv/bin/python3`, or `.venv\Scripts\python.exe` on Windows)
-  when it exists as a runnable file created by the same Python minor version
-  as the gateway, else again to the gateway's own interpreter - never a PATH
-  lookup. Exception: a server whose `args` launch a `kiro_crew` module
-  (`-m kiro_crew...`) always gets the gateway's interpreter and never the
-  app deps on `PYTHONPATH`, so an app cannot shadow the gateway's own code.
+  resolves to the app's own venv interpreter (`.venv/bin/python3`, or
+  `.venv\Scripts\python.exe` on Windows) when it exists as a runnable file, else
+  to the gateway's own interpreter — never a PATH lookup. Exception: a server
+  whose `args` launch a `kiro_crew` module (`-m kiro_crew...`) always gets the
+  gateway's interpreter, since app venvs cannot import `kiro_crew`.
 - **Any other bare name** (no path separator, no drive qualifier) is rewritten
-  only when the app's provisioned deps dir or its venv provides that exact
-  binary as a runnable file (a pip console script - invisible to PATH because
-  neither layout is ever activated; the venv is consulted only when no deps
-  dir was provisioned). Note this means an app-provided binary shadows a
-  same-named PATH dependency.
+  only when the app's venv provides that exact binary as a runnable file (a pip
+  console script — invisible to PATH because the venv is never activated). Note
+  this means a venv-provided binary shadows a same-named PATH dependency.
   `node`, `npx`, `docker` and friends are otherwise left for PATH, as declared.
 - **A command carrying a path** (absolute or relative) is never rewritten. If it
   does not point at a runnable file at registration time, a warning naming the
@@ -810,59 +799,12 @@ Control how KiroCrew manages the app:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `platform.os` | string[] | `["macos", "linux"]` | Supported platforms. Valid names: `macos`, `linux`, `windows`. **The default excludes `windows`** — see below |
+| `platform.os` | string[] | `["macos", "linux"]` | Supported platforms |
 | `platform.arch` | string[] | `[]` (any) | Supported architectures |
 | `platform.requiresDesktopApp` | boolean | `false` | App's own UI needs the Electron desktop shell |
 | `platform.installMode` | string | `"server"` | `"server"` or `"client"` |
 | `platform.clientInstall.shell` | string | | One-liner for local install |
 | `platform.clientInstall.postInstall` | string | | Command to run after install |
-
-#### `platform.os` — a published claim, and silence publishes "no"
-
-For a **server-mode** app (every builtin), `platform.os` is a user-facing CLAIM,
-not an access control. It is rendered on the App Store detail page
-(`website/src/pages/AppDetailPage.tsx`), and that is its only non-test consumer.
-`apps/routes.py` reads it once, via `_client_install_manifest()`, which returns
-`None` unless `platform.installMode == "client"`; `handle_enable_app`'s docstring
-states the rest outright — "nothing else on the enable path consults that field".
-So omitting the block does **not** stop the app being enabled anywhere.
-
-What it does do is publish something untrue. The default is
-`["macos", "linux"]`, so **an app that omits the `platform` block tells every
-Windows user that it does not run there** — indistinguishable from a deliberate
-statement, and wrong if the app in fact runs fine.
-
-Declare the block explicitly and make it say what you mean:
-
-```json
-{ "platform": { "os": ["macos", "linux", "windows"] } }
-```
-
-For a `platform.installMode: "client"` app the field DOES gate behaviour: the
-`onEnable` script is skipped with `onEnable.skipped: "unsupported_platform"` when
-the gateway's OS is not listed, because that script addresses a separately
-distributed desktop application.
-
-Two things decide whether your app can honestly claim `windows`:
-
-1. **Does its code assume POSIX?** Route every platform decision through
-   `kiro_crew.platform_compat` (`IS_WINDOWS`, `IS_POSIX`, `file_lock`,
-   `rename_noreplace`, `trusted_system_bin`, …) rather than writing a raw
-   `sys.platform` test. Pass explicit `encoding="utf-8"` on text I/O — the
-   Windows default code page is not UTF-8. Prefer `os.replace` over
-   `os.rename`, and reject Windows-reserved file names (`CON`, `NUL`,
-   `COM1`–`COM9`, `LPT1`–`LPT9`, and names ending in a dot or space).
-
-2. **Does it need a backend CHILD PROCESS?** An app with no `backend`, or with
-   `backend.hooks` only, runs inside the Gateway process and spawns nothing, so
-   it is unaffected by the item below. An app with a `backend.entryPoint` is
-   spawned through `sandbox.wrap_argv` without the first-party carve-out, and
-   Kiro Crew has no native Windows sandbox backend — so on native Windows that
-   spawn needs the operator's `agent.sandbox_allow_unsandboxed_exec=true` (or
-   `agent.sandbox='off'`). That is a documented prerequisite, not a reason to
-   publish "does not run here": state it in your app's `configuration` copy so
-   the dependency is not a surprise. See `docs/guides/windows-install.md` and
-   `docs/system-specs/common/platform-compat.md`.
 
 When `installMode` is `"client"`, the App Store shows copy-paste terminal
 instructions instead of running the install on the server. This is used for

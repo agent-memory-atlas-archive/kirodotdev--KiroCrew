@@ -169,7 +169,6 @@ from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import injection_server_names, pooled_session_servers
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
-from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import mirror_for
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
@@ -1843,7 +1842,7 @@ _RE_AUTH_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:401|403)\b", re.
 _RE_SESSION_EXPIRED = re.compile(
     r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out"
     r"|login\s+(?:has\s+)?expired|authentication\s+(?:has\s+)?expired"
-    r"|not\s+logged\s+in|not\s+authenticated|not\s+signed\s+in"
+    r"|not\s+logged\s+in|not\s+authenticated"
     r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",
     re.IGNORECASE,
 )
@@ -1993,12 +1992,7 @@ def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> s
     through this single helper so the user-facing wording and the retry verdict
     cannot drift apart -- see the drift warning above.
     """
-    # Two wordings name the rejected id: kiro-cli's "The model 'X' is not
-    # available" and the MPS validation frame "Invalid model ID: X" (the shape
-    # the background path's ``_rejected_model_from_error`` already accepts).
-    # Both are judged against the same served list so the entitlement wording
-    # and the retry verdict cannot depend on which frame the backend emitted.
-    match = _RE_MODEL_UNAVAILABLE.search(data) or _RE_INVALID_MODEL_ID.search(data)
+    match = _RE_MODEL_UNAVAILABLE.search(data)
     if not match:
         return None
     if not available_models:
@@ -2231,71 +2225,6 @@ def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> st
     return resolve_pin_spelling(preferred, ids)
 
 
-def pick_served_default(current: str, advertised: Sequence[str] | None) -> str:
-    """The served model a session on *current* must switch to, or ``""``.
-
-    ``session/new`` picks the model itself and reports it as
-    ``currentModelId``, and that choice is the backend's own default rather
-    than anything Crew asked for. A partition does not have to serve the model
-    its backend defaults to: an account whose region omits ``"auto"`` can be
-    handed ``"auto"`` at birth, and then every ``session/prompt`` dies with
-    "your account does not have access to model 'auto'". So inheriting the
-    backend default is only safe when the inherited model is one the same
-    response advertised, and this answers which served model to move to when it
-    is not.
-
-    Returns ``""`` — nothing to do, keep inheriting — whenever the question
-    cannot be answered or the answer is already right:
-
-      - ``advertised`` empty/None: entitlement is unknowable, exactly
-        :func:`model_is_unusable`'s empty-set-means-allow contract. Reading an
-        absent list as "nothing is served" would switch every session on a
-        backend that simply does not advertise;
-      - empty ``current``: the backend echoed no model, so there is no evidence
-        it picked an unserved one. Fail open rather than override a default we
-        cannot see;
-      - ``current`` served, under its own spelling or under a peeled
-        ``<namespace>::`` one (:func:`resolve_pin_spelling`, the shared fold):
-        the session is already on a model the account can run.
-
-    Otherwise the default is genuinely unserved and the session needs a real
-    model: ``"auto"`` when the backend advertises it — the same
-    "let the backend choose" id ``resolve_usable_model`` and the dashboard's
-    ``_wire_model_id`` send — else the FIRST advertised id, because a served
-    model chosen for the user beats a session that cannot answer a single
-    prompt.
-    """
-    ids = [m for m in (advertised or []) if m and m.strip()]
-    if not ids:
-        return ""
-    if not current.strip():
-        return ""
-    if not model_is_unusable(current, ids):
-        return ""
-    if resolve_pin_spelling(current, ids):
-        return ""
-    return "auto" if not model_is_unusable("auto", ids) else ids[0]
-
-
-def _auto_remedy(available_models: Sequence[str] | None) -> str:
-    """The "set agent.model to 'auto'" remediation step, or nothing when the
-    partition does not serve ``auto``.
-
-    The capacity-blip messages list three remedies, and the second is the
-    ``auto`` sentinel. On a partition whose advertised list lacks ``auto`` that
-    advice re-opens the circle the unentitled-``auto`` branch closes: the user
-    follows it and the next turn dies on "no access to model 'auto'". So the
-    step is emitted only when ``auto`` is served, or when the served list is
-    unknown (nothing to check against, keep the historical advice). The
-    numbering of the remaining step shifts so the list still reads (1)(2)(3)
-    or (1)(2).
-    """
-    usable = [m.strip().lower() for m in (available_models or []) if m and m.strip()]
-    if usable and DEFAULT_MODEL not in usable:
-        return "or (2) "
-    return f"(2) set agent.model to '{DEFAULT_MODEL}' in ~/.kiro/crew/config.json, or (3) "
-
-
 def _format_acp_error(error: object, available_models: Sequence[str] | None = None) -> str:
     """Format a JSON-RPC error from the ACP backend into actionable user text.
 
@@ -2337,54 +2266,13 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             # message, and the picker shows the full set anyway.
             shown = ", ".join(usable[:8])
             more = f" (+{len(usable) - 8} more)" if len(usable) > 8 else ""
-            if unentitled.strip().lower() == DEFAULT_MODEL:
-                # The rejected id IS the "let the backend choose" sentinel: some
-                # partitions do not serve it, so the usual "set agent.model to
-                # 'auto'" advice would send the user in a circle. Every layer
-                # that can name a model (session picker, per-agent pin, the
-                # global default under Settings -> Chat) has to move off it.
-                # The CAUSE is not named: the served list looks the same for a
-                # regional partition and a plan/tier exclusion, so the message
-                # states only what the evidence supports — not on this account.
-                # The same row reaches the CLI, subagents and messaging
-                # channels, where there is no picker and no Settings page, so
-                # the config.json spelling of the default is named too.
-                formatted = (
-                    f"Your account does not have access to model '{unentitled}' — "
-                    f"the automatic model choice is not available on your account. "
-                    f"Available to you: {shown}{more}. Pick one of these in the "
-                    f"model picker for this session, and change the default model "
-                    f"under Settings → Chat (agent.model in ~/.kiro/crew/config.json) "
-                    f"so new sessions do not start on 'auto' again. Retrying will "
-                    f"not help."
-                    f"{req_id_suffix}"
-                )
-            elif DEFAULT_MODEL in {m.lower() for m in usable}:
-                # Same two-step shape as the branches around it (the error card
-                # says "do both" under every entitlement row): the picker fixes
-                # this session, the default stops the next one -- and here
-                # 'auto' is served, so it is the natural value for the default.
-                formatted = (
-                    f"Your account does not have access to model '{unentitled}'. "
-                    f"Available to you: {shown}{more}. Pick one of these in the "
-                    f"model picker for this session, and change the default model "
-                    f"under Settings → Chat if it is set to '{unentitled}' — set "
-                    f"agent.model to 'auto' in ~/.kiro/crew/config.json to let the "
-                    f"backend choose a model your plan includes. Retrying will not help."
-                    f"{req_id_suffix}"
-                )
-            else:
-                # A pinned model rejected on a partition that does not serve
-                # ``auto`` either: recommending ``auto`` here would re-open the
-                # circle the branch above closes, so only the picker is offered.
-                formatted = (
-                    f"Your account does not have access to model '{unentitled}'. "
-                    f"Available to you: {shown}{more}. Pick one in the model picker "
-                    f"for this session, and change the default model under "
-                    f"Settings → Chat (agent.model in ~/.kiro/crew/config.json) if "
-                    f"it is set to '{unentitled}'. Retrying will not help."
-                    f"{req_id_suffix}"
-                )
+            formatted = (
+                f"Your account does not have access to model '{unentitled}'. "
+                f"Available to you: {shown}{more}. Pick one in the model picker, "
+                f"or set agent.model to 'auto' to let the backend choose a model "
+                f"your plan includes. Retrying will not help."
+                f"{req_id_suffix}"
+            )
         # Bedrock model alias resolved to a version that is currently
         # unavailable (capacity throttle, region rollout in progress,
         # deprecated, etc.).
@@ -2409,8 +2297,9 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             formatted = (
                 f"Model '{model}' is unavailable on the backend right now "
                 f"(capacity throttle or region rollout). Try: (1) pick a "
-                f"different model in the model picker, {_auto_remedy(available_models)}"
-                f"wait a minute and retry."
+                f"different model in the model picker, (2) set agent.model to "
+                f"'auto' in ~/.kiro/crew/config.json, or (3) wait a minute and "
+                f"retry."
                 f"{req_id_suffix}"
             )
         elif _RE_MODEL_TEMP_UNAVAILABLE.search(data):
@@ -2421,10 +2310,11 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             # and the "is unavailable on the backend" prose keeps the
             # _TRANSIENT_MARKERS string fallback recognising it for free.
             formatted = (
-                f"The selected model is unavailable on the backend right now "
-                f"(capacity throttle or region rollout). Try: (1) pick a "
-                f"different model in the model picker, {_auto_remedy(available_models)}"
-                f"wait a minute and retry."
+                "The selected model is unavailable on the backend right now "
+                "(capacity throttle or region rollout). Try: (1) pick a "
+                "different model in the model picker, (2) set agent.model to "
+                "'auto' in ~/.kiro/crew/config.json, or (3) wait a minute and "
+                "retry."
                 f"{req_id_suffix}"
             )
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
@@ -4520,49 +4410,6 @@ class AcpClient:
         )
         return ""
 
-    async def _ensure_served_default(self) -> None:
-        """Move an inheriting session off a backend default it cannot run.
-
-        The companion to :meth:`_apply_startup_model`'s withhold: that one keeps
-        an unusable PIN off the wire, this one keeps an unusable INHERITED
-        default off the session. Both exits of that method leave the session on
-        whatever ``session/new`` assigned, and nothing else checks that id
-        against the list the same response advertised — so a partition whose
-        default is not in its own served list runs a session that fails on its
-        first prompt.
-
-        Only the kiro backend: its advertised ids are exactly the ids
-        ``session/set_model`` accepts, so "absent from the list" genuinely means
-        unusable. The claude backend advertises a different namespace than the
-        model it runs and announces its own substitutions instead.
-
-        ``self._model`` is deliberately left alone. ``""``/``"auto"`` there mean
-        "inherit" to every reader of that field (the settings seed, the
-        warm-pool re-apply), and this session IS still inheriting — the wire is
-        corrected, the intent is not rewritten.
-        """
-        if self._is_kiro:
-            advertised = self._advertised_model_ids()
-            unserved = self._resolved_model_id or ""
-            fallback = pick_served_default(unserved, advertised)
-            if not fallback:
-                return
-            _unserved_log = redact_log_via_context(str(unserved))
-            # The kiro gate also fixes the wire: kiro-cli takes the model via
-            # ``session/set_model``, never via a session config option.
-            await self._send_request(
-                METHOD_SET_MODEL,
-                {"sessionId": self._session_id, "modelId": fallback},
-            )
-            self._resolved_model_id = fallback
-            logger.warning(
-                "ACP backend default %s is not in this account's served list (advertised: %s); "
-                "switched the session to %s",
-                _unserved_log,
-                ", ".join(advertised),
-                fallback,
-            )
-
     async def _apply_startup_model(self) -> None:
         """Apply the configured model to a freshly initialized session.
 
@@ -4598,9 +4445,6 @@ class AcpClient:
             )
         if not self._model or self._model == DEFAULT_MODEL:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
-            # Inheriting is only safe when the inherited model is served; the
-            # backend can default to one this partition does not carry.
-            await self._ensure_served_default()
             return
         if self._is_kiro and self._model_is_unusable(self._model):
             # A literal miss can be a stale ``<namespace>::`` qualifier on a
@@ -4633,9 +4477,6 @@ class AcpClient:
                 # warm-pool re-apply path reads (session_provider), so leaving the
                 # unusable id here would re-offer it on every claim.
                 self._model = DEFAULT_MODEL
-                # Now inheriting, so the same served-default check applies: the
-                # default we fall back to can itself be one the account lacks.
-                await self._ensure_served_default()
                 return
         if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
             sent = await self._push_model_config_option(self._model, strict=False)

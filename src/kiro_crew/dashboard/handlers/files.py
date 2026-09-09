@@ -115,10 +115,11 @@ def _audit_file_send(
 
     Every record the Slack and channel endpoints emit is the same tool
     invocation under a different ``tool_kind`` (the leg), so the shape lives
-    here rather than being spelled out at each of the dozen decision sites that
-    write it -- a copy per site puts a drifted field one edit away. Optional
-    fields are OMITTED when unset: skips carry no ``downstream_service``,
-    refusals and deliveries do.
+    here rather than being spelled out at each of the dozen decision sites it
+    used to be copied to -- one drifted field was previously a one-line edit
+    away. Optional fields are OMITTED when unset, exactly as the shipped call
+    sites omitted them: skips carry no ``downstream_service``, refusals and
+    deliveries do.
     """
     extra: dict[str, str] = {}
     if error is not None:
@@ -154,7 +155,7 @@ def _body_err_code(body_err: web.Response) -> str:
 
 async def api_reveal_path(request: web.Request) -> web.Response:
     """POST /api/reveal — reveal a file/folder in Finder or open with default app."""
-    # Default cap: the body is a path and an action flag.
+    # Default cap: the body is a path and an action flag (issue #5587 sweep).
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -711,11 +712,12 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     restricted-session ceiling, then a request-named channel, a
     session-map-linked thread, or the owner-DM fallback with its tracked-channel
     authorization — next to the non-Slack leg's, so the two cannot drift apart
-    rung by rung. What stays here is what only this leg can
+    rung by rung (issue #6060). What stays here is what only this leg can
     answer: the Slack client, its upload verb, and the response shapes.
 
-    The client-presence check stays AHEAD of the body parse: a gateway with no
-    Slack client answers ``skipped: no_slack`` even for a malformed body.
+    The client-presence check stays AHEAD of the body parse, where it shipped: a
+    gateway with no Slack client answers ``skipped: no_slack`` even for a
+    malformed body.
     """
     state: DashboardState = request.app["state"]
     slack = state.slack_client
@@ -777,8 +779,8 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     try:
         # The filename was already cleared by the shared admission gate above —
         # same predicate, same value, strictly earlier in this function — so the
-        # leg does not re-check it. That gate is the one site for the rule; a
-        # second copy here could only drift from it.
+        # leg no longer re-checks it. #6044 made that gate the one site for the
+        # rule; a second copy here could only drift from it.
         await slack.upload_file(
             destination.channel,
             destination.thread_ts,
@@ -821,11 +823,11 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     this file land here": Telegram and Discord today, each via its own
     purpose-built name-preserving ``send_document``; every other channel is a
     skip until its transport grows that verb. The Slack counterpart above
-    resolves through the same module, one rung table away.
+    resolves through the same module, one rung table away (issue #6060).
 
     "Cannot deliver here" is a SKIP (``delivered: false``), not an error: most
     sessions mirror nowhere, and the caller falls back to the dashboard card
-    and the Slack leg.
+    and the Slack leg exactly as before this endpoint existed.
     """
     state: DashboardState = request.app["state"]
     # Default cap: same shape as the Slack leg — a path, a filename, and a
@@ -1192,10 +1194,13 @@ async def _stream_video_part(
 
     All the file handling lives in :func:`~kiro_crew.dashboard.part_stream.
     stream_part_to_file`, which owns the temp through a synchronous context
-    manager. This function is only the translation between that helper's
-    exceptions and this endpoint's audit reasons and error codes: a cancellable
-    coroutine cannot own a file safely, so ownership stays in that module,
-    whose docstring carries the invariant.
+    manager. This function is now only the translation between that helper's
+    exceptions and this endpoint's audit reasons and error codes -- deliberately,
+    because the hand-rolled version of the streaming here collected SEVEN
+    blocking review findings in seven rounds, three of them introduced while
+    fixing the previous one. That module's docstring carries the ledger and the
+    invariant; the short version is that a cancellable coroutine cannot own a
+    file safely, so it no longer does.
     """
     ext = dest.suffix.lower()
     try:
@@ -1249,9 +1254,9 @@ async def api_upload_file(request: web.Request) -> web.Response:
         path in a 20-file request may unlink up to 20 paths (a video among them
         up to 512 MB), and `Path.unlink` is a synchronous syscall: on a slow or
         network filesystem doing that inline stalls chat and heartbeat for the
-        whole gateway. It also absorbs the destination itself via *also*, so no
-        site pairs a bare ``dest.unlink()`` with a cleanup call and none can
-        drift back to unlinking on the loop.
+        whole gateway. It also absorbs the destination itself via *also*, so the
+        sites that previously paired a bare ``dest.unlink()`` with a cleanup call
+        have one call and cannot drift back to unlinking on the loop.
         """
         targets = [*paths, *(str(p) for p in also)]
 
@@ -1541,8 +1546,8 @@ class _WorkspaceConflict(Exception):
     name/directory collisions, default-workspace and agent references -- must
     be re-made against the state the mutation actually lands on, inside the
     run_config_write critical section, or two overlapping owner requests can
-    both pass the stale check and persist a conflicting document. Carries the
-    response payload the handler returns.
+    both pass the stale check and persist a conflicting document (#4767 GPT
+    review round 1). Carries the response payload the handler returns.
     """
 
     def __init__(self, status: int, error: str, code: str) -> None:
@@ -1692,7 +1697,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     if copy_pending:
         # STAGE the copy_from tree only now, after EVERY validation above has
         # passed -- a stage before validation leaks the copied tree on any 4xx
-        # It is INSTALLED into place inside the locked
+        # (#4767 review round 3). It is INSTALLED into place inside the locked
         # persist below, so a losing create never mutates the destination.
 
         def _ignore_sensitive(directory: str, entries: list[str]) -> set[str]:
@@ -1718,7 +1723,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             # drained_to_thread, not bare to_thread: a cancellation at the
             # await would leave the copytree THREAD still writing while the
             # cleanup below rmtrees the same tree -- the race can strand
-            # partial ``.staging-*`` residue. Draining
+            # partial ``.staging-*`` residue (#4767 review round 6). Draining
             # runs the copy to completion first, so the cleanup only ever
             # starts on a quiescent tree, and the cleanup itself is drained so
             # it cannot be abandoned mid-delete either.
@@ -1732,7 +1737,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     # Persist as ONE delta read-modify-write on the raw document, inside a
     # single hold of the sidecar flock (update_config_locked), dispatched off
     # the loop with both locks via run_config_write -- the transaction shape
-    # run_config_write's own docstring prescribes. The
+    # run_config_write's own docstring prescribes (#4767 review round 3). The
     # handler's `cfg` was loaded before awaits above (the copytree can run for
     # seconds), so the state-dependent preconditions are re-decided against
     # the document as read INSIDE the lock, and only the keys this create owns
@@ -1760,8 +1765,9 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         # directory (even empty: its inode and metadata are not ours to
         # replace) is refused. publish_dir_noreplace, not check-then-rename:
         # POSIX os.rename silently replaces an EMPTY destination, so a racer's
-        # directory created between a check and the rename would be destroyed;
-        # the no-replace rename closes that window in the filesystem itself.
+        # directory created between a check and the rename would be destroyed
+        # (#4767 round 9); the no-replace rename closes that window in the
+        # filesystem itself.
         if staged_path is not None and install_dst is not None:
             if install_dst.exists():
                 raise _WorkspaceConflict(
@@ -2491,7 +2497,7 @@ async def api_file_download(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid input"}, status=400)
 
-    # Envelope shared with api_file_raw. No header sniff: this endpoint
+    # Envelope shared with api_file_raw (#4031). No header sniff: this endpoint
     # serves attachment + nosniff rather than choosing a content type. Offloaded
     # to a worker thread: the envelope is synchronous file I/O (realpath, open,
     # fstat, full read up to the cap) and must not block the event loop.
@@ -2787,7 +2793,7 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
 async def api_file_raw(request: web.Request) -> web.Response:
     """GET /api/file-raw?path=... — serve a file with its native content type (images, etc.)."""
     # Envelope (validate -> sensitive -> nofollow-open -> bounded read) is
-    # shared with api_file_download so a hardening change lands on both.
+    # shared with api_file_download so a hardening change lands on both (#4031).
     # Offloaded to a worker thread: the envelope is synchronous file I/O and
     # must not block the event loop (same shape as api_file_stream's _open_media).
     opened = await asyncio.to_thread(
@@ -3201,10 +3207,10 @@ def _file_write_blocking(path: str, content: str) -> str | None:
         # always hands back a descriptor, so the mode comes from the same inode
         # the ACL does and neither is re-resolved.
         src_stat = os.fstat(src_fd) if src_fd is not None else os.stat(path)
-        # mode= carries copymode's permission bits, and
-        # preserve_access_control_from is ADDITIVE to it: bits alone drop a named
-        # POSIX ACL (system.posix_acl_access) the owner set, silently, the moment
-        # the replace installs a fresh inode. The
+        # mode= keeps the previous copymode behaviour (permission bits), and
+        # preserve_access_control_from is ADDITIVE to it: copymode carried BITS
+        # only, so a named POSIX ACL (system.posix_acl_access) the owner set was
+        # silently dropped the moment the replace installed a fresh inode. The
         # carry is allowlisted to the ACL and user.* names -- it must NOT replay a
         # privilege-bearing security.capability onto caller-supplied content.
         atomic_write(
@@ -3233,7 +3239,7 @@ async def api_file_write(request: web.Request) -> web.Response:
     )
 
     # max_bytes=None: the body carries the file's whole contents, which has no
-    # defensible byte ceiling.
+    # defensible byte ceiling (issue #5587 sweep).
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
@@ -3448,7 +3454,7 @@ async def api_file_search(request: web.Request) -> web.Response:
     # candidates; only skip_dirs below are dropped from both descent and results.
     # skip_dirs is the SAME shared set the indexed fast path uses (imported from
     # file_index), so the two paths of this endpoint cannot diverge on which
-    # directories are suppressed.
+    # directories are suppressed -- see #5677.
     skip_dirs = _WALK_SKIP_DIRS
 
     max_scan = _WALK_MAX_SCAN_SCOPED if scoped else _WALK_MAX_SCAN_UNSCOPED
@@ -3526,6 +3532,8 @@ async def api_file_search(request: web.Request) -> web.Response:
                 dirs_visited += 1
                 # A dot-prefixed directory (.github, .kiro, .claude) should be
                 # OFFERED as a candidate even though we must not DESCEND into it.
+                # These were previously conflated: ``dirnames`` was pruned in
+                # place (dropping dot-dirs) before _collect saw it.
                 #
                 # Build the candidate list (offered AND stat'd) first, then
                 # derive the narrower descent list from it. Both drop skip_dirs

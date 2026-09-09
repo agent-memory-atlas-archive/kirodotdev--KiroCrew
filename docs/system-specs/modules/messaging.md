@@ -45,7 +45,6 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 |------|---------|
 | `messaging/__init__.py` | Package facade re-exporting the public contracts, approval-mode constants, and Layer-3 helpers |
 | `messaging/transport.py` | **Layer 1** — `MessagingTransport` ABC + the `TransportCapabilities`, `InboundMessage`, and `ConfiguredChannelTarget` value objects (stdlib-only) |
-| `messaging/attachments.py` | Channel-neutral attachment classification, bounded streaming download, extraction/redaction, opaque-file preservation, temp ownership, and SEL audit |
 | `messaging/driver.py` | **Layer 2** — `TurnDriver` (channel-neutral turn loop), approval-mode constants, `_redact` helper |
 | `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `session_provenance_tag` (stable callback affinity without exposing session keys), `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement), `split_options_trailer` (the ONE `[OPTIONS:]` parse — see below), and `render_options_as_text` — the whole-trailer path for a channel with no widget, which reaches the same cap with zero slots so every choice becomes a numbered line. Also `credential_redaction_notice(count)` — the one sentence a channel sends when credential redaction rewrote text it already delivered, so the reader learns a pasted command will not run. Shared so the wording cannot fork per channel and each spelling need its own audit for leaked bytes; it carries only the count, never secret bytes, and is plain text with no markup or emoji because one string ships to platforms that render different dialects (or none) |
 | `messaging/approval.py` | Two channel-neutral approval styles behind one INTERACTIVE `decider`, both deny-by-default on timeout and keyed `session_key`+`request_id`. **Typed reply** (`TEXT_APPROVAL_TIMEOUT_S`, the verdict vocabulary, `TextReplyApprovalDecider`) for a `max_buttons=0` channel, with Trust recorded as the session's own approval policy rather than a second trust store. **Widget awaiter** (`PendingApprovals` + `SessionApprovalDecider`) for a press whose correlation id and per-prompt nonce travel a round trip this module cannot see (a Webex Adaptive Card over the device websocket); a typed answer has no nonce, a press has no free text |
@@ -776,24 +775,6 @@ Four properties are load-bearing:
   revoked recipient silently losing its notices looks exactly like an idle agent,
   and a raising implementation fails **closed**, because an allow-list check that
   errored has authorized nobody.
-
-  One caller opts out of this leg — and only this leg — with
-  `check_recipient=False`: the mirror-link creation pre-check
-  (`chat_mirror.api_chat_slot_mirror_link`), whose link carries the
-  configured-target SPELLING (`user:<id>`) rather than a conversation id, because
-  channel-scope governance must run before `resolve_configured_target`'s possible
-  network side effect. `may_send_to` judges conversation ids, so the prefixed
-  spelling can never match a roster of bare ids and every allow-listed recipient
-  was refused (#9414). The handler re-decides the recipient against the RESOLVED
-  conversation id immediately after resolution, through `_authorize_recipient` —
-  the ONE shared spelling of the recipient decision, the exact function this
-  ladder leg runs — with the same 403 contract and the principal from the target
-  spelling as `_deliver_channel_dm` does, so the decision moves later on that one
-  path; it is never skipped and the two copies cannot drift. That call passes
-  `audit_allowed=True`, so the admission is SEL-recorded on both outcomes (it
-  admits a recipient once per link); the per-send ladder legs keep denial-only,
-  because they run per delivered unit and an allowed record there would write an
-  audit row per mirrored message. Every persisted-link caller keeps the default.
 
   The check gets two inputs, because one alone cannot serve every channel. The
   **conversation id** answers it wherever that id already IS the roster identity:
@@ -1744,7 +1725,6 @@ answer is not permission: a raised evaluation and a `Decision` without
   byte-level pass in `TurnDriver` ran before those tags existed. Slack, Discord and
   Telegram each do this at their render boundary.
 - **A media-only inbound message is a message**: a transport whose text extraction comes back empty may only drop the envelope when there are also no media items. Weixin previously returned early on empty text, so an uncaptioned screenshot was discarded with no reply and no log line — the sender saw a successful send while the agent was never told anything arrived. Emptiness is a reason to drop only when the whole envelope is empty.
-- **Unknown formats remain passive and complete**: `messaging/attachments.py` preserves video and unrecognized formats as byte-identical, randomized temporary files, supplies their local paths and original metadata to the agent, and transfers cleanup ownership through the current or queued turn. Opaque bytes are never automatically parsed, extracted, or executed; an inlineable image suffix is stripped from the temporary path so the suffix-typed ACP image sink cannot claim them, and any later tool access still crosses the normal permission and hook boundaries.
 - **Weixin inbound media is CDN-indirect**: iLink envelopes never carry bytes, only a `CDNMedia` reference (`encrypt_query_param` + `aes_key`) whose object is AES-128-ECB encrypted on the WeChat CDN. `weixin/media.py` owns that protocol work (URL construction with percent-encoded params, key decoding, decrypt, a streaming size cap enforced on bytes read rather than `Content-Length`); `weixin/attachments.py` maps the four CDN-backed item types onto the shared `Attachment` and hands them to `messaging/attachments.py`, which keeps classification, limits, signature validation and temp-file ownership channel-neutral. The `aes_key` field carries **two** encodings for the same value — `base64(raw 16 bytes)` for images, `base64(ascii hex)` for file/voice/video — discriminated by decoded length plus a strict hex check, because guessing wrong yields plausible garbage rather than an error. A voice item that already carries server-side `text` short-circuits the download: iLink voice is SILK, which no shipped transcription backend decodes, so the local path is strictly worse than the transcript the server gave us. `files_inbound=True` reflects this; `files_outbound` stays `False` until the `getuploadurl` + encrypted CDN PUT half lands.
 - **A mid-turn queue receipt is edited, never deleted**: it flips in place to `▶️ Now answering` on drain and to `🛑 Cancelled` on `/stop`. It is the durable record that a held message was accepted, so no path may delete it.
 - **A queued burst drains as ONE turn**: `_drain_queue` joins the held texts in arrival order into a single combined turn (capped by `_MAX_COLLAPSE` and, on Discord, the attachment ingest limit), never N replayed turns. Anything past a cap is re-enqueued together with everything behind it so FIFO order stays exact.
@@ -3006,9 +2986,7 @@ Weixin's scheme (AES-128-**ECB**, shared key) and the two must not be merged: th
 mode, key length and key scope all differ. The `aeskey` arrives in two encodings
 for the same value (base64 of raw bytes, base64 of ASCII hex), discriminated by
 decoded length plus a strict hex check, because guessing wrong yields plausible
-garbage rather than an error. It also arrives with its base64 `=` padding
-**stripped** (a 32-byte key as 43 characters), so the padding is restored before
-decoding — a strict decoder rejects the unpadded value as invalid base64 outright. The download cap is enforced on BYTES READ, never on
+garbage rather than an error. The download cap is enforced on BYTES READ, never on
 `Content-Length` — and it is the plaintext ceiling **plus the padding**, because
 what is read is ciphertext: PKCS#7 to a 32-byte multiple always adds 1–32 bytes, so
 a file at exactly WeCom's 20 MB maximum arrives larger than it is and a cap set to

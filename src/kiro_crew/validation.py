@@ -55,10 +55,6 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
     MIN_MONITOR_CADENCE_SECS,
 )
-from kiro_crew.monitoring.registry import (
-    publicly_armable_kinds,
-    publicly_armable_objectives,
-)
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
 
 # ── Constants ──
@@ -1200,9 +1196,9 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
 MONITOR_WATCH_SCHEMA = ToolSchema(
     tool_name="monitor_watch",
     fields=[
-        FieldSpec("kind", str, required=True, allowed=publicly_armable_kinds()),
+        FieldSpec("kind", str, required=True, allowed=frozenset({"github_pull_request"})),
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("objective", str, required=True, allowed=publicly_armable_objectives()),
+        FieldSpec("objective", str, required=True, allowed=frozenset({"review_ready"})),
         FieldSpec(
             "interval_secs",
             int,
@@ -1263,7 +1259,7 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
         FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
         FieldSpec("target", str, max_len=MAX_SHORT_STRING),
-        FieldSpec("objective", str, allowed=publicly_armable_objectives()),
+        FieldSpec("objective", str, allowed=frozenset({"review_ready"})),
         FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
@@ -1345,20 +1341,6 @@ SKILL_FETCH_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("id", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("provider", str, max_len=MAX_SHORT_STRING),
-    ],
-)
-
-# kiro_cli_logs reads kiro-cli's own log files (never the fenced identity
-# stores) and returns a redacted tail. ``tail`` is a line count bounded by the
-# reader's own hard BYTE cap — the schema ceiling only guards against an absurd
-# value; the byte cap is what actually bounds the output. ``since`` is a leading
-# slice of a log line's own timestamp, matched lexically, so it is a short
-# string, not a parsed datetime.
-KIRO_CLI_LOGS_SCHEMA = ToolSchema(
-    tool_name="kiro_cli_logs",
-    fields=[
-        FieldSpec("tail", int, min_val=1, max_val=100000),
-        FieldSpec("since", str, max_len=MAX_SHORT_STRING),
     ],
 )
 
@@ -2387,6 +2369,10 @@ CRON_LIST_SCHEMA = ToolSchema(
     tool_name="cron_list",
     fields=[
         FieldSpec("verbose", bool),
+        # Registered here as well as in the tool's own inputSchema: _validate_args
+        # drops any field this list does not name, so a schema-only addition would
+        # silently never reach the handler.
+        FieldSpec("json", bool),
         FieldSpec(
             "ids",
             list,

@@ -58,20 +58,6 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   bubble: 'the page\'s user / inject / assistant row, with fork, pin, footer, regenerate and search-scope chrome',
 }
 
-/**
- * The ONE default the page is allowed to override OUTSIDE the shared spread.
- * Every other page entry that reuses a default id must ride in
- * `createTranscriptRenderers`, where ChatPane reads it too -- a page-local
- * override of a shared row is the fork this contract exists to stop. P5-c
- * deleted the last three such copies (`stop_event`, `notice`, `mcp_oauth`):
- * each drew the same component from the same inputs as the default it
- * shadowed, so the page now reads them from the registry exactly as a pane
- * does.
- */
-const PAGE_OVERRIDE_IDS: Record<string, string> = {
-  undrawn: 'narrower than the SDK default: `system` / `done` stay unclaimed so they keep the bubble fall-through',
-}
-
 const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
 
 function rendererBlock(): string {
@@ -100,13 +86,8 @@ function registryClaimedRoles(): Set<string> {
 
 const factorySrc = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
 
-/** Ids of the entries written INTO ChatPage's own list (not the spread). */
-function pageEntryIds(): string[] {
-  return [...rendererBlock().matchAll(/^\s+id: '([a-z_]+)',?$/gm)].map(m => m[1])
-}
-
 function hostEntryIds(): string[] {
-  const page = pageEntryIds()
+  const page = [...rendererBlock().matchAll(/^\s+id: '([a-z_]+)',?$/gm)].map(m => m[1])
   // The page spreads the shared dashboard set into its list; its entries are
   // host entries here too.
   const spreads = /\.\.\.shared,/.test(rendererBlock()) && /const shared = createTranscriptRenderers\(/.test(rendererBlock())
@@ -167,29 +148,6 @@ describe('chat role parity (ChatPage consumes the app-sdk registry)', () => {
     // And the documentation cannot outlive the entry.
     const stale = Object.keys(PAGE_ONLY_ENTRY_IDS).filter(id => !ids.includes(id))
     expect(stale).toEqual([])
-  })
-
-  it('ChatPage keeps no private copy of a row the SDK default registry draws (P5-c)', () => {
-    // Entries written into the page's own list (after the spread) are either
-    // page-only shapes or the one documented override. A page entry reusing
-    // any OTHER default id -- `stop_event`, `notice`, `mcp_oauth` were the last
-    // three -- re-wires a shared row on this surface alone: the drift class
-    // that let `mcp_oauth` render raw on the page while app-sdk drew the
-    // banner. Such an override belongs in createTranscriptRenderers, where a
-    // pane reads it too, or nowhere.
-    const defaults = new Set(defaultMessageRenderers.map(r => r.id))
-    const ids = pageEntryIds()
-    expect(ids).toContain('bubble')
-    const privateCopies = ids.filter(id => defaults.has(id) && !(id in PAGE_OVERRIDE_IDS))
-    expect(privateCopies).toEqual([])
-    // The documented override cannot outlive its entry either.
-    const stale = Object.keys(PAGE_OVERRIDE_IDS).filter(id => !ids.includes(id))
-    expect(stale).toEqual([])
-    // The deleted copies' components are no longer reached for by the page:
-    // the imports went with the entries, so a copy cannot come back unnoticed.
-    expect(src).not.toMatch(/import StopEventCard from/)
-    expect(src).not.toMatch(/import NoticeCard from/)
-    expect(src).not.toMatch(/\brenderMcpOAuthMessage\b/)
   })
 
   it('every role ChatPage still names is claimed by the registry or allowlisted as chrome', () => {

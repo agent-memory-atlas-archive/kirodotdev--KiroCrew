@@ -2313,12 +2313,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
 
         def recording(path, flags, *args, **kwargs):
             seen.append(flags)
-            # Record the flags as the product composed them, then STRIP the
-            # simulated bit before the real syscall sees it. The value above is
-            # a stand-in for a constant this platform does not have, so it is
-            # free to collide with one it does: on Darwin ``O_DIRECTORY`` IS
-            # ``1 << 20``, and passing it for a regular file answers ENOTDIR.
-            return real_open(path, flags & ~os.O_BINARY, *args, **kwargs)
+            return real_open(path, flags, *args, **kwargs)
 
         snap, home = self._snap(tmp_path, self.GOOD)
         monkeypatch.setattr(os, "open", recording)

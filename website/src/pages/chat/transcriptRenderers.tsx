@@ -4,12 +4,8 @@
  * This is the ONE dashboard row set (chat-core P5-b): the single-chat surface
  * (ChatPage) spreads this factory into its host list and adds only its
  * page-only entries (the conversational bubble with fork/pin/footer chrome,
- * the undrawn/permission rows); ChatPane calls it with fewer options. Rows the
- * SDK default registry already draws from the same component and the same
- * inputs -- the stop-event card, the notice card, the MCP OAuth banner -- are
- * registered NOWHERE else: not here (a second copy is what the "leaves the
- * stop row to the SDK default" test pins shut) and, since P5-c, not on the
- * page either. Behaviour a surface cannot supply is an
+ * the undrawn/permission rows, the stop-event and OAuth banners); ChatPane
+ * calls it with fewer options. Behaviour a surface cannot supply is an
  * OPTION with the pane's default -- the tool row's disclosure key, its
  * "animating" rule, the hot-transcript hint, the completion cards' session
  * hand-offs -- so the two surfaces differ only in what they wire, never in
@@ -37,7 +33,7 @@ import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
-import { ErrorCard, isModelUnentitled } from './ErrorCard'
+import { ErrorCard } from './ErrorCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -119,14 +115,6 @@ export interface TranscriptRendererOptions {
   interrupted?: boolean
   continuing?: boolean
   onContinue?: () => void
-  /** Fix affordances for a model-entitlement error row (`model_unentitled`
-   *  kind): open this surface's model picker, and deep-link to the Default
-   *  Model setting. Omitted → the row renders as plain prose, which is correct
-   *  for a surface with no picker of its own (a pane). Offered on EVERY such
-   *  row, not only the newest: an entitlement error is settled state the user
-   *  still has to act on, whereas Continue resumes a turn and so is unique. */
-  onPickModel?: () => void
-  onOpenDefaultModel?: () => void
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -334,26 +322,18 @@ export function createTranscriptRenderers(
       // affordance on the LAST error when a turn was interrupted.
       id: 'error',
       roles: ['error'],
-      render: (m, ctx) => {
-        const unentitled = isModelUnentitled(m)
-        return ctx.row(
+      render: (m, ctx) =>
+        ctx.row(
           <ErrorCard
             content={m.content}
-            // A rejection the backend says no retry can fix never offers Continue,
-            // even when this row is the newest and the turn was interrupted:
-            // resuming would replay the identical rejection.
             onContinue={
-              !unentitled && o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
+              o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
                 ? o.onContinue
                 : undefined
             }
             continuing={o.continuing}
-            onPickModel={unentitled ? o.onPickModel : undefined}
-            onOpenDefaultModel={unentitled ? o.onOpenDefaultModel : undefined}
-            unentitledElsewhere={unentitled}
           />,
-        )
-      },
+        ),
     },
   ]
 }

@@ -727,30 +727,6 @@ class TestTheLadderConsultsTheTransport:
         link = ChannelLink(channel_type="telegram", channel_id="111")
         assert self._resolve(transport, link) is None
 
-    def test_check_recipient_false_skips_only_the_recipient_leg(self) -> None:
-        """The one caller whose link carries a CONFIGURED-TARGET id, not a
-        conversation id (mirror-link creation), opts out: the recipient
-        question is unanswerable in that spelling — ``user:123`` can never match
-        a roster of bare ids — and is re-decided by that caller against the
-        resolved id. Governance and capability still gate the resolve."""
-        transport = _StubTransport(False)
-        link = ChannelLink(channel_type="telegram", channel_id="user:123")
-        from kiro_crew.dashboard.chat_runner import _resolve_channel_target
-
-        resolved = _resolve_channel_target(
-            _StubState(transport), "telegram:kirocrew:direct:123", link, check_recipient=False
-        )
-        assert resolved == (link, transport)
-        # The leg was skipped, not consulted-and-ignored.
-        assert transport.calls == []
-
-    def test_the_recipient_leg_defaults_on(self) -> None:
-        """Every persisted-link caller keeps the check without naming the flag."""
-        transport = _StubTransport(False)
-        link = ChannelLink(channel_type="telegram", channel_id="111")
-        assert self._resolve(transport, link) is None
-        assert transport.calls == [("111", None, "111")]
-
     def test_a_refusal_is_audited(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A revoked recipient losing its notices must not look like an idle agent."""
         recorded: list[dict[str, Any]] = []

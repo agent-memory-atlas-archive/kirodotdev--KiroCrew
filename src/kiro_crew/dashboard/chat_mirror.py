@@ -18,7 +18,6 @@ back to normal dashboard-token + CSRF auth. They must NOT be added to the strict
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import logging
 from typing import Any
@@ -33,11 +32,7 @@ from kiro_crew.dashboard.chat_backfill import (
     select_backfill_messages,
     session_deep_link,
 )
-from kiro_crew.dashboard.chat_runner import (
-    _authorize_recipient,
-    _resolve_channel_target,
-    _resolve_mirror_target,
-)
+from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _resolve_mirror_target
 from kiro_crew.dashboard.chat_slack import list_slack_channels
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
@@ -261,23 +256,13 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     # conversation (for example, Discord creates a DM channel). Re-enter the
     # shared fail-closed governance ladder before that network side effect,
     # including when a profile changed after the transport connected.
-    #
-    # check_recipient=False, deliberately: this provisional link carries the
-    # configured-target SPELLING (``user:<id>``), not a conversation id, and
-    # ``may_send_to`` is a recipient predicate over conversation ids — the
-    # prefixed spelling can never match a roster of bare ids, so the recipient
-    # question is unanswerable at this point. Channel-scope governance and
-    # transport capability still run HERE, before the resolve's side effect;
-    # the recipient leg is decided below, against the resolved conversation id.
     provisional_link = ChannelLink(
         channel_type=channel_type,
         channel_id=target_id,
         thread_id=thread_id,
     )
     governed = await asyncio.to_thread(
-        functools.partial(
-            _resolve_channel_target, state, session_key, provisional_link, check_recipient=False
-        )
+        _resolve_channel_target, state, session_key, provisional_link
     )
     if governed is None:
         return web.json_response(
@@ -308,38 +293,6 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
             status=409,
         )
     conversation_id, thread_id = resolved
-
-    # Recipient authorization, decided against the RESOLVED conversation id —
-    # the leg the pre-resolve ladder call above skipped (check_recipient=False),
-    # because only now does an id of the kind ``may_send_to`` judges exist. One
-    # shared spelling: ``_authorize_recipient`` is the exact function the
-    # ladder's own recipient leg runs, so the two paths cannot drift. The
-    # principal comes from the target spelling, the posture
-    # ``handlers/messaging._deliver_channel_dm`` established for a ``user:<id>``
-    # target: the id came off the transport's own allow-list (the resolver just
-    # enforced membership), which is the authoritative answer a session-key
-    # derivation cannot reach here — a dashboard key names no channel peer. A
-    # non-``user:`` target (Webex ``room:``, Discord ``thread:``) names no single
-    # principal, and the empty string tells the transport so rather than handing
-    # a room id to a check that tests user rosters.
-    #
-    # audit_allowed=True: this decision admits a recipient once per link, sits
-    # beside the resolver's both-outcome audit, and the SEL trail must show the
-    # authorization that admitted the recipient, not only refusals.
-    target_kind, target_sep, target_value = target_id.partition(":")
-    recipient_principal = target_value if (target_sep and target_kind == "user") else ""
-    if not _authorize_recipient(
-        transport,
-        channel_type,
-        conversation_id,
-        thread_id,
-        principal=recipient_principal,
-        session_key=session_key,
-        audit_allowed=True,
-    ):
-        return web.json_response(
-            {"error": "channel is not permitted", "code": "channel_not_permitted"}, status=403
-        )
 
     link = ChannelLink(
         channel_type=channel_type,

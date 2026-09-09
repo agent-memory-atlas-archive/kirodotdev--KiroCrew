@@ -74,10 +74,10 @@ _TITLE_SOURCE_SCAN_LIMIT = _TITLE_TEXT_LIMIT + _TITLE_MAX_ATTACHMENT_FILES * (
     _TITLE_MAX_ATTACHMENT_PATH_LENGTH + 32
 )
 
-# Titling is a trivial 3-6 word task, but it must NOT pin a cheap model by id: a
-# hardcoded model id is not governance-aware, and on an account/partition that
-# does not serve that model the wire rejects it with ``Invalid model ID``.
-# ``"auto"`` means "inherit
+# Titling is a trivial 3-6 word task. It formerly pinned Haiku for cost, but a
+# hardcoded model id is not governance-aware: on an account/partition that does
+# not serve that model (e.g. where Haiku is unavailable) the wire
+# rejects it with ``Invalid model ID``. ``"auto"`` means "inherit
 # the session's governed default" — ``run_bg_oneliner`` skips the per-session
 # set_model override for auto, so titling runs on the backend-resolved entitled
 # model instead of a literal the account may not have.
@@ -234,9 +234,9 @@ _TITLE_MAX_UNSPACED_CHARS = 24
 _TITLE_WIDE_TERMINATORS = "。！？"
 
 #: Punctuation an LLM wraps a name in, or ends it with. The full-width and CJK
-#: quote forms matter because titles are generated in the UI language: a zh/ja
-#: reply wraps in 「」 or “” and ends with 。, none of which an ASCII-only strip
-#: removes, so those titles would reach the sidebar still quoted.
+#: quote forms matter now that titles are generated in the UI language: a zh/ja
+#: reply wraps in 「」 or “” and ends with 。, none of which the ASCII-only strip
+#: removed — so those titles reached the sidebar still quoted.
 _TITLE_WRAP_CHARS = "\"'“”‘’「」『』《》.。．"
 
 # Openers that mark the reply as prose about the model rather than a name. The
@@ -701,7 +701,7 @@ def _reset_auto_run_for_new_plan(slot: "_ChatSlot") -> None:
     # A freshly armed plan starts un-cancelled. This is the ONLY clear site for
     # the latch — deliberately not Go (api_chat_plan_action): clearing on Go
     # would let a Go racing a Cancel resurrect the cancelled plan, which is the
-    # same race inverted.
+    # same race (#6046) inverted.
     slot._plan_cancelled = False
 
 
@@ -1083,7 +1083,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
         slot._title_retry_pending = False
         if retry_pending and not slot._titled and not cancelled:
             await _maybe_auto_title(state, slot)
-        # The slot now has a settled title, so offer a folder for it if it is
+        # Now that the slot has a settled title, offer a folder for it if it is
         # unfiled. Deliberately here and not at the two title-push sites: this
         # runs for the LLM title AND the definitive truncated fallback, and only
         # once a title is locked in (a fallback that will still be retried leaves

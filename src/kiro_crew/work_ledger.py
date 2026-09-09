@@ -62,10 +62,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import file_lock
-from kiro_crew.session_ledger import _store_name, resolved_within
+from kiro_crew.session_ledger import _store_name
 
 logger = logging.getLogger(__name__)
 
@@ -482,8 +482,10 @@ def conductor_dir(slot_key: str) -> Path:
         raise WorkLedgerError(
             f"invalid slot key for work ledger: {slot_key!r}", code=CODE_INVALID_VALUE
         )
-    resolved = resolved_within(_work_ledger_root(), _store_name(slot_key))
-    if resolved is None:
+    base = _work_ledger_root()
+    resolved = (base / _store_name(slot_key)).resolve()
+    parent = base.resolve()
+    if resolved == parent or not resolved.is_relative_to(parent):
         raise WorkLedgerError(
             f"path traversal blocked for slot key: {slot_key!r}", code=CODE_INVALID_VALUE
         )
@@ -522,8 +524,9 @@ def binding_path(worker_slot_key: str) -> Path:
         raise WorkLedgerError(
             f"invalid worker slot key: {worker_slot_key!r}", code=CODE_INVALID_VALUE
         )
-    resolved = resolved_within(bindings_dir(), f"{_store_name(worker_slot_key)}.json")
-    if resolved is None:
+    base = bindings_dir()
+    resolved = (base / f"{_store_name(worker_slot_key)}.json").resolve()
+    if not resolved.is_relative_to(base.resolve()):
         raise WorkLedgerError(
             f"path traversal blocked for worker key: {worker_slot_key!r}",
             code=CODE_INVALID_VALUE,
@@ -604,17 +607,6 @@ def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
     the same way, because a two-writer store's reader must not be what crashes when
     the other writer was interrupted mid-write. The ceiling is checked before the
     read so a hand-grown file cannot be pulled into memory first.
-
-    The bytes come from ``read_bytes_with_retry`` because a strict read here is
-    LOCK-FREE across writers: :func:`_refuse_if_worker_holds_open_item` reads the
-    prior item's file under the WORKER's binding lock, while that item's own
-    conductor may be replacing it under a different item lock. On Windows a read of
-    a file another handle holds open for write raises ``PermissionError``, so one
-    correct concurrent writer is enough to turn a strict read into a bare
-    ``OSError`` — which the dashboard route maps to a transient 503 "try again"
-    instead of the permanent already-bound refusal the guard exists to raise. The
-    retry closes that window. POSIX permits the read, and there a
-    ``PermissionError`` is a genuine access fault the helper re-raises at once.
     """
     try:
         if path.stat().st_size > MAX_RECORD_BYTES:
@@ -623,7 +615,7 @@ def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
                 path.name,
             )
             return None
-        return json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except OSError:

@@ -242,7 +242,7 @@ def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
     SSE / OpenAI-compat stream keeps its "only permission rows carry meta"
     contract; the RELAY drain turns it on, because a relay reader (``_apply_row``)
     rebuilds the local row from this record and would otherwise lose that tool
-    correlation permanently on a local refresh.
+    correlation permanently on a local refresh (GPT #7693).
     """
     try:
         meta = parse_cls_meta(msg.get("cls", "")) if msg.get("role") == "permission" else None
@@ -943,9 +943,9 @@ def options_records(state: DashboardState | None, session_key: str) -> tuple[Pos
 
     The store is keyed by SESSION KEY, on ``DashboardState``, not held on the
     slot. A plain Slack thread frequently has no dashboard slot, and a slot-held
-    record is simply dropped for those sessions — nothing then tracks the control,
-    no later turn can expire it, and the stale click this whole lifecycle exists
-    to prevent stays possible. Keying by session key makes the slotless
+    record was simply dropped for those sessions — so nothing tracked the control,
+    no later turn could expire it, and the stale click this whole lifecycle exists
+    to prevent stayed possible (#1694). Keying by session key makes the slotless
     case ordinary instead of special, and it cannot go stale when a slot appears
     or disappears mid-conversation.
     """
@@ -971,9 +971,10 @@ def set_options_records(
     harmful here: evicting a record for a control that is still clickable means no
     later turn can retire it, which is precisely the untracked control this whole
     lifecycle exists to eliminate — so a bound would reintroduce the defect at
-    scale, silently, on the busiest instances. The footprint is small regardless:
-    an entry exists only for a conversation with a live unanswered question, which
-    is strictly fewer than the (itself unbounded) number of slots.
+    scale, silently, on the busiest instances. The footprint is also no worse than
+    what it replaced: records used to hang off ``_ChatSlot``, and slots are
+    themselves unbounded in number, so this holds strictly fewer entries (only
+    conversations with a live unanswered question) than the store it came from.
     """
     if state is None or not session_key:
         return
@@ -1002,7 +1003,7 @@ def remember_slack_options(
 
     A no-op when there is no control or no dashboard state. Note there is NO
     slot requirement: the store is keyed by session key precisely so a plain
-    Slack thread without a slot still gets its control tracked.
+    Slack thread without a slot still gets its control tracked (#1694).
     """
     if posted is None or state is None or not session_key:
         return
@@ -1656,18 +1657,18 @@ _SYNTHETIC_RECOVERY_MSGS = (
 
 # High-confidence "I will do it right now" endings. Kept deliberately NARROW: a
 # broad natural-language detector risks false positives, duplicate writes, and
-# continuation loops, so this matches only a terminal first-person commitment to
-# an IMMEDIATE action, with an explicit now/right-away marker. "I'll explain that
-# now: ..." is NOT caught, because the detector also requires that the promise be
-# the LAST thing in the text (nothing substantive follows it) — an announcement
-# followed by the actual content is a normal answer.
+# continuation loops (see #2686 fix direction), so this matches only a terminal
+# first-person commitment to an IMMEDIATE action, with an explicit now/right-away
+# marker. "I'll explain that now: ..." is NOT caught, because the detector also
+# requires that the promise be the LAST thing in the text (nothing substantive
+# follows it) — an announcement followed by the actual content is a normal answer.
 # The immediacy markers are deliberately RESTRICTIVE: only true "right now"
-# adverbs. `next` and `go ahead and` are excluded because they match "I'll do
-# that next week" and permission-seeking closers — `next` is a sequencer, not an
-# immediacy signal. A bare `going to` alternative is excluded too: with no
-# first-person subject it matches third-person statements like "The deployment is
-# going to start now", firing an unrelated continuation. Only the subject-bound
-# `i'm going to` form is accepted.
+# adverbs. `next` and `go ahead and` were removed after the #2696 AI review found
+# they matched "I'll do that next week" and permission-seeking closers — `next`
+# is a sequencer, not an immediacy signal. The bare `going to` alternative was
+# also removed (#2696 GPT round): with no first-person subject it matched
+# third-person statements like "The deployment is going to start now", firing an
+# unrelated continuation. Only the subject-bound `i'm going to` form remains.
 _PROMISE_NOW_RE = re.compile(
     r"\b(?:i(?:'|’)?ll|i\s+will|let\s+me|i(?:'|’)?m\s+going\s+to)\b"
     r"[^.!?\n]*?"
@@ -1678,8 +1679,8 @@ _PROMISE_NOW_RE = re.compile(
 # A trailing sentence that is ONLY a promise (no colon-introduced content, no
 # code fence, no list) — used to confirm the promise is terminal, not a preamble.
 _PROMISE_HAS_FOLLOWING_CONTENT_RE = re.compile(r":\s*\S|```|\n\s*[-*\d]")
-# Permission-seeking / no-action closers that a naive immediacy match misfires
-# on. These are the OPPOSITE of a promise-to-act: the
+# Permission-seeking / no-action closers that a naive immediacy match misfires on
+# (found by the #2696 AI review). These are the OPPOSITE of a promise-to-act: the
 # turn is correctly yielding to the user or explicitly declining to act. If any
 # appears in the final segment, it is never a promise-only turn. "let me know ...
 # now"/"...next" reads as immediate to the regex but is a hand-off; "for now" /
@@ -1699,26 +1700,28 @@ _NO_ACTION_CLOSER_RE = re.compile(
 # no-action list does not cover these because they contain both a real
 # commitment ("I'll ... now") and a conditional opener; auto-continuing them
 # dispatches an unattended action the user was still being asked to approve.
-# Bias, like the negation gate, is toward reject on ambiguous conditionals — a
-# false reject just lands the turn normally (safe); a false accept executes a
-# possibly-irreversible side effect (push, merge, delete) without consent.
+# Found by the #2696 UX review. Bias, like the negation gate, is toward reject
+# on ambiguous conditionals — a false reject just lands the turn normally
+# (pre-fix behaviour, safe); a false accept executes a possibly-irreversible
+# side effect (push, merge, delete) without consent.
 _APPROVAL_GATED_RE = re.compile(
     # ANY conditional `if` opener, not just specific pronouns: "If CI passes, I'll
     # delete it now" is as gated as "If you approve ...". Bias toward reject is
-    # safe here (a false reject just lands normally); a pronoun-only list lets
-    # "If CI passes ..." slip through.
+    # safe here (a false reject just lands normally); the #2696 GPT round widened
+    # this from the pronoun list after "If CI passes ..." slipped through.
     r"\bif\b" r"|\bjust\s+say\s+the\s+word\b" r"|\bwant\s+me\s+to\b" r"|\bshall\s+i\b"
     # Consent DEFERRAL: the action is gated on the user's approval/confirmation,
     # even when the sentence reads as "I'll ... now" ("I'll wait for your approval
-    # before I delete it right now"). "with your approval" is not the only form:
-    # "wait for / for / pending your approval", "your go-ahead/sign-off/
-    # confirmation", "before you approve" and "you to confirm" are far more common,
-    # and auto-continuing any of them dispatches an action the model explicitly
-    # said it would hold for consent. The forms are kept PRECISE (a possessive
-    # consent-noun, or a deferral verb bound to you/your) rather than bare
-    # "pending"/"await"/"before you", so a genuine promise like "merge the pending
-    # PR now" is not falsely rejected — that closes the consent CLASS without an
-    # over-broad reject. Reject-bias is still safe (a false reject just lands).
+    # before I delete it right now"). The earlier list only caught "with your
+    # approval" and missed the far more common "wait for / for / pending your
+    # approval", "your go-ahead/sign-off/confirmation", "before you approve", and
+    # "you to confirm" forms — auto-continuing any of them dispatches an action the
+    # model explicitly said it would hold for consent (#2696 GPT round, blocking).
+    # The forms are kept PRECISE (a possessive consent-noun, or a deferral verb
+    # bound to you/your) rather than bare "pending"/"await"/"before you", so a
+    # genuine promise like "merge the pending PR now" is not falsely rejected —
+    # closing the consent CLASS without the over-broad reject the design review
+    # warned about. Reject-bias is still safe (a false reject just lands).
     r"|\byour\s+(?:approval|go[-\s]?ahead|sign[-\s]?off|confirmation|permission|ok(?:ay)?|blessing)\b"
     r"|\bwait(?:ing)?\s+for\s+(?:you|your|approval|confirmation|sign[-\s]?off|permission|the\s+go[-\s]?ahead)\b"
     r"|\bbefore\s+you\s+(?:approve|confirm|decide|sign\s+off|review|say|weigh\s+in|ok(?:ay)?)\b"
@@ -1731,13 +1734,13 @@ _APPROVAL_GATED_RE = re.compile(
     # Remaining subordinating-conditional conjunctions ("Unless you object, I'll
     # merge now", "Assuming you're fine, I'll push now"). The risky ones are bound
     # to a following pronoun/complementizer so a benign adjective ("the provided
-    # config", "the given file") is NOT falsely rejected.
+    # config", "the given file") is NOT falsely rejected (#2696 GPT/design rounds).
     r"|\bunless\b"
     r"|\bassuming\s+(?:you|that|we|it|the|your)\b"
     r"|\bprovided\s+(?:that|you)\b"
     r"|\bgiven\s+(?:that|you)\b"
     r"|\b(?:as|so)\s+long\s+as\b",
-    # NOTE (residual risk): this is a deny-list, and the
+    # NOTE (residual risk, #2696 design review): this is a deny-list, and the
     # DANGEROUS direction for the consent class is the false ACCEPT (auto-continuing
     # an action the user was still being asked to approve), which enumeration cannot
     # fully close — a novel conditional phrasing will always slip through. Two
@@ -1755,11 +1758,11 @@ _APPROVAL_GATED_RE = re.compile(
 )
 # A NEGATED commitment before the immediacy marker ("I'm not going to open the PR
 # now", "I won't do that now", "I can't right now") is the OPPOSITE of a promise
-# to act, but the bare `going to`/`i'll` alternatives above still match it.
-# Reject when a negated-commitment form is followed, within the same sentence, by
-# an immediacy marker. Bias is deliberately toward REJECTING on ambiguous
-# negation: a false reject just lands the turn normally (safe), whereas a false
-# accept injects an unwanted action.
+# to act, but the bare `going to`/`i'll` alternatives above still match it (found
+# by the #2696 GPT review). Reject when a negated-commitment form is followed,
+# within the same sentence, by an immediacy marker. Bias is deliberately toward
+# REJECTING on ambiguous negation: a false reject just lands the turn normally
+# (pre-fix behaviour, safe), whereas a false accept injects an unwanted action.
 _NEGATED_PROMISE_RE = re.compile(
     r"\b(?:not\s+going\s+to|never\s+going\s+to|won(?:'|’)?t|will\s+not"
     r"|i(?:'|’)?ll\s+not|can(?:'|’)?t|cannot|not\s+able\s+to|unable\s+to"
@@ -1773,8 +1776,8 @@ _NEGATED_PROMISE_RE = re.compile(
 # scoped to that SAME sentence, not `.search()` the whole segment — otherwise an
 # everyday `if`/`when`/`after`/`let me know`/negation in an EARLIER sentence
 # ("When you asked about X, I fixed it. I'll open the PR now.") vetoes a genuine
-# terminal promise, leaving the promise-only turn unrecovered (an
-# asymmetric-scope false negative). Splitting on sentence + newline boundaries
+# terminal promise, landing the exact #2686 symptom unrecovered (asymmetric-scope
+# false negative, #2696 design review). Splitting on sentence + newline boundaries
 # keeps the reject-bias but only where the promise can actually be.
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n]+")
 
@@ -1945,9 +1948,9 @@ _LEAKED_INVOKE_BODY_RE = re.compile(r"<(?:[A-Za-z][\w.-]*:)?(?:parameter\b|/invo
 
 def has_leaked_tool_call(text: str) -> bool:
     """True when *text* contains a tool invocation emitted as PROSE — an
-    unquoted invoke-block open tag with a parameter or close tag: the model
-    writes the call into the text channel instead of executing it, the turn ends
-    with zero tool calls, and the session silently stalls.
+    unquoted invoke-block open tag with a parameter or close tag (issue #6112:
+    the model writes the call into the text channel instead of executing it,
+    the turn ends with zero tool calls, and the session silently stalls).
 
     Quoted syntax is excluded structurally: fenced code blocks and inline code
     spans are stripped before the scan, so a pasted bug report or an explained
@@ -1980,7 +1983,7 @@ def should_notice_leaked_tool_call(
     turn_tool_calls: int = 0,
     in_stage_execution: bool = False,
 ) -> bool:
-    """Decide whether to surface the leaked-tool-call NOTICE.
+    """Decide whether to surface the leaked-tool-call NOTICE (issue #6112).
 
     The defect: the model emits an invoke block into its TEXT channel instead
     of executing it (observed when the target is a deferred MCP tool whose
@@ -1999,7 +2002,7 @@ def should_notice_leaked_tool_call(
     an unfenced block the model merely reproduces. So the turn is marked
     un-landed and the user gets a visible card naming what happened; nothing
     is queued and nothing can execute. An unattended loop loses one cycle and
-    retries on its own schedule — visibly, which is the half of the defect this
+    retries on its own schedule — visibly, which is the half of #6112 this
     layer can fix honestly.
 
     Gates: the turn ended NORMALLY (cancel/refusal/error paths own their own
@@ -2267,43 +2270,46 @@ def should_recover_promise_only(
 ) -> bool:
     """Decide whether to inject ONE promise-only continuation.
 
-    All must hold (each guards a distinct failure mode):
+    All must hold (each guards a failure mode the #2686 fix direction names):
       * NO Stop is in progress (``stop_in_progress`` is the runner's
         ``_should_suppress_requeue``). A soft Stop pressed while the promise
         streamed can lose the cancel race and arrive here as a normal
         ``end_turn``; re-queueing then would dispatch the very action the user
         tried to stop. Every sibling recovery path gates on this, so this one
-        must too;
+        must too (#2696 GPT review, blocking);
       * NO Stop was pressed at ANY point during this turn
         (``stop_generation_unchanged``: the monotonic ``slot._stop_generation``
         snapshotted at turn start still matches). A Stop that pressed AND
         resolved back to idle during the turn is invisible to ``stop_in_progress``
-        but the user still cancelled; do not re-dispatch the announced action;
+        but the user still cancelled; do not re-dispatch the announced action
+        (#2696 GPT review round 2, blocking);
       * NO user follow-up is queued (``queue_empty``). ``queue_insert(0, ...)``
         would jump the continuation ahead of a user-typed "don't do that" or
         clarifying message; the user's queued input must process FIRST — respect
-        it by falling through to a normal landing instead of overriding it;
+        it by falling through to a normal landing instead of overriding it
+        (#2696 GPT review round 2, blocking);
       * NO mid-turn steer is pending (``no_pending_steers``). A steer lands in
         ``slot._pending_steers``, a SEPARATE channel from ``_queue``; it is only
         degraded into a queue card in ``_run_chat``'s ``finally``, which runs
         AFTER this guard. So a "don't delete" steer is invisible to
         ``queue_empty`` here, and firing recovery would schedule the announced
         action despite the just-arrived revocation. Abort when any user input
-        exists, in either channel;
+        exists, in either channel (#2696 GPT review round 3, blocking);
       * the turn ended NORMALLY (``end_turn``), not cancelled/refused/errored —
         those have their own paths and must stay unchanged;
       * it produced visible output (a promise IS visible output) and is not the
         empty-response case (that path owns ``not produced_visible_output``);
       * the turn made NO tool calls (``turn_tool_calls == 0``). The segment-buffer
-        reset at each tool boundary is not an airtight "never replay an executed
-        action" proxy on its own: a turn that completed a side-effecting tool
-        (e.g. ``send_message``) and then emitted trailing promise-shaped text
-        ("I'll send that now") still matches the detector, and the continuation
-        would REISSUE the completed action (duplicate external message). The
-        promise-only bug is by definition a turn that announced an action and made
-        NO tool call, so requiring a zero tool-call count closes the replay hole
-        directly. A turn that ran a read then promised a further action is excluded
-        too — a false negative, which is the safe direction;
+        reset at each tool boundary was the ORIGINAL "never replay an executed
+        action" proxy, but it is not airtight: a turn that completed a side-
+        effecting tool (e.g. ``send_message``) and then emitted trailing
+        promise-shaped text ("I'll send that now") would still match the detector,
+        and the continuation would REISSUE the completed action (duplicate external
+        message). The promise-only bug is by definition a turn that announced an
+        action and made NO tool call, so requiring a zero tool-call count closes the
+        replay hole directly. A turn that ran a read then promised a further action
+        is excluded too — a false negative, which is the safe direction (#2696 GPT
+        review, blocking);
       * the final segment is a terminal promise-to-act
         (:func:`is_promise_only_terminal`). Because the runner resets its segment
         buffer at every tool boundary, ``final_segment_text`` is exactly the text
@@ -2313,7 +2319,7 @@ def should_recover_promise_only(
       * this is NOT a stage-execution turn (``in_stage_execution``). A turn run by
         the orchestrator's stage loop must not spawn async recovery: the loop
         records the stage complete and advances before the continuation finishes,
-        corrupting stage attribution;
+        corrupting stage attribution (#2696 GPT review, blocking);
       * this is a top-level turn (``prompt_depth == 0``) and the one-shot budget
         is unspent (``promise_only_retries < 1``) — bounded to a single attempt,
         never a loop.
@@ -2321,7 +2327,7 @@ def should_recover_promise_only(
 
     Language scope: the terminal-promise detector (``is_promise_only_terminal``)
     matches English commitment/immediacy tokens only; a non-English promise-only
-    turn falls through and lands normally. Failure bias is
+    turn falls through and lands normally (pre-fix behaviour). Failure bias is
     safe (false negative, not false positive)."""
     if stop_in_progress or not stop_generation_unchanged or not queue_empty:
         return False
@@ -2554,14 +2560,6 @@ SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 #: Row-level kind for the `error` notice appended when a recovery has ALREADY
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
 TRANSIENT_RETRY_KIND = "transient_retry"
-
-#: Row-level kind for the terminal `error` row a prompt-time MODEL ENTITLEMENT
-#: rejection produces ("Your account does not have access to model 'X'"), so
-#: the frontend can offer the fix (open the model picker / change the default
-#: under Settings -> Chat) instead of a Continue button that re-runs the same
-#: rejection. No recovery is queued for this kind: a retry cannot earn an
-#: entitlement.
-MODEL_UNENTITLED_KIND = "model_unentitled"
 
 #: Structural queue-entry kinds for system injections.  Classification by kind
 #: tag — set at enqueue time — is unforgeable: a user typing the same prefix

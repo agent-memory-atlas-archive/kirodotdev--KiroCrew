@@ -490,11 +490,12 @@ def _redact_remote_response(data: dict, *, already_redacted: frozenset[str] = fr
     """Redact credential patterns and exfiltration URLs from a remote/provider
     response before it reaches the dashboard.
 
-    Walks nested dicts AND lists — *including* lists nested inside lists, which a
-    walker handling only dicts/strings inside a top-level list silently skips — up
-    to ``_MAX_REDACT_DEPTH`` levels. A single ``deepcopy`` at entry isolates the
-    caller's object; the recursion then rewrites in place instead of re-copying
-    every subtree at each level, which would make redaction O(n·depth).
+    Walks nested dicts AND lists — *including* lists nested inside lists (the
+    prior hand-rolled walker only redacted dicts/strings inside a top-level
+    list, silently skipping list-in-list values) — up to ``_MAX_REDACT_DEPTH``
+    levels. A single ``deepcopy`` at entry isolates the caller's object; the
+    recursion then rewrites in place instead of re-copying every subtree at
+    each level (the old per-level ``deepcopy`` made redaction O(n·depth)).
 
     ``already_redacted`` names top-level keys whose string values the caller has
     already passed through the same redactors (e.g. ``_serialize`` redacts an
@@ -1465,9 +1466,9 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # Copy-vs-link: a disposable file (temp dir / Downloads / Desktop, or
     # anything with no project claim) is SNAPSHOTTED — we store no pointer at
     # all. A file inside a real project is LINKED, and the project root that
-    # authorizes later reads is recorded with it. source_path is validated here
-    # rather than stored as a raw string: an unvalidated project file outside
-    # $HOME yields a pointer the store then refuses to read.
+    # authorizes later reads is recorded with it. Until this ran, source_path
+    # was stored as an unvalidated raw string, so a project file outside $HOME
+    # produced a pointer the store then refused to read.
     try:
         art = get_default_store().create(
             name=body.get("name", ""),
@@ -2019,9 +2020,9 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
     # published copy was not withdrawn -- rejected (FAILED) or unreachable so the call was
     # never made (UNREACHABLE) -- the delete is refused and says so.
     #
-    # This deliberately refuses deletes that would otherwise succeed. Erasing the record
-    # erases the only handle that could ever withdraw a world-readable copy, and no later
-    # action recovers it, while a refused delete is recoverable by retrying once the
+    # This deliberately refuses deletes that previously succeeded. Erasing the record was
+    # erasing the only handle that could ever withdraw a world-readable copy, and no later
+    # action could recover it, while a refused delete is recoverable by retrying once the
     # destination answers again. Note what "recoverable" does NOT include: there is no
     # action that accepts the exposure and clears the record, because `unpublish` keeps it
     # too unless a removal or a confirmed absence says otherwise. Failing loudly is still
@@ -2940,10 +2941,10 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
         resolved_path = Path(os.path.expanduser(source_path)).resolve()
         # Fixed-root containment. The root SET comes from the store's single
         # producer (``ArtifactStore.allowed_source_roots``) so this barrier and
-        # the store's own read/write barriers cannot drift: a copy omitting the
-        # data-home root makes relocate refuse paths the store would then happily
-        # read. is_relative_to on the resolved Paths is the sanitizer CodeQL
-        # recognizes.
+        # the store's own read/write barriers cannot drift: this copy used to
+        # omit the data-home root, which meant relocate refused paths the store
+        # would then happily read. is_relative_to on the resolved Paths is the
+        # sanitizer CodeQL recognizes.
         allowed_roots = get_default_store().allowed_source_roots()
         # Fixed-root containment barrier — the COMPARISON stays inlined (NOT via
         # a helper) so CodeQL's intra-procedural taint tracker sees the
@@ -3062,7 +3063,7 @@ def _spawn_artifact_folder_icon_task(
     the value :meth:`ArtifactFolderStore.rename` returns from inside its own
     bump's critical section, and the create path pins 0, which a fresh folder's
     epoch is by construction. A read-back would be a second lock acquisition and
-    could capture a competing mutation's epoch."""
+    could capture a competing mutation's epoch (issue #7991)."""
     state = request.app.get("state")
     if state is None:
         return
@@ -4175,8 +4176,8 @@ async def api_artifact_resolve_comment(request: web.Request) -> web.Response:
 
     # Agent sessions cannot resolve. Actor is inferred from the auth path
     # (X-Internal-Secret header = MCP/agent), same as api_artifact_update —
-    # the ``is_agent`` body flag is a defense-in-depth fallback rather than the
-    # only gate (a body field can be spoofed).
+    # the legacy ``is_agent`` body flag is kept as a defense-in-depth
+    # fallback but is no longer the only gate (a body field can be spoofed).
     try:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:

@@ -45,13 +45,6 @@
       "linux"
     ]
   },
-  "platform": {
-    "os": [
-      "macos",
-      "linux",
-      "windows"
-    ]
-  },
   "useCases": [
     "Annotate live UI elements in context and send a source-mapped batch of visual changes to a coding agent."
   ],

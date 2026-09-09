@@ -213,14 +213,9 @@ class SlotProjection:
             # = it can, null = not known yet. Carried so the frontend reads the
             # answer instead of inferring it from whether the pin appears in
             # `GET /api/models` -- a list every unrelated filter (deprecation,
-            # curation) narrows, which would silently turn those filters into
-            # entitlement signals. DISPLAY only; never a write source.
+            # curation) narrows, which silently turned those filters into
+            # entitlement signals (#1819). DISPLAY only; never a write source.
             "model_withheld": slot.model_withheld,
-            # The model the live session actually resolved to, so a slot that
-            # inherits (no pin, or a withheld one) can be NAMED rather than
-            # shown as "auto". "" = not known. DISPLAY only, like the verdict
-            # above: never a write source.
-            "served_model": slot.served_model,
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
             "surface": slot.mode,

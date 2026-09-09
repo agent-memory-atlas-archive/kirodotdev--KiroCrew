@@ -77,9 +77,10 @@ async def _deny_app_caller(request: web.Request, operation: str) -> web.Response
     would confirm the surface exists to a caller that may not know about it.
 
     The audit is a bare enqueue: SEL is warmed at gateway startup
-    (``sel.warm_sel_singleton``), so the first-touch filesystem initialization
-    never runs on this call site. Guarded because a FAILED warm leaves
-    construction to retry on this thread and possibly raise.
+    (``sel.warm_sel_singleton``), so the first-touch filesystem
+    initialization this call site used to offload never runs here (#8608).
+    Guarded because a FAILED warm leaves construction to retry on this
+    thread and possibly raise.
     """
     request_app = request.get("app", "")
     if not request_app:
@@ -604,8 +605,8 @@ async def api_member_rules_get(request: web.Request) -> web.Response:
     # private safety boundary, so WHO read them matters as much as who was
     # refused — a denied-only trail cannot answer "was this boundary
     # disclosed". A direct enqueue, not a to_thread hop: the SEL singleton is
-    # warmed at startup (sel.warm_sel_singleton), so the first-touch
-    # initialization never runs on this call site. Guarded because a
+    # warmed at startup (sel.warm_sel_singleton, #8608), so the first-touch
+    # initialization this used to offload never runs here. Guarded because a
     # FAILED warm leaves construction to retry on this thread and possibly
     # raise, and an audit must never change the outcome.
     try:

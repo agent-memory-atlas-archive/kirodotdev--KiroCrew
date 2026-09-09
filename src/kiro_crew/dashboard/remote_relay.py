@@ -145,7 +145,7 @@ async def ensure_version_parity(mgr: Any, instance_id: str) -> None:
     # non-semver string (a packaging build id) AND on an oversized numeric segment
     # — CPython caps ``int(str)`` at 4300 digits, so a peer returning thousands of
     # leading digits would otherwise raise OUTSIDE the RemoteTurnError handler and
-    # 500 the create. Either way we cannot prove series
+    # 500 the create (GPT/opus #8543). Either way we cannot prove series
     # compatibility, so fall back to strict full-string equality.
     try:
         mismatch = parse_version(local)[:2] != parse_version(value)[:2]
@@ -454,8 +454,8 @@ def peer_is_connected(mgr: Any, instance_id: str) -> bool:
     status, an unexpected shape, or any state other than a connected tunnel all
     mean "not ready to run a turn". The send path locks a remote session on a
     False here rather than firing a turn into a half-open or absent tunnel, which
-    is the silent-loss window: the peer either never receives the turn or answers
-    into a stream nothing is reading.
+    is the silent-loss window finding F1 describes: the peer either never receives
+    the turn or answers into a stream nothing is reading.
 
     Compared by the enum's string value rather than importing ``TunnelState`` so
     a stubbed manager returning a plain object with a ``state.value`` works too.
@@ -689,7 +689,7 @@ def _drop_unsent_user_row(slot: "_ChatSlot", message: str) -> None:
     pre-stream refusal (the peer received nothing) that row is the window tail and
     the relay has appended nothing after it. Removing it keeps local history from
     carrying a turn the peer never saw — a retry then re-appends one copy instead
-    of a second. ``append`` only mutates the in-memory window and marks
+    of a second (GPT #7693). ``append`` only mutates the in-memory window and marks
     the slot dirty; the durability write is this turn's ``finally`` save, which
     runs after this pop, so nothing stale reaches disk. Guarded on the tail being a
     user row so it is a no-op if anything unexpected sits there.
@@ -738,7 +738,7 @@ async def relay_remote_turn(
     # crash mid-turn is detectable on reload. The relay task dies with the
     # gateway while the peer keeps running, and its tail is never mirrored here —
     # without this marker the reloaded transcript would simply stop mid-turn with
-    # nothing saying why. ``chat_persistence`` writes the flag only
+    # nothing saying why (finding F1). ``chat_persistence`` writes the flag only
     # while it is True; the ``finally`` below clears it and the save there records
     # the cleared state, so a normally-completed turn leaves no stale marker.
     #
@@ -757,11 +757,11 @@ async def relay_remote_turn(
     # the instant the peer answers 2xx. A refusal RAISED BEFORE that (version-parity
     # skew, a non-2xx status, a connection error) means the peer never received this
     # turn, so the user row appended before dispatch must be rolled back or a retry
-    # duplicates local history the peer never saw. Once the peer is
+    # duplicates local history the peer never saw (GPT #7693). Once the peer is
     # reached, a zero-byte OR truncated stream KEEPS the row: the peer owns the turn
     # and may still be running it, so dropping the prompt would erase a message the
-    # peer accepted — including when a 2xx response closes before emitting a single
-    # byte.
+    # peer accepted — the earlier ``received_bytes`` gate wrongly dropped it whenever
+    # a 2xx response closed before emitting a byte (GPT #7693, this round).
     peer_reached = False
     try:
         if chunks is None:
@@ -798,8 +798,8 @@ async def relay_remote_turn(
         # CHAT_TURN_TIMEOUT ceiling) while the peer keeps running detached. This is
         # NOT a terminal outcome: the tail is still being produced over there, so
         # the in-flight marker MUST survive — clearing it here would let a reload
-        # present the truncated transcript as complete, with no interruption row.
-        # Flag it so the ``finally`` skips the clear, and
+        # present the truncated transcript as complete, with no interruption row
+        # (finding F1 / GPT). Flag it so the ``finally`` skips the clear, and
         # re-raise so cancellation still propagates.
         cancelled = True
         raise
@@ -886,7 +886,7 @@ async def _peer_turn_chunks(
         # peer reached even when the body carries zero bytes before the tunnel
         # closes — that is a truncation of a turn the peer is running, not a
         # pre-acceptance refusal, so the user row must be KEPT, not rolled back
-        # ``iter_sse_records`` treats the empty chunk as a no-op.
+        # (GPT #7693). ``iter_sse_records`` treats the empty chunk as a no-op.
         yield b""
         async for chunk in upstream.content.iter_any():
             yield chunk

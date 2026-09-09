@@ -47,8 +47,6 @@ import type { LibraryColumn } from '../../components/library/LibraryTable'
 import {
   WidgetThumb, ContentThumb, ImageThumb, WebAppThumb,
 } from '../../components/library/ArtifactThumbs'
-import { detectFileType } from '../../components/FileRenderers'
-import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from '../../components/ContentRenderer'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { api } from '../../api/client'
 import type { Artifact } from '../../types'
@@ -1497,100 +1495,25 @@ type Failure = { message: string; error?: unknown }
    — those tags are exempt from CORS, which a browser fetch of the same URL is
    not (the bucket carries no CORS config). Text goes through the gateway's
    preview endpoint for the same reason. Anything else gets an honest
-   "download to view" instead of a broken pane.
-
-   WHICH renderer a text file gets is not decided here: `detectFileType` owns
-   that for the whole dashboard, and this pane reads its answer like the file
-   side panel does. What IS decided here is whether the bytes may be read as
-   text at all -- an unknown extension is a download, not 256 KB of mojibake --
-   and which of the two transports fetches them. */
+   "download to view" instead of a broken pane. */
+const PREVIEW_IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'])
+const PREVIEW_VIDEO = new Set(['mp4', 'webm', 'm4v', 'mov'])
+const PREVIEW_AUDIO = new Set(['mp3', 'wav', 'm4a', 'ogg', 'flac'])
 const PREVIEW_TEXT = new Set([
-  '.txt', '.md', '.markdown', '.mdx', '.csv', '.tsv', '.json', '.jsonl', '.log',
-  '.yaml', '.yml', '.xml', '.html', '.htm', '.css', '.js', '.mjs', '.cjs', '.ts',
-  '.tsx', '.jsx', '.py', '.sh', '.toml', '.ini', '.cfg', '.sql', '.go', '.rs',
-  '.java', '.kt', '.rb', '.excalidraw',
+  'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log', 'yaml', 'yml', 'xml', 'html', 'css',
+  'js', 'ts', 'tsx', 'jsx', 'py', 'sh', 'toml', 'ini', 'cfg', 'sql', 'go', 'rs', 'java', 'rb',
 ])
-/* A read that stopped at the preview cap is a PREFIX. Line-oriented content
-   (markdown, code, csv, jsonl, html) reads fine as one; a single-document type
-   does not -- half a JSON object is not a broken file, it is an unfinished
-   read, and its viewer would accuse the file of being invalid. Those two show
-   their source under the truncation notice, which says what actually happened. */
-const WHOLE_DOC_TYPES = new Set(['json', 'excalidraw'])
-/* The renderer's `onChange` is for its editing surface, which this pane never
-   mounts (`editing` is always false). Hoisted so it is one stable identity
-   rather than a new closure per render. */
-const NOOP = () => {}
 
 type PreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'none'
 
 function previewKind(key: string): PreviewKind {
-  const type = detectFileType(key)
-  // Bytes: the tag loads the presigned URL itself. `.svg` lands here too --
-  // detectFileType calls a path-backed SVG an image, and an <img>-loaded SVG
-  // cannot run script, which is the right answer for a bucket object.
-  if (type === 'image' || type === 'video' || type === 'audio' || type === 'pdf') return type
-  // Spreadsheets and Office documents render through a GATEWAY-SIDE parse
-  // (openpyxl / doc_parser) of a file on disk. A drive object is in S3, so
-  // there is nothing for that parse to open: they stay a download.
-  if (type === 'sheet' || type === 'office') return 'none'
-  return PREVIEW_TEXT.has(extOf(key)) ? 'text' : 'none'
-}
-
-/**
- * The body of a text preview, rendered by the dashboard's own file renderers
- * rather than by anything written for this pane.
- *
- * `ContentRenderer` is the same dispatcher the file side panel and the artifact
- * detail page render through, so markdown, a csv table, a JSON tree, a jsonl
- * stream, a sandboxed HTML page, an Excalidraw scene and syntax-highlighted
- * code all look here exactly as they look there -- and a renderer added to the
- * SDK later arrives here for free. What this pane still owns is the TRANSPORT:
- * the bytes came from the gateway's preview endpoint, capped and redacted,
- * which is what the two notices above this body are about.
- */
-function PreviewBody({ fileKey, content, truncated }: { fileKey: string; content: string; truncated: boolean }) {
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const type = detectFileType(fileKey)
-  const ext = extOf(fileKey)
-  const isMarkdown = MD_EXTS.has(ext)
-  if (truncated && WHOLE_DOC_TYPES.has(type)) {
-    return (
-      <pre className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-text" data-testid="drive-preview-text">
-        {content}
-      </pre>
-    )
-  }
-  const body = (
-    <ContentRenderer
-      // Everything left after markdown and code has its own viewer, so the flag
-      // is derived rather than restated as a third list of extensions.
-      isRichType={!isMarkdown && type !== 'code'}
-      fileType={type}
-      content={content}
-      editing={false}
-      lang={langFor(ext)}
-      lineNums
-      wordWrap
-      onChange={NOOP}
-      previewRef={bodyRef}
-      // csv ONLY, and the narrowness is the point: `CsvViewer` reads the
-      // extension to choose its delimiter, so without a key a `.tsv` splits on
-      // commas and every row collapses into one cell. The other types must NOT
-      // get it -- the renderer would take a drive key for a path on disk, which
-      // for markdown means relative image links resolving into a gateway
-      // filesystem read of a path derived from an S3 key.
-      filePath={type === 'csv' ? fileKey : undefined}
-      displayContent={isMarkdown ? content : wrapCode(content, ext)}
-      isMarkdown={isMarkdown}
-      markdownClassName="msg-content text-sm leading-relaxed"
-    />
-  )
-  // Prose grows and lets the dialog scroll it. Every other viewer owns its own
-  // scroller and measures against its box, so an unbounded parent collapses it
-  // to nothing -- they get the same 70vh the media branches use.
-  return isMarkdown
-    ? <div data-testid="drive-preview-text">{body}</div>
-    : <div className="h-[70vh]" data-testid="drive-preview-text">{body}</div>
+  const ext = key.includes('.') ? (key.split('.').pop() ?? '').toLowerCase() : ''
+  if (PREVIEW_IMAGE.has(ext)) return 'image'
+  if (PREVIEW_VIDEO.has(ext)) return 'video'
+  if (PREVIEW_AUDIO.has(ext)) return 'audio'
+  if (ext === 'pdf') return 'pdf'
+  if (PREVIEW_TEXT.has(ext)) return 'text'
+  return 'none'
 }
 
 /** In-place file preview. Same scrim/panel/focus-trap shape as
@@ -1790,7 +1713,9 @@ function PreviewDialog({
                   {i18nT('apps.awsControl.console.preview_redacted')}
                 </p>
               )}
-              <PreviewBody fileKey={entry.key} content={textQ.data.content} truncated={textQ.data.truncated} />
+              <pre className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-text" data-testid="drive-preview-text">
+                {textQ.data.content}
+              </pre>
             </>
           )}
         </div>

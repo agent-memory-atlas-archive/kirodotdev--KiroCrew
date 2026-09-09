@@ -13,13 +13,6 @@
     "keyboard"
   ],
   "defaultEnabled": true,
-  "platform": {
-    "os": [
-      "macos",
-      "linux",
-      "windows"
-    ]
-  },
   "minKiroCrewVersion": "0.1.0",
   "ui": {
     "overlays": [

@@ -1575,7 +1575,6 @@
       "drop_to_attach": "Drop to attach",
       "agent": "Agent: {{name}}",
       "agent_inherited_default": "This session follows the default agent ({{name}}). It has no agent of its own, so it changes if the default does. Click to pin one.",
-      "model_inherited_default": "This session runs on the default model ({{name}}). It has no model of its own, so it changes if the default does. Click to pin one.",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
       "branch": "Branch: {{branch}}",
       "detached_head_at": "Detached HEAD at {{branch}}",
@@ -1613,8 +1612,6 @@
       "voice_input": "Voice input",
       "queue": "Queue",
       "queue_run_after_the_current_work_finishes_desc": "Run after the current work finishes",
-      "alt_action_hint_queues": "{{chord}} queues this message instead",
-      "alt_action_hint_steers": "{{chord}} steers with this message instead",
       "steer_act_on_this_right_away_desc": "Act on this right away",
       "finishing": "Finishing…",
       "keep_holding_to_record": "Keep holding to record",
@@ -1635,9 +1632,7 @@
       "earlier_messages_unavailable": "Earlier messages are no longer available in this session's history.",
       "forked_from": "Forked from {{name}}",
       "history_load_failed": "Couldn't load this session's messages.",
-      "retry": "Retry",
-      "stop_failed": "Couldn't stop this turn ({{error}}). Press Stop again.",
-      "stop_failed_network": "Couldn't reach the server to stop this turn. Press Stop again."
+      "retry": "Retry"
     },
     "cliPanel": {
       "copied": "Copied",
@@ -1958,10 +1953,6 @@
       "enter_a_valid_5_field_cron_expression": "Enter a valid 5-field cron expression",
       "failed_to_save": "Failed to save",
       "message_is_required": "Message is required",
-      "minimal_context": "Minimal context",
-      "minimal_context_description": "Run with a fresh, empty context: skips your saved context (memory, lessons, steering and skills) and prior session history. Leave off if the job refers to things you've told the agent before, or drives a skill.",
-      "mode_advice_minimal_context": "This job needs the agent, but it reads as though it does not need your saved context. Minimal context keeps the agent and drops the rest.",
-      "mode_advice_script": "This job reads like a mechanical check that needs no reasoning at all. The cheapest form is a script job, which takes no agent turn — in the Chat tab, ask to create a script job that does this. Minimal context is the next best thing here.",
       "name_is_required": "Name is required",
       "save": "Save",
       "saving": "Saving...",
@@ -2786,8 +2777,6 @@
       "trace_load_failed": "Couldn’t load this run’s trace."
     },
     "shortcutsModal": {
-      "browser_reserved_hint": "In a browser tab the browser takes these shortcuts before the page sees them — the alternatives work everywhere; the desktop app honours both.",
-      "desktop_app_only": "Desktop app only",
       "panel_toggles": "Panel toggles",
       "unset": "Not set"
     },
@@ -3062,12 +3051,8 @@
       "library": "Library",
       "manage_your_installed_apps": "Manage your installed apps",
       "no_apps_installed_yet": "No apps installed yet",
-      "no_enabled_apps": "No enabled apps",
       "removing": "Removing…",
       "search_library": "Search library",
-      "show_disabled_one": "Show {{count}} disabled app",
-      "show_disabled_other": "Show {{count}} disabled apps",
-      "show_enabled_only": "Show enabled only",
       "try_a_different_search_term": "Try a different search term",
       "update_all": "Update All",
       "the_app_itself_is_managed_externally": "The app itself is managed externally.",
@@ -4161,9 +4146,7 @@
       "discard_unsaved_body": "This crew has edits that were never saved. Closing now throws them away.",
       "discard_confirm": "Discard changes",
       "discard_also_crew_edits": "The crew's other unsaved edits are thrown away with it.",
-      "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options.",
-      "template_edit_later_note": "Pick the closest starting point — you can switch this agent's template anytime after creating.",
-      "template_edit_later_note_member": "Pick the closest starting point — you can switch this member's template anytime after creating."
+      "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options."
     },
     "knowledge": {
       "detailView": {
@@ -4835,18 +4818,6 @@
       "no_matches_for_query": "No matches for \"{{query}}\".",
       "truncated_showing_first_200kb": "… truncated (showing first 200KB) …"
     },
-    "sessionsPage": {
-      "page_title": "All sessions",
-      "search_placeholder": "Search sessions…",
-      "new_session": "New session",
-      "filter_all": "All",
-      "filter_unread": "Unread",
-      "group_today": "Today",
-      "group_yesterday": "Yesterday",
-      "group_earlier": "Earlier",
-      "empty_title": "No sessions",
-      "empty_subtitle": "Create one to get started."
-    },
     "settings": {
       "mobileLoginCard": {
         "sign_in_on_mobile": "Sign in on mobile",
@@ -5079,9 +5050,6 @@
         "model_default_applies_no_override_the_model_pick": "'Model default' applies no override — the model picks its own effort.",
         "more_encourage_widgets": "More (encourage widgets)",
         "multiline": "Multiline",
-        "busy_alt_action_desc": "Steer acts on the text right away; Queue runs it after the current work finishes. {{chord}} sends with the other action for one message. This is the default; chats where you already chose a mode from the send button keep that choice.",
-        "busy_alt_action_desc_no_chord": "Steer acts on the text right away; Queue runs it after the current work finishes. The one-message flip shortcut is available only when Enter sends; use the send button's menu instead. This is the default; chats where you already chose a mode from the send button keep that choice.",
-        "what_enter_does_while_the_agent_is_working": "What Enter does while the agent is working",
         "shift_enter_for_newline": "Shift+Enter for newline",
         "show_occasional_feature_discovery_tips_above_the": "Show occasional feature discovery tips above the composer while the agent is working",
         "single_line": "Single line",
@@ -5736,7 +5704,7 @@
         "preset_custom": "Custom",
         "record_prompt": "Press keys…",
         "custom_hint": "Use at least one modifier key.",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{chord}} (this reference) always works",
+        "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{mod}} + K (this reference) always works",
         "clear_shortcut": "Clear",
         "panel_toggles": "Panel toggles",
         "skips_shell_hint": "Works inside the terminal too, so your shell stops receiving this key — do not pick Ctrl+C or Ctrl+R."

@@ -25,7 +25,7 @@ _MAX_RETURN_ADDRESS_BYTES = 8192
 _MAX_REQUEST_TARGET_BYTES = 6144
 # RFC 3986 scheme followed by "://". Deliberately requires the "//": a bare
 # "host:port/..." (which urlsplit would misread as scheme + opaque path) must
-# NOT count as having a scheme, so it gets the http:// default.
+# NOT count as having a scheme, so it gets the http:// default (#7406).
 _URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _SERVER_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _ALLOWED_CALLBACK_QUERY_KEYS = {
@@ -56,7 +56,7 @@ def _validated_loopback_return_address(value: object) -> _LoopbackCallback | Non
     request-target containing a single OAuth code.  The network host is selected
     later from fixed literals, so request data can never choose a remote host.
 
-    A paste with no scheme is normalized to ``http://`` first: mobile
+    A paste with no scheme is normalized to ``http://`` first (#7406): mobile
     browsers — iOS Safari in particular — copy address-bar URLs without the
     scheme, so the documented paste-back flow otherwise fails on exactly the
     text the browser gave the user. Prepending a scheme is safe here because
@@ -196,7 +196,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
     # loopback listener that minted it; it never mints one. That listener and its
     # PKCE verifier belong to a specific pending kiro-cli OAuth flow regardless of
     # whether the server is a curated Connections provider or a user-added /
-    # self-hosted one. So relay membership is
+    # self-hosted one (issue #4491, the #4008 population). So relay membership is
     # NOT gated on the Connections registry — every safety property here is
     # provider-independent: the return address must target the gateway's own
     # loopback listener (_validated_loopback_return_address), and a port nothing is
@@ -207,8 +207,8 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
     # while staying a safe, bounded SEL audit label rather than
     # attacker-controlled log content. The registry-slug shape stays on the MINT
     # path only (_requested_provider). This is deliberately distinct from
-    # generalising the MINT to uncurated URLs, which is a separate parked
-    # decision and untouched here.
+    # generalising the MINT to uncurated URLs, which is parked decision #4286 and
+    # untouched here.
     server = body.get("server")
     if not isinstance(server, str) or not _is_valid_mcp_name(server):
         return _bad_request("invalid server", "invalid_server")
@@ -364,7 +364,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
         # ONE event, outcome ``ok``: unlike the cold path below, this request both
         # starts and finishes here, so a ``started`` with no completion would leave the
         # audit trail showing a mint that never ended. A bare enqueue — SEL is
-        # warmed at gateway startup (sel.warm_sel_singleton).
+        # warmed at gateway startup (sel.warm_sel_singleton, #8608).
         sel().log_api_access(
             caller="dashboard",
             operation="connections_mint",
@@ -392,8 +392,9 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     task.add_done_callback(_mint_tasks.discard)
 
     # A bare enqueue (plus the writer thread's one-time start on the process's
-    # first log()): the construction cost of a process's FIRST sel() is paid once
-    # at gateway startup instead (sel.warm_sel_singleton).
+    # first log()): the construction cost this handler used to dodge (the
+    # FIRST sel() of a process) is paid once at gateway startup instead
+    # (sel.warm_sel_singleton, #8608).
     sel().log_api_access(
         caller="dashboard",
         operation="connections_mint",
@@ -574,8 +575,8 @@ async def api_connections_cancel(request: web.Request) -> web.Response:
 
     dropped = await cancel_mint(slug, token)
 
-    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton),
-    # so no per-site thread hop is needed.
+    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton,
+    # #8608), so no per-site thread hop is needed.
     sel().log_api_access(
         caller="dashboard",
         operation="connections_cancel",
@@ -625,9 +626,9 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
     grant artifacts are unlinked.
 
     Deleting the artifacts is the whole point of this endpoint. Removing the config
-    entry alone leaves a usable refresh token on disk, so a later reconnect resumes
-    that grant silently instead of asking for consent -- while the card has already
-    told the user this machine's connection was gone.
+    entry alone left a usable refresh token on disk, so a later reconnect resumed
+    the old grant silently instead of asking for consent -- while the card had
+    already told the user this machine's connection was gone.
 
     What it deliberately does NOT do is revoke at the provider. Nothing here can;
     only the provider can. So the response never claims the upstream grant is dead,
@@ -679,13 +680,14 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
             if label not in surviving:
                 surviving.append(label)
 
-    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton).
+    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton,
+    # #8608).
     sel().log_api_access(
         caller="dashboard",
         operation="connections_disconnect",
-        # No `or grant_shared_with` escape: only ATTEMPTED pairs are re-stat'd,
-        # so a survivor is always a failed unlink rather than a deliberate keep
-        # that needs excusing.
+        # No `or grant_shared_with` escape any more: only ATTEMPTED pairs are
+        # re-stat'd, so a survivor is always a failed unlink rather than a
+        # deliberate keep that had to be excused.
         outcome="partial" if surviving else "ok",
         source="dashboard",
         resources=(
@@ -781,7 +783,8 @@ async def api_connections_premint(request: web.Request) -> web.Response:
     task.add_done_callback(_premint_tasks.discard)
 
     # A bare enqueue, same as api_connections_mint: the first-touch construction
-    # is paid once at gateway startup (sel.warm_sel_singleton).
+    # this used to dodge is paid once at gateway startup (sel.warm_sel_singleton,
+    # #8608).
     sel().log_api_access(
         caller="dashboard",
         operation="connections_premint",

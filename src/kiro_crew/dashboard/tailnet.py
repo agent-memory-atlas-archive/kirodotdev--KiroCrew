@@ -856,8 +856,8 @@ _TAILNET_RANGES = (
     ipaddress.ip_network("fd7a:115c:a1e0::/48"),
 )
 
-#: The login `tailscale whois` reports for EVERY ACL-tagged node.
-#: Under ``pin_scope: "login"`` that single value
+#: The login `tailscale whois` reports for EVERY ACL-tagged node
+#: (tailscale/tailscale#4605). Under ``pin_scope: "login"`` that single value
 #: would collapse the pin across the entire tagged fleet, so a resolved login
 #: equal to this is ALWAYS pinned at node scope — a hard override, not a
 #: preference.
@@ -909,7 +909,7 @@ class TailnetTrust:
     allowed_logins: tuple[str, ...] = ()
     pin_scope: str = PIN_SCOPE_NODE
     #: Bind a refresh CHAIN to the peer that opened it, so a stolen refresh
-    #: cookie cannot be replayed from a different allowed node.
+    #: cookie cannot be replayed from a different allowed node (issue #2417).
     #: Default ON: without it the chain is the laundering path around the access
     #: token's own pin -- a cookie stolen from node A rotates from node B and the
     #: replacement access token comes back pinned to B. Turning it OFF restores
@@ -1266,7 +1266,7 @@ async def governed_tailnet_trust(
     fail closed on.
 
     ``bind_refresh_chains`` is the availability escape hatch for refresh-chain
-    peer binding. It defaults to the SAFER value at every layer,
+    peer binding (issue #2417). It defaults to the SAFER value at every layer,
     including here, so a caller that has not been taught about it cannot
     accidentally construct the unbound posture.
 

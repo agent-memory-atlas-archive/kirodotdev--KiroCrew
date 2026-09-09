@@ -164,9 +164,10 @@ def inject_workflow_result(
             # message, one identity, so the bounded-read identity walk
             # recognises the persisted row instead of re-appending the
             # injection. append_and_surface delivers the live copy through
-            # exactly one identity-carrying door — an unconditional explicit
-            # frame here carries no ``meta.mid``, so the client renders the same
-            # result twice whenever append's own broadcast also fires.
+            # exactly one identity-carrying door — the old unconditional
+            # explicit frame here carried no ``meta.mid``, so the client
+            # rendered the same result twice whenever append's own broadcast
+            # also fired (#5981 family).
             window_mid = row_mid(
                 append_and_surface(
                     state,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import {
   ArrowRight,
   Check,
@@ -22,8 +22,6 @@ import {
 } from 'lucide-react'
 
 import { api } from '../../api/client'
-import { commandFolderName, fileSessionInCommandFolder } from './sessionFolder'
-import type { ChatFolderRow } from './sessionFolder'
 import { appNavTargets } from '../../appNav'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { createSlot, setPendingInput, switchSlot } from '../../store/chatSlice'
@@ -430,23 +428,6 @@ export default function CommandBarOverlay({
     enabled: false,
   })
 
-  // The folder list is READ the same way and for a sharper reason: `GET
-  // /api/chat/folders` walks the on-disk session list synchronously to count archived
-  // sessions per folder, so fetching it here would pay for a filesystem scan on every
-  // command run to learn what the sidebar's own cache already holds (the WebSocket
-  // seeds this key from the folder tree). A cold cache falls back to one fetch inside
-  // `fileSessionInCommandFolder`.
-  const { data: chatFolders } = useQuery({
-    queryKey: ['chat-folders'],
-    queryFn: () => api.chatFolders(),
-    enabled: false,
-  })
-  // Held in a ref because the filing runs from an async callback, long after the render
-  // that read the cache.
-  const chatFoldersRef = useRef<unknown>(chatFolders)
-  chatFoldersRef.current = chatFolders
-  const queryClient = useQueryClient()
-
   useEffect(() => {
     if (!open) return
     setQuery('')
@@ -756,10 +737,6 @@ export default function CommandBarOverlay({
       // Whether this seed belongs to a CONTRIBUTED command, decided before the awaits.
       // The Ask row uses this same path and is never in the map, so it is unaffected.
       const contributed = commandByIdRef.current.has(pendingKey)
-      // The folder this session will be filed into, read BEFORE the awaits for the
-      // same reason `contributed` is: the app can be disabled mid-flight, and the
-      // filing below must not depend on the row still being in the map.
-      const folderName = commandFolderName(commandByIdRef.current, pendingKey)
       // Still offered by an enabled app? `owned()` tracks the dialog's own lifetime and
       // cannot see this: the app can be disabled from the Apps page while the session
       // create is still in flight, which leaves the run legitimately owned and the
@@ -808,27 +785,6 @@ export default function CommandBarOverlay({
               // force a new one would land the text in a second, different session.
               navigate(autoSend ? '/chat?autoSend=1' : '/chat')
               onClose()
-              // Filed LAST, and deliberately not awaited. A contributed row opens a new
-              // session on every run, so unfiled they bury the reader's own chats and two
-              // commands' runs interleave with nothing between them -- but the text is
-              // already seeded by this point, so a slow, capped or refused folder API can
-              // only cost this session its place in the sidebar. Contributed rows only:
-              // the Ask row carries a sentence the reader wrote and belongs wherever they
-              // are working, not in a folder named after a command.
-              if (contributed && folderName) {
-                void fileSessionInCommandFolder(
-                  slot.key,
-                  folderName,
-                  Array.isArray(chatFoldersRef.current)
-                    ? (chatFoldersRef.current as ChatFolderRow[])
-                    : undefined,
-                  // A folder this run created is not in the cache it just read, and the
-                  // WebSocket push that would seed it is not guaranteed to arrive. Left
-                  // uninvalidated, the sidebar can keep rendering a tree without the new
-                  // folder and the next run reads the same stale list.
-                  () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
-                )
-              }
             } finally {
               // Only the OWNING run may clear the guard. Unconditionally, a stale
               // activation clears a LIVE one's: close and reopen during create A, start
@@ -846,7 +802,7 @@ export default function CommandBarOverlay({
           },
         )
     },
-    [dispatch, navigate, onClose, queryClient],
+    [dispatch, navigate, onClose],
   )
 
   const activateRoot = useCallback(

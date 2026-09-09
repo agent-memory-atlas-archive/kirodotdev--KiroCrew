@@ -47,8 +47,8 @@ async def _owner_only(request: web.Request, operation: str) -> web.Response | No
     """
     if is_owner_dashboard_request(request):
         return None
-    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton).
-    # Guarded because a FAILED warm leaves construction to retry here
+    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton,
+    # #8608). Guarded because a FAILED warm leaves construction to retry here
     # and possibly raise — the audit must never change the outcome.
     caller = str(request.get("user") or "unknown")
     try:

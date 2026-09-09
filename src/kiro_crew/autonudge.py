@@ -39,7 +39,7 @@ from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Iterator
 
 from kiro_crew import irq, platform_compat, probes, shutdown_event
 from kiro_crew.atomic_write import replace_with_retry
@@ -65,16 +65,17 @@ from kiro_crew.monitoring.models import (
     MonitorDispatchResult,
     MonitorObservationStatus,
     MonitorOutcome,
-    MonitorProbeResult,
     MonitorState,
     MonitorVerdict,
     monitor_state_from_dict,
     monitor_state_to_dict,
     quarantine_monitor_state,
 )
-from kiro_crew.monitoring.registry import REVIEW_READY, kind_supports_objective
 from kiro_crew.probes import targets
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+
+if TYPE_CHECKING:
+    from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
 
 logger = logging.getLogger(__name__)
 
@@ -713,7 +714,7 @@ def infer_monitor(message: str, now: float) -> MonitorState | None:
         return MonitorState(
             kind=target.kind,
             target=target.subject,
-            objective=REVIEW_READY,
+            objective="review_ready",
             created_ts=now,
         )
     except ValueError:
@@ -1483,12 +1484,6 @@ class AutoNudgeService:
                             "existing monitor cannot be replaced while a wake is in flight"
                         )
                 due = created + cadence
-                # Refused HERE rather than discovered later. This is the one place a
-                # caller-supplied kind reaches persistence, and a monitor stored under
-                # a kind nothing registered would be probed by whatever provider the
-                # controller happens to hold.
-                if not kind_supports_objective(kind, objective):
-                    raise ValueError(f"no monitored kind {kind!r} supports objective {objective!r}")
                 monitor = MonitorState(
                     kind=kind,
                     target=target,
@@ -2379,7 +2374,7 @@ class AutoNudgeService:
     async def apply_monitor_probe(
         self,
         monitor_id: str,
-        result: MonitorProbeResult,
+        result: GitHubPullRequestProbeResult,
         *,
         now: float,
         config_generation: int,
@@ -2600,16 +2595,6 @@ class AutoNudgeService:
             if target is not None:
                 staged_state.target = target
             if objective is not None:
-                # The objective allowlist upstream is a union across every publicly
-                # armable kind, so it is a first filter and never the whole check.
-                # This is the boundary that knows BOTH halves -- the monitor's kind is
-                # already fixed -- so the pairing is refused here rather than
-                # discovered at probe time.
-                if not kind_supports_objective(staged_state.kind, objective):
-                    raise ValueError(
-                        f"monitored kind {staged_state.kind!r} does not support "
-                        f"objective {objective!r}"
-                    )
                 staged_state.objective = objective
             if cadence_secs is not None:
                 cadence = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(cadence_secs)))

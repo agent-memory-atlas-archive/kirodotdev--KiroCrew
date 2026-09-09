@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 import pytest
 
-from conftest import forget_env_at_teardown
 from kiro_crew.cli_commands import _cron_preview
 
 
@@ -113,11 +112,7 @@ class TestCronPreviewValidation:
 
 
 class TestCronPreviewEnv:
-    def test_env_vars_set(self, tmp_path: Path, capsys, monkeypatch):
-        # `--env` is applied to the LIVE process environment (the script reads it
-        # through os.environ), and the preview does not undo it -- so without this
-        # the variable outlived the test and reached later ones on the worker.
-        forget_env_at_teardown(monkeypatch, "TEST_CRON_VAR")
+    def test_env_vars_set(self, tmp_path: Path, capsys):
         _write_script(
             tmp_path, "s.py",
             "import os\n"

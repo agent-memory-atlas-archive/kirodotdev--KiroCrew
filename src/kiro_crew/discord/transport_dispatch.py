@@ -750,7 +750,6 @@ class DiscordDispatcher:
                     agent=agent,
                     tool_kind=getattr(event, "tool_kind", "") or "",
                     raw_params=getattr(event, "raw_tool_params", None),
-                    diff_path=getattr(event, "diff_path", "") or "",
                     command=getattr(event, "shell_command", None),
                     is_shell=bool(getattr(event, "is_shell", False)),
                 )
@@ -1732,7 +1731,7 @@ class DiscordDispatcher:
         pct = self.sessions.check_context_usage(session_key, provider)
         soft_pct = self.cfg.discord.soft_threshold_pct
         if pct >= soft_pct and compact_unsupported_backend(provider):
-            # Capability gate: the nudge advises !compact, which this
+            # Capability gate (#8156): the nudge advises !compact, which this
             # backend refuses — it compacts on its own as context fills, so
             # there is nothing for the user to act on.
             return

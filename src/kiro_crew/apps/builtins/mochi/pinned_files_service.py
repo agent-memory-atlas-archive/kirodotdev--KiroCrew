@@ -566,12 +566,7 @@ class PinnedFilesService:
     def _backup_corrupted(self, now_ms: int) -> None:
         bak_path = f"{self._file_path}.bak.{now_ms}"
         try:
-            # os.replace, not os.rename -- see watchlist_file._backup_corrupted:
-            # Windows rename refuses an existing destination, and the swallowed
-            # OSError would turn that into a silently un-backed-up corrupt file.
-            os.replace(self._file_path, bak_path)
+            os.rename(self._file_path, bak_path)
             logger.warning("[PinnedFilesService] Backed up corrupted file to %s", bak_path)
         except OSError:
-            # File may not exist, or Windows refuses the move while another
-            # process still holds it open; either way the caller rebuilds.
-            pass
+            pass  # file may not exist

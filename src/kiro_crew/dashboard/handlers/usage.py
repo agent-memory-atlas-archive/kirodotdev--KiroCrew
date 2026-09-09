@@ -316,8 +316,8 @@ _BACKGROUND_CHANNELS = frozenset(
 #: The one category that can be opened from the dashboard. Kept separate from
 #: the category list because "is a session" and "has a route" are different
 #: questions — a Telegram thread is a first-class session with nowhere for a
-#: dashboard link to go, which is exactly what a "titled -> link it" rule gets
-#: wrong.
+#: dashboard link to go, which is exactly the bug the old "titled -> link it"
+#: rule shipped.
 NAVIGABLE_CATEGORY = "dashboard"
 
 
@@ -1463,10 +1463,10 @@ async def persist_token_record_async(
     turn's usage (``kirocrew.turn.tokens`` and whichever of
     ``kirocrew.turn.credits`` / ``kirocrew.turn.cost_usd`` the backend billed in)
     — and this is the only place that does. Being the one call every dispatch
-    surface already makes once per turn is exactly why: an emit sited in
-    ``chat_runner`` beside the dashboard turn loop leaves cron, heartbeat, memory
+    surface already makes once per turn is exactly why: the emit used to live in
+    ``chat_runner`` beside the dashboard turn loop, so cron, heartbeat, memory
     consolidation, subagents, task-runner steps, workflow stages and every
-    messaging channel absent from turn latency and fault rate entirely — and
+    messaging channel were absent from turn latency and fault rate entirely — and
     absent does not read as absent, it reads as healthy. See
     :mod:`kiro_crew.metrics.turns`.
 
@@ -1797,17 +1797,12 @@ def _parse_sessions() -> dict:
     all_time_sessions = 0
     # Count of transcripts that did NOT load for any reason (validator refusal,
     # stat failure, read failure) -- surfaced so the page can say the totals are
-    # incomplete instead of rendering a silent under-count. The name matches the
-    # payload/frontend contract; it is the did-not-load total.
+    # incomplete instead of rendering a silent under-count (#6733). The name is
+    # kept for the payload/frontend contract; it is the did-not-load total.
     refused_transcripts = 0
     now_dt = datetime.now()
     today_str = now_dt.strftime("%Y-%m-%d")
 
-    # Set when the directory could not be read at all. Carried ALONGSIDE the
-    # statistics rather than instead of them: every consumer of this payload
-    # reads the period keys unconditionally, so an error-only object is not a
-    # degraded answer, it is a differently-shaped one.
-    read_error: dict[str, str] = {}
     try:
         entries = list(sessions_dir.iterdir())
     except FileNotFoundError:
@@ -1815,14 +1810,10 @@ def _parse_sessions() -> dict:
         # complete zero statistics as an existing, empty directory.
         entries = []
     except OSError as exc:
-        # The OSError carries a filesystem path; keep it server-side and report a
-        # generic message (the ``error`` field is rendered verbatim in the UI).
+        # The OSError carries a filesystem path; keep it server-side and return
+        # a generic message (the ``error`` field is rendered verbatim in the UI).
         logger.warning("usage: cannot read sessions directory: %s", exc)
-        entries = []
-        read_error = {
-            "error": "cannot read sessions directory",
-            "code": "sessions_dir_unreadable",
-        }
+        return {"error": "cannot read sessions directory", "code": "sessions_dir_unreadable"}
 
     for f in entries:
         if f.suffix != ".jsonl":
@@ -1830,15 +1821,15 @@ def _parse_sessions() -> dict:
         # Validate path through hooks.py (resolves symlinks, checks sensitive)
         resolved_str = validate_file_path(str(f))
         if resolved_str is None:
-            # Counted, not swallowed: a refusal here is indistinguishable
+            # Counted, not swallowed (#6733): a refusal here is indistinguishable
             # from an idle account in the rendered numbers, and on a
             # roaming-profile (UNC) home EVERY transcript lands in this branch --
             # so the page reports a confident zero with nothing anywhere to say
             # why. Aggregated after the loop rather than logged per file, because
             # that failure mode refuses all of them. Admitting the transcript dir
             # to the UNC gate -- which is what would make the count correct
-            # rather than merely explained -- is deferred; it needs a resolution
-            # that refuses links atomically first.
+            # rather than merely explained -- is deferred to #8079; it needs a
+            # resolution that refuses links atomically first.
             refused_transcripts += 1
             continue
         resolved = Path(resolved_str)
@@ -1846,7 +1837,7 @@ def _parse_sessions() -> dict:
             mtime = resolved.stat().st_mtime
         except OSError:
             # A transcript that validated but cannot be stat'd did not load, so
-            # it is dropped from the counts exactly like a refusal. Count
+            # it is dropped from the counts exactly like a refusal (#6733). Count
             # it in the same total: the warning's absence promises complete data,
             # so every did-not-load branch must feed it, not just the UNC refusal.
             refused_transcripts += 1
@@ -1877,7 +1868,7 @@ def _parse_sessions() -> dict:
         except (OSError, UnicodeDecodeError):
             # Same as the stat branch above: a transcript that could not be read
             # did not load, so it counts toward the incomplete-data warning
-            # rather than vanishing from the totals.
+            # rather than vanishing from the totals (#6733).
             refused_transcripts += 1
             continue
 
@@ -1895,7 +1886,7 @@ def _parse_sessions() -> dict:
         # Server-side only: %s of a Path is a filesystem path, which the
         # returned payload deliberately never carries (see the iterdir handler
         # above). Counts every did-not-load branch (validator refusal, stat
-        # failure, read failure), not just the UNC refusal.
+        # failure, read failure), not just the UNC refusal (#6733).
         logger.warning(
             "usage: %d transcript(s) could not be loaded in %s; "
             "the reported session counts exclude them",
@@ -1947,18 +1938,13 @@ def _parse_sessions() -> dict:
         },
         "avg_msgs_per_session": round(total_msgs / max(total_sessions, 1), 1),
         "avg_tools_per_session": round(total_tools / max(total_sessions, 1), 1),
-        # How many transcripts the path validator refused. Carried in
+        # How many transcripts the path validator refused (#6733). Carried in
         # the payload -- not just the server log -- so the page can say the
         # count is incomplete instead of rendering a confident zero. On a
         # roaming-profile (UNC) home this is every transcript, so a zero
         # session count with a positive refusal count is the exact silent
         # failure this field makes visible.
         "refused_transcripts": refused_transcripts,
-        # Present only when the directory read itself failed. ``api_kiro_usage``
-        # keys its no-cache decision on this, and the zeros above are then a
-        # SHAPE, not a measurement -- which is why the message has to travel with
-        # them rather than replace them.
-        **read_error,
     }
 
 

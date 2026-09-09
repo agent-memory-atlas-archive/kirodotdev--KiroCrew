@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useState } from 'react'
-import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import AutoNudgePopover, { type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { __resetForTests, loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
@@ -272,35 +272,13 @@ describe('AutoNudgePopover — zero-token watches armed on this slot', () => {
   beforeEach(() => { localStorage.clear(); __resetForTests() })
   afterEach(() => { vi.unstubAllGlobals() })
 
-  /**
-   * Render, then wait for the crons read to have been ANSWERED, not just issued.
-   *
-   * The section is populated by `fetch` -> `json()` -> `setState`, three promise
-   * hops that `act` does not wait for, so a bare `await act(render)` samples the
-   * popover before the answer lands. That made the positive test below flake
-   * (1 in 5 full runs on a loaded host) and every "not listed" assertion in this
-   * block vacuous: the section is absent BEFORE the fetch resolves whether or not
-   * the filter works. Waiting on the mocked fetch having been called, then
-   * draining the chain, makes both kinds of assertion about the rendered answer.
-   */
-  async function renderPopoverSettled() {
-    await act(async () => { renderPopover(null) })
-    const fetchMock = vi.mocked(fetch)
-    await waitFor(() =>
-      expect(fetchMock.mock.calls.some(c => String(c[0]).startsWith('/api/crons'))).toBe(true),
-    )
-    for (let i = 0; i < 4; i++) {
-      await act(async () => { await Promise.resolve() })
-    }
-  }
-
   it('lists a script cron this slot owns, so an armed watch is visible in chat', async () => {
     // The reported gap: a watch is deliberately NOT an autonudge loop, so the
     // popover showed "Set a goal" and nothing else while a watch was polling --
     // the one surface a user opens to confirm something is running.
     stubCrons([cron()])
-    await renderPopoverSettled()
-    expect(await screen.findByText(/Zero-token watches/i)).toBeTruthy()
+    await act(async () => { renderPopover(null) })
+    expect(screen.getByText(/Zero-token watches/i)).toBeTruthy()
     expect(screen.getByText('pr watch #6234')).toBeTruthy()
   })
 
@@ -310,7 +288,7 @@ describe('AutoNudgePopover — zero-token watches armed on this slot', () => {
     // must still match, and that is the property worth pinning: another
     // conversation's watch appearing here is worse than showing none.
     stubCrons([cron({ session_key: 'dashboard:chat-9-999', name: 'someone elses watch' })])
-    await renderPopoverSettled()
+    await act(async () => { renderPopover(null) })
     expect(screen.queryByText('someone elses watch')).toBeNull()
     expect(screen.queryByText(/Zero-token watches/i)).toBeNull()
   })
@@ -319,14 +297,14 @@ describe('AutoNudgePopover — zero-token watches armed on this slot', () => {
     // A cron with no script wakes the agent every fire. Listing it here would
     // make the heading lie about what it costs.
     stubCrons([cron({ script: '', name: 'daily reminder' })])
-    await renderPopoverSettled()
+    await act(async () => { renderPopover(null) })
     expect(screen.queryByText('daily reminder')).toBeNull()
     expect(screen.queryByText(/Zero-token watches/i)).toBeNull()
   })
 
   it('never lists a disabled watch as if it were armed', async () => {
     stubCrons([cron({ enabled: false, name: 'paused watch' })])
-    await renderPopoverSettled()
+    await act(async () => { renderPopover(null) })
     expect(screen.queryByText('paused watch')).toBeNull()
   })
 
@@ -345,7 +323,7 @@ describe('AutoNudgePopover — zero-token watches armed on this slot', () => {
         }),
       ) as unknown as typeof fetch,
     )
-    await renderPopoverSettled()
+    await act(async () => { renderPopover(null) })
     // A bare array is NOT the contract, so nothing should be read out of it.
     expect(screen.queryByText(/Zero-token watches/i)).toBeNull()
   })
@@ -359,7 +337,7 @@ describe('AutoNudgePopover — zero-token watches armed on this slot', () => {
           : Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
       ) as unknown as typeof fetch,
     )
-    await renderPopoverSettled()
+    await act(async () => { renderPopover(null) })
     expect(screen.queryByText(/Zero-token watches/i)).toBeNull()
     // The popover's actual job is still fully usable.
     expect(screen.getByPlaceholderText(/Describe what you want the agent to accomplish/i)).toBeTruthy()

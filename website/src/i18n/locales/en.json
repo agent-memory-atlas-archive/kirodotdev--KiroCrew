@@ -4034,7 +4034,6 @@
       "this_app_provides_agents_and_skills_but_no_visua": "This app provides agents and skills but no visual interface.\n            Use its agents from chat."
     },
     "approvalCard": {
-      "actions_group": "Approval actions",
       "approve": "Approve",
       "approved": "Approved",
       "reject": "Reject",
@@ -4927,11 +4926,9 @@
       "will_be_removed_on_save": "Will be removed on save."
     },
     "selectionToolbar": {
-      "ask": "Ask about this",
-      "ask_hint": "Opens Side Chat with the selection quoted — nothing is sent until you send, and the main chat is untouched",
+      "ask": "Ask in Side Chat",
       "copy": "Copy",
-      "quote": "Quote",
-      "quote_hint": "Quotes the selection into the composer of this conversation — your reply goes to the main chat"
+      "quote": "Quote"
     },
     "sendToInstanceSubmenu": {
       "failed": "Failed",
@@ -6076,14 +6073,7 @@
       },
       "errorCard": {
         "continue": "Continue",
-        "continue_hint": "Resume from where it stopped. Work already written to disk is untouched.",
-        "default_model": "Change default model",
-        "default_model_hint": "Open Settings → Chat → Default Model. New sessions start on this value.",
-        "pick_model": "Choose a model for this session",
-        "pick_model_hint": "Open the model picker and choose one of the models your account can use, then send your message again.",
-        "both_hint": "Do both: “{{pick}}” fixes this session, “{{default}}” stops new sessions from starting on the same model if the default is set to it. Then send your message again.",
-        "elsewhere_hint": "The model picker and Settings → Chat are in the main chat window. Open it to choose a model and change the default model.",
-        "elsewhere_settings_hint": "Settings → Chat is in the main chat window. Open it to change the default model."
+        "continue_hint": "Resume from where it stopped. Work already written to disk is untouched."
       },
       "knowledgePicker": {
         "cancel": "Cancel",
@@ -6183,7 +6173,6 @@
         "ask_a_side_question": "Ask a side question",
         "ask_a_side_question_main_agent_keeps_working": "Ask a side question without interrupting the active run. Nothing here is saved to the chat.",
         "context_from": "Context from",
-        "off_record_marker": "Side Chat · not saved to the conversation",
         "refresh_context": "Refresh context",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
@@ -6310,7 +6299,6 @@
       "could_not_regenerate": "Couldn't regenerate",
       "could_not_set_the_agent_default_model": "Could not set the agent's default model",
       "could_not_switch_variant": "Couldn't switch version",
-      "side_chat_pane_gone": "Couldn't open a Side Chat for that pane — its session is no longer available: {{error}}",
       "enter_split_view": "Enter split view",
       "esc_to_dismiss": "Esc to dismiss",
       "failed_to_apply_plan": "Failed to apply plan",
@@ -6690,7 +6678,6 @@
       "user": "user"
     },
     "kiroCrewAgentsPage": {
-      "add_crew_member": "Add crew member",
       "additional_stores_coming_with_memory_v2": "Only the default store is available today — support for more memory stores is coming soon.",
       "agents": "Agents",
       "also_used_by_these_crews": "Also used by {{crews}}. Agents that share a store can read each other’s files and memory.",
@@ -6704,7 +6691,6 @@
       "create_a_crew_to_give_an_agent_its_own_workspace": "An agent is an assistant with its own files and its own memory. Make one per kind of work so they never mix up what they have learned.",
       "create_a_new_crew": "Create a new agent",
       "create_agent": "Create Agent",
-      "create_member": "Create member",
       "create_workspace": "Create Workspace",
       "create_your_first_crew": "Create your first agent",
       "crew_column": "Agent",
@@ -6729,7 +6715,6 @@
       "effort_pin_needs_a_model": "This effort is ignored until a model is chosen: pick one above, or set a default.",
       "effort_resolves_to": "Thinking at {{effort}}",
       "effort_unavailable_on_this_model": "{{model}} takes no reasoning effort, so there is none to set.",
-      "failed_to_create_member": "Failed to create member",
       "filter_agents": "Filter agents…",
       "finish_the_new_schedule_first": "Finish or cancel the new schedule first",
       "identity": "Basics",
@@ -6738,9 +6723,7 @@
       "isolated_memory_and_files_for_this_crew": "The folder this agent reads and writes. Switch it and new chats start fresh in the new folder; the old one is kept.",
       "keep_editing": "Keep editing",
       "manage_agent_workspace_memory_store_bindings": "Separate assistants for separate jobs. Each agent keeps its own files.",
-      "member_already_exists": "A member named '{{name}}' already exists. Choose another name.",
       "memory_store": "Memory Store",
-      "memory_store_hint_member": "Which memory store this member is bound to. The binding is recorded, but it does not give the member a memory of its own yet.",
       "model": "Model",
       "name": "Name",
       "new_crew": "New agent",
@@ -6758,17 +6741,12 @@
       "resolves_to": "Using {{model}}",
       "routing": "Routing",
       "runtime_binding": "What this agent uses",
-      "runtime_binding_member": "What this member uses",
       "save_changes": "Save changes",
-      "session_color_hint_member": "Sessions this member starts use this color unless the session has a color of its own. Leave empty for no member color.",
       "shared_lower": "shared",
-      "template_hint_member": "The starting setup this member uses — its tools, connections and instructions.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "The starting setup this agent uses — its tools, connections and instructions.",
       "triggers": "Triggers",
       "triggers_hint": "When to route to this agent — free-text guidance the orchestrator reads to pick it. Leave empty to exclude this agent from automatic selection.",
-      "triggers_hint_member": "When to hand work to this member — free-text guidance {{productName}} reads to decide. Leave empty to exclude this member from automatic selection.",
       "triggers_info": "When your message clearly matches these triggers, the orchestrator selects this agent (via the select_crew tool) and runs the task with the agent's workspace, memory, and model. Agents with no triggers are never auto-selected.",
-      "triggers_info_member": "When your message clearly matches these triggers, {{productName}} selects this member and runs the task with the member's workspace, memory, and model. Members with no triggers are never auto-selected.",
       "triggers_placeholder": "e.g. incidents, prod outages, pager escalations",
       "used_for_all_new_chats": "Used for all new chats",
       "view_cards": "Cards",
@@ -6778,7 +6756,6 @@
       "which_store_its_lessons_and_history_are_written": "Which memory store this agent is bound to. The binding is recorded, but it does not give the agent a memory of its own yet.",
       "workspace": "workspace",
       "workspace_2": "Workspace",
-      "workspace_hint_member": "The folder this member reads and writes. Switch it and new chats start fresh in the new folder; the old one is kept.",
       "yes_delete_it": "Yes, delete it"
     },
     "knowledge": {
@@ -6965,11 +6942,10 @@
     "membersPage": {
       "agent_template": "Agent template",
       "configuration": "Configuration",
-      "crew_summary": "Crew summary",
       "details": "Details",
       "edit_in_crew_manager": "Edit in crew manager",
       "edit_member": "Edit member",
-      "empty_roster": "No crew members yet.",
+      "empty_roster": "No crew members yet. Create a crew in the crew manager to see it here.",
       "inherited": "Inherited",
       "member_count_one": "{{count}} member",
       "member_count_other": "{{count}} members",
@@ -7028,6 +7004,7 @@
       "patrol_error": "Couldn't load this member's patrol status.",
       "patrol_error_roster": "Couldn't load patrol status for the roster.",
       "patrol_badge": "On patrol · {{cycle}}",
+      "patrol_badge_stopped": "Patrol stopped",
       "patrol_next_in": "Due in {{time}}",
       "wake_patrol_every": "Every {{every}}",
       "filter_starred": "Starred",
@@ -7077,7 +7054,9 @@
     },
     "overview": {
       "agentCfgTab": {
+        "after_saving_use": "After saving, use",
         "agent_config_json": "Agent config JSON",
+        "apply_restart_sessions_at_the_top_to_apply_chang": "Apply & Restart Sessions at the top to apply changes.",
         "invalid_json": "Invalid JSON",
         "loading": "Loading…",
         "save_failed": "Save failed",

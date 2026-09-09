@@ -151,8 +151,8 @@ def _warn_refused_once(path: str) -> None:
     reason. Every post-spawn failure branch in ``api_models`` logs a WARNING, so a
     reader who greps the log for that endpoint and finds nothing concludes it is
     healthy. A silent refusal here therefore inverts the diagnosis rather than merely
-    withholding it. An absent line gets read as evidence; it is not. So the refusal
-    must be visible.
+    withholding it, which is the misdiagnosis reported in issue #4577. An absent line
+    gets read as evidence; it is not. So the refusal must be visible.
 
     It must ALSO not be visible 570 times an hour. A signed-out gateway with an open
     dashboard polls ``/api/models`` every 8s and ``/api/sessions/usage`` every 30s,

@@ -60,7 +60,8 @@ logger = logging.getLogger(__name__)
 # Per-endpoint write serialization for the offloaded markdown saves below.
 # asyncio.to_thread hands each PUT to an executor worker, and workers can
 # acquire the store's file lock OUT OF REQUEST ORDER — a rapid pair of saves
-# could commit the older content last. These locks make that ordering explicit
+# could commit the older content last. The event loop used to serialize these
+# accidentally (inline writes); these locks restore that ordering explicitly
 # while keeping the blocking I/O off the loop.
 _prefs_write_lock = LoopBoundLock()
 _projects_write_lock = LoopBoundLock()
@@ -268,12 +269,13 @@ async def _get_vector_store_async(state: DashboardState):
     ``VectorMemoryStore.init()`` documents that async callers must offload it
     (it is blocking file IO end to end — sqlite connect, migrations, the
     owner-only lockdown pass), so the standalone fallback inside
-    ``_get_vector_store`` must not run inline in a handler. Fast path: when a
-    store is already resolvable without running ``init()`` — the
-    context_builder supplied one, or a prior call cached the standalone
-    fallback on ``state`` — delegate synchronously, so the common request path
-    pays no thread hop. In both fast-path cases ``_get_vector_store`` returns
-    before reaching its fallback, so ``init()`` stays unreachable on the loop.
+    ``_get_vector_store`` must not run inline in a handler (#5221). Fast path:
+    when a store is already resolvable without
+    running ``init()`` — the context_builder supplied one, or a prior call
+    cached the standalone fallback on ``state`` — delegate synchronously, so
+    the common request path pays no thread hop. In both fast-path cases
+    ``_get_vector_store`` returns before reaching its fallback, so ``init()``
+    stays unreachable on the loop.
     """
     # Resolve the memory store ON the loop: ``_get_memory``'s
     # check-create-publish of ``state._standalone_memory`` is atomic here (no
@@ -281,15 +283,15 @@ async def _get_vector_store_async(state: DashboardState):
     # inside the worker would race a concurrent loop-side ``_get_memory`` into
     # publishing a second MemoryStore, detaching ``vector_store`` from the
     # object every other handler reads. MemoryStore's own ``init()`` is a
-    # cheap mkdir+seed (not the lockdown-bearing one this wrapper offloads), so
-    # running it on the loop is safe.
+    # cheap mkdir+seed (not the lockdown-bearing one this wrapper offloads) and
+    # ran on the loop for every request before #5221.
     mem = _get_memory(state)
     if mem.vector_store or hasattr(state, "_standalone_vector"):
         return _get_vector_store(state)
     # Slow path: at most the first standalone request per process constructs
     # and ``init()``s the store — offload it. All concurrent misses await ONE
-    # shared task, giving the serialization the synchronous call sites get for
-    # free from the event loop: without it, two concurrent first
+    # shared task, restoring the serialization the synchronous call sites used
+    # to get for free from the event loop: without it, two concurrent first
     # requests would both miss the cache and both run ``init()``, leaking one
     # of the two sqlite connections. ``asyncio.shield`` keeps the task (and
     # its worker thread) alive when a caller is cancelled — e.g. an aiohttp
@@ -298,8 +300,8 @@ async def _get_vector_store_async(state: DashboardState):
     # between the read and the write (cannot race on one loop) and cleared on
     # completion: after success the fast path serves from the cache
     # (``_get_vector_store`` publishes it before the task resolves), and after
-    # failure the next request retries with a fresh task, so retry semantics
-    # stay per-request.
+    # failure the next request retries with a fresh task — matching the
+    # pre-#5221 per-request retry semantics.
     task = getattr(state, "_standalone_vector_init_task", None)
     if task is None:
         task = asyncio.get_running_loop().create_task(
@@ -328,7 +330,7 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     entries = []
-    # Offload: the fetch serializes on the store's _db_lock, and a
+    # Offload: the fetch serializes on the store's _db_lock (#1947), and a
     # worker holding it (e.g. backfill's locked FAISS rebuild) would otherwise
     # block the gateway event loop here.
     rows = await asyncio.to_thread(store.get_all_semantic, limit=limit, offset=offset)
@@ -341,10 +343,10 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
 async def api_memory_semantic_write(request: web.Request) -> web.Response:
     """PUT /api/memory/semantic — create/update a semantic entry."""
     state: DashboardState = request.app["state"]
-    # Session-recognition gate (shared with the lessons routes): the
-    # restricted-mode check below returns False for an unknown key, so without
+    # Session-recognition gate (shared with the lessons routes, #3226): the
+    # restricted-mode check below returns False for an unknown key, so before
     # this gate a forged or never-established X-Session-Key could write
-    # semantic memory that create-style routes refuse. Writes block
+    # semantic memory that create-style routes would refuse. Writes block
     # every private persisted mode, mirroring ``api_lessons_create``.
     sk = request.headers.get("X-Session-Key", "")
     refusal = await _recognize_session(
@@ -404,11 +406,13 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
 async def api_memory_semantic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/semantic/{key} — tombstone a semantic entry."""
     state: DashboardState = request.app["state"]
-    # Same recognition gate as the write route: without it an unknown key
-    # passes the restricted-mode check (False for unrecognised sessions) and
-    # could tombstone any semantic entry. For known sessions this route blocks
-    # incognito AND temporary (the ``_is_restricted_session`` check below), so
-    # the recovery-path probe blocks every private mode to match.
+    # Same recognition gate as the write route: without it, this DELETE was
+    # LESS protected than the lessons delete #3226 fixed — an unknown key
+    # passed the restricted-mode check (False for unrecognised sessions) and
+    # could tombstone any semantic entry. Policy for known sessions is
+    # unchanged: this route keeps blocking incognito AND temporary (the
+    # ``_is_restricted_session`` check below), so the recovery-path probe
+    # blocks every private mode to match.
     sk = request.headers.get("X-Session-Key", "")
     refusal = await _recognize_session(
         state, sk, "semantic.delete",
@@ -424,7 +428,7 @@ async def api_memory_semantic_delete(request: web.Request) -> web.Response:
         return web.json_response({"error": "Memory writes are not allowed in this session mode."}, status=403)
     store = await _get_vector_store_async(request.app["state"])
     key = request.match_info["key"]
-    # Offload: acquires _db_lock internally — see api_memory_semantic.
+    # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
     ok = await asyncio.to_thread(store.delete_semantic, key, source="user_explicit")
     if not ok:
         return web.json_response({"error": "not found"}, status=404)
@@ -439,7 +443,7 @@ async def api_memory_events(request: web.Request) -> web.Response:
         offset = int(request.query.get("offset", "0"))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
-    # Offload: serializes on _db_lock — see api_memory_semantic.
+    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
     events = await asyncio.to_thread(store.get_events, limit=limit, offset=offset)
     return web.json_response({"events": events})
 
@@ -775,8 +779,8 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     if prog.is_active():
         # Single-flight: a second apply mid-re-embed would race the first over
         # the same rows and the same FAISS file. Checked once, AFTER the
-        # awaited store acquisition — the acquisition can yield to the loop, so
-        # a pre-await check could go stale before begin_apply();
+        # awaited store acquisition — the acquisition can yield to the loop
+        # (#5221), so a pre-await check could go stale before begin_apply();
         # and whenever an apply is active, a prior apply already resolved the
         # store, so the acquisition above was the free sync fast path. Checked
         # BEFORE the SEL audit so a refused apply is not logged as allowed.
@@ -840,7 +844,7 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
 
     return web.json_response(
         {
-            # Embeddings are always-on; this field is not a toggle.
+            # Embeddings are always-on since the in-process runtime landed.
             "enabled": True,
             # Legacy value kept: the shipped frontend hard-checks
             # provider === "ollama" to render the healthy state; report the
@@ -1173,7 +1177,7 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
         else None
     )
     results = []
-    # Offload: search_episodic serializes on _db_lock — see
+    # Offload: search_episodic serializes on _db_lock (#1947) — see
     # api_memory_semantic.
     hits = await asyncio.to_thread(
         store.search_episodic,
@@ -1197,7 +1201,7 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
-    # Offload: serializes on _db_lock — see api_memory_semantic.
+    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
     rows = await asyncio.to_thread(
         store.get_episodic_list, limit=limit, offset=offset, tag_filter=tag_filter
     )
@@ -1208,9 +1212,10 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
 async def api_memory_episodic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/episodic/{id} — tombstone an episodic memory."""
     state: DashboardState = request.app["state"]
-    # Without a session check any caller, restricted or forged, could tombstone
-    # episodic memories, so this route applies the shared recognition gate plus
-    # the same live-slot restricted-mode policy as
+    # This route had NO session check at all — not even the restricted-mode
+    # one its semantic siblings carry — so any caller, restricted or forged,
+    # could tombstone episodic memories. Apply the shared recognition gate
+    # (#3226) plus the same live-slot restricted-mode policy as
     # ``api_memory_semantic_delete``.
     sk = request.headers.get("X-Session-Key", "")
     refusal = await _recognize_session(
@@ -1233,7 +1238,7 @@ async def api_memory_episodic_delete(request: web.Request) -> web.Response:
         )
     store = await _get_vector_store_async(state)
     mem_id = request.match_info["id"]
-    # Offload: acquires _db_lock internally — see api_memory_semantic.
+    # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
     ok = await asyncio.to_thread(store.delete_episodic, mem_id)
     if not ok:
         return web.json_response({"error": "not found"}, status=404)
@@ -1309,7 +1314,7 @@ async def api_memory_context_preview(request: web.Request) -> web.Response:
     """GET /api/memory/context-preview?q=... — preview what gets injected into prompts."""
     store = await _get_vector_store_async(request.app["state"])
     query = request.query.get("q", "")[:500]
-    # Offload: the fetch serializes on _db_lock — see api_memory_semantic.
+    # Offload: the fetch serializes on _db_lock (#1947) — see api_memory_semantic.
     # (No query_text is passed, so this is the recency path — no embed calls.)
     semantic_ctx = await asyncio.to_thread(store.get_semantic_context)
     # Filter semantic context by query if provided
@@ -1410,7 +1415,7 @@ async def api_memory_observability(request: web.Request) -> web.Response:
     """GET /api/memory/observability — memory health metrics and context preview."""
     store = await _get_vector_store_async(request.app["state"])
     query = request.query.get("q", "")[:500]
-    # Offload: both serialize on _db_lock — see api_memory_semantic.
+    # Offload: both serialize on _db_lock (#1947) — see api_memory_semantic.
     stats = await asyncio.to_thread(store.memory_stats)
     rejections = await asyncio.to_thread(store.get_rejection_stats)
     # get_context_preview with a query embeds the query AND every non-lesson
@@ -1420,7 +1425,7 @@ async def api_memory_observability(request: web.Request) -> web.Response:
     # Read LAST, deliberately: the counters then include the reads this very
     # request performed, so a caller can issue ?q=... twice and compare the two
     # `reads` objects to see whether the second identical search re-read the
-    # population. Offloaded like the others — it takes _db_lock.
+    # population (#8971). Offloaded like the others — it takes _db_lock.
     reads = await asyncio.to_thread(store.read_counters)
     return web.json_response(
         {
@@ -1436,9 +1441,10 @@ async def api_memory_promote(request: web.Request) -> web.Response:
     """POST /api/memory/promote — promote repeated episodic patterns to semantic facts."""
     store = await _get_vector_store_async(request.app["state"])
     # allow_absent: every field below has a default, so a bodyless POST is
-    # legitimate. A body that is present but malformed is still a 400:
-    # answering 200-with-defaults to a client typo would silently run a
-    # different promotion than the caller asked for.
+    # legitimate. A body that is present but malformed is still a 400 -- the
+    # previous `except Exception: body = {}` answered 200-with-defaults to a
+    # client typo, which silently ran a different promotion than the caller
+    # asked for.
     body, body_err = await read_bounded_json(request, max_bytes=None, allow_absent=True)
     if body_err is not None:
         return body_err

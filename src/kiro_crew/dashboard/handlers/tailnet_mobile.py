@@ -30,7 +30,7 @@ The payload is a URL with a session token in its query string. It is not logged,
 not stored, and not returned by the status endpoint — only by an explicit POST.
 Behind ``tailscale serve`` every request reaches the gateway from ``127.0.0.1``,
 so per-device session pinning cannot distinguish the phone from anything else on
-the tailnet: the token is the only real credential, which is why
+the tailnet (issue #1762): the token is the only real credential, which is why
 the default TTL here is an hour rather than the 20-hour ceiling the CLI uses.
 
 **Publishing is the consent for staying awake.** A phone loses the dashboard the
@@ -73,7 +73,7 @@ TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download"
 
 #: Default lifetime of the session a scanned QR opens. Deliberately far below the
 #: 20-hour ceiling: behind ``tailscale serve`` the session cannot be pinned to the
-#: scanning device, so this token is the only thing standing between the
+#: scanning device (#1762), so this token is the only thing standing between the
 #: tailnet and the dashboard. An hour is enough for a phone session and short
 #: enough that a leaked link stops mattering quickly.
 DEFAULT_QR_TTL_SECS = 3600
@@ -319,18 +319,20 @@ class _LiveState(NamedTuple):
 async def _live_state(request: web.Request, port: int) -> _LiveState:
     """Probe the machine and derive the single next step, for EVERY caller.
 
-    Shared so the status read and the QR mint cannot disagree about what this
-    machine may currently do. A disagreement runs in the direction that matters:
-    the card refuses to offer a QR unless the derived step is ``ready``, so a mint
-    endpoint re-checking only two of ``_derive_step``'s seven preconditions by
-    hand (a name exists; serve reports published) silently admits the other five.
-    Every precondition the mint does not re-implement is a way to obtain a
-    credential the card would never have offered.
+    Extracted so the status read and the QR mint cannot disagree about what this
+    machine may currently do. They previously disagreed in the direction that
+    matters: the card refused to offer a QR unless the derived step was ``ready``,
+    while the mint endpoint re-checked two of ``_derive_step``'s seven
+    preconditions by hand (a name exists; serve reports published) and silently
+    admitted the other five. Every precondition the mint did not re-implement was
+    a way to obtain a credential the card would never have offered — which is why
+    this endpoint accumulated four separate blocking review findings, one per
+    missed precondition, rather than one.
 
     ``_derive_step`` is documented as deriving the next action "HERE and nowhere
-    else", and this honours that rather than adding a hand-rolled check. Reading
-    one function's answer is also the only version of this that stays correct when
-    a step is added later.
+    else", so the fix is to honour that rather than to add a fifth hand-rolled
+    check. Reading one function's answer is also the only version of this that
+    stays correct when a step is added later.
     """
     try:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
@@ -985,7 +987,7 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
     #
     # GATED on daemon-verified tailnet identity, and the gate is what makes this
     # offerable at all rather than merely convenient. Behind ``tailscale serve``
-    # every request reaches the gateway from 127.0.0.1, so with identity
+    # every request reaches the gateway from 127.0.0.1 (#1762), so with identity
     # trust off the pin is ``ip:127.0.0.1`` for every tailnet client and the
     # cookie is a bearer credential any of them could replay. A session that ends
     # at the next restart bounds that exposure; one that outlives the process does

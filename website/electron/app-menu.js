@@ -117,12 +117,7 @@ function buildMenuTemplate(deps) {
               { type: "separator" },
             ]
           : []),
-        // NOT CmdOrCtrl+N. Cmd+N is "new session" in the renderer (the chord every
-        // editor and chat client uses — see src/lib/shortcutRegistry.ts, #4608),
-        // and a menu accelerator would take the keystroke before the page saw it.
-        // A new connection window is a rare, dialog-opening action; it gets the
-        // Alt-shifted variant so it stays reachable from the keyboard.
-        { label: "New Connection Window…", accelerator: "CmdOrCtrl+Alt+N", click: openNewConnectionWindow },
+        { label: "New Connection Window…", accelerator: "CmdOrCtrl+N", click: openNewConnectionWindow },
         // No accelerator: Cmd+Shift+R is Force Reload (platform standard).
         { label: "Rename Window…", click: renameCurrentWindow },
         { type: "separator" },
@@ -131,18 +126,7 @@ function buildMenuTemplate(deps) {
         { label: "Open Config File", click: openConfigFile },
       ],
     },
-    // macOS keeps the stock Window menu (Minimize, Zoom, Front — no Close entry,
-    // so Cmd+W reaches the renderer). Windows/Linux write it out: the stock role
-    // puts "Close" on Ctrl+W, which is "close session" in the renderer, so the
-    // window close moves to Ctrl+Shift+W — the VS Code / Chrome convention (Ctrl+W
-    // closes a tab, Ctrl+Shift+W the window; Alt+F4 still works).
-    isMac
-      ? { id: "window-menu", role: "windowMenu" }
-      : {
-          id: "window-menu",
-          label: "Window",
-          submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "close", accelerator: "Ctrl+Shift+W" }],
-        },
+    { id: "window-menu", role: "windowMenu" },
     // Windows/Linux home for About (Help > About <app>).
     ...(isMac ? [] : [{ id: "help-menu", label: "Help", submenu: [aboutItem] }]),
   ];

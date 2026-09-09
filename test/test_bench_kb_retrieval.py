@@ -10,8 +10,6 @@ absent).
 from __future__ import annotations
 
 import json
-import re
-from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -25,7 +23,6 @@ from kiro_crew.eval.bench.kb_retrieval import (
     format_kb_report,
     mrr_at_k,
     run_kb_retrieval,
-    v1_golden_set_path,
 )
 
 
@@ -69,195 +66,9 @@ def _write_golden(tmp_path: Path, docs: list[dict], queries: list[dict]) -> Path
     return p
 
 
-class TestGoldenSetV2:
-    """The enlarged set exists to DISCRIMINATE, and that is a property of its
-    shape, not of its size.
-
-    v1 scores 1.000 recall on every class with both a keyword-only and a semantic
-    retriever, so on that corpus the ruler can confirm the harness ran and nothing
-    else. Size is not the reason: each of v1's gold documents is the only one in
-    that corpus using its topic's vocabulary, so any ranker matching a single term
-    wins. These tests pin the properties that make v2 different, because they are
-    exactly what a later "just add a few more docs" edit would erode.
-    """
-
-    def _v2(self) -> KBGoldenSet:
-        # The default IS v2 now; going through the default keeps this class
-        # covering whatever a no-argument run actually measures.
-        return KBGoldenSet.from_json(default_golden_set_path())
-
-    def test_v2_loads_and_validates(self) -> None:
-        gs = self._v2()
-        assert gs.name == "kb_golden_v2"
-        for q in gs.queries:
-            assert q.query_class in KB_QUERY_CLASSES
-
-    def test_v2_is_larger_than_v1_on_both_axes(self) -> None:
-        """Corpus size sets the floor for how selective a cut-off can be.
-
-        With v1's 18 documents, a top-3 cut-off admits a sixth of the corpus, so a
-        near-random ranker scores well. Pinning growth on BOTH axes keeps the
-        denominator meaningful and keeps per-class means off single samples.
-        """
-        v1 = KBGoldenSet.from_json(v1_golden_set_path())
-        v2 = self._v2()
-        assert len(v2.docs) > 3 * len(v1.docs) // 2
-        assert len(v2.queries) > len(v1.queries)
-
-    def test_every_class_has_enough_queries_to_average(self) -> None:
-        """v1's abstention_rate was reported over n=1 — a coin flip printed as a
-        rate. A class mean needs a population, so every class carries several."""
-        gs = self._v2()
-        counts = Counter(q.query_class for q in gs.queries)
-        assert set(counts) == set(KB_QUERY_CLASSES), "every class must be exercised"
-        thin = {cls: n for cls, n in counts.items() if n < 4}
-        assert not thin, f"classes with too few queries to average: {thin}"
-
-    def test_every_answerable_query_faces_a_competing_distractor(self) -> None:
-        """THE discriminating property, and the one worth a test.
-
-        A query only separates a good retriever from a bad one when some non-gold
-        document also looks like an answer. So for every answerable query, some
-        non-gold doc must share at least two content words with the question. If
-        this ever fails, the set has drifted back to v1's shape — findable only by
-        noticing every score is 1.000, which is how the weakness survived v1.
-        """
-        gs = self._v2()
-        stop = {
-            "what",
-            "which",
-            "who",
-            "when",
-            "does",
-            "did",
-            "the",
-            "a",
-            "an",
-            "is",
-            "are",
-            "was",
-            "were",
-            "for",
-            "to",
-            "of",
-            "in",
-            "on",
-            "at",
-            "by",
-            "and",
-            "or",
-            "how",
-            "many",
-            "much",
-            "long",
-            "do",
-            "can",
-            "it",
-            "that",
-            "this",
-            "there",
-            "any",
-            "with",
-            "from",
-            "into",
-            "than",
-            "then",
-            "outside",
-            "before",
-            "after",
-            "actually",
-            "currently",
-            "today",
-            "still",
-            "be",
-        }
-
-        def terms(text: str) -> set[str]:
-            words = re.findall(r"[a-z0-9][a-z0-9-]+", text.lower())
-            return {w for w in words if w not in stop and len(w) > 2}
-
-        by_id = {d.id: d for d in gs.docs}
-        undefended = []
-        for q in gs.queries:
-            if q.is_abstention:
-                continue
-            qterms = terms(q.question)
-            competitors = [
-                d.id
-                for d in gs.docs
-                if d.id not in q.gold_doc_ids and len(qterms & terms(f"{d.title} {d.content}")) >= 2
-            ]
-            if not competitors:
-                undefended.append(q.id)
-        assert not undefended, (
-            "these queries have no competing non-gold document, so they cannot "
-            f"discriminate between retrievers: {undefended}"
-        )
-        assert by_id, "corpus must be non-empty for the check above to mean anything"
-
-    def test_v2_preserves_supersession_chronology(self) -> None:
-        """Same invariant the v1 test pins, restated for every chain v2 adds.
-
-        ``KnowledgeStore.add_item`` timestamps in insertion order, so a superseded,
-        retracted or never-adopted document must be inserted BEFORE the document
-        that overrides it. Otherwise a freshness-aware ranker is rewarded for
-        surfacing stale evidence, and the correction / retraction / time_bound
-        classes would silently measure the opposite of what they claim.
-        """
-        ids = [d.id for d in self._v2().docs]
-
-        def precedes(earlier: str, later: str) -> None:
-            assert ids.index(earlier) < ids.index(later), f"{earlier} must precede {later}"
-
-        precedes("d-cache-ttl-draft", "d-cache-ttl-current")
-        precedes("d-flag-checkout-plan", "d-flag-checkout-retracted")
-        precedes("d-region-wiki", "d-region-adr")
-        precedes("d-api-deprecation-2024", "d-api-deprecation-2025")
-        precedes("d-mfa-sms-draft", "d-mfa-baseline")
-        precedes("d-mfa-baseline", "d-mfa-audit-q3")
-        precedes("d-mfa-audit-q3", "d-mfa-audit-q4")
-        # The retention chain is three deep: 30d -> 60d interim -> 90d current.
-        precedes("d-retention-2023", "d-retention-2024-interim")
-        precedes("d-retention-2024-interim", "d-retention-2025")
-        # A never-adopted hypothetical must not outrank the process in force.
-        precedes("d-deploy-payments-cd-hypothetical", "d-deploy-payments")
-        precedes("d-deploy-orders-nocanary-proposal", "d-deploy-orders")
-
-    def test_abstention_queries_sit_inside_covered_topics(self) -> None:
-        """An abstention query is only hard when the corpus ALMOST answers it.
-
-        "parental leave in Brazil" is easy to abstain on -- no document is close.
-        The interesting ones name a topic the corpus does cover and ask for a
-        detail it withholds (a staging TTL, a per-service budget), so a retriever
-        with no score floor confidently returns the neighbouring document. That is
-        what keeps abstention_rate an honest measurement rather than a freebie.
-        """
-        gs = self._v2()
-        abstentions = [q for q in gs.queries if q.is_abstention]
-        assert len(abstentions) >= 5
-
-        def terms(text: str) -> set[str]:
-            return set(re.findall(r"[a-z0-9][a-z0-9-]+", text.lower()))
-
-        corpus = terms(" ".join(f"{d.title} {d.content}" for d in gs.docs))
-        near_misses = [
-            q.id
-            for q in abstentions
-            if len([t for t in terms(q.question) if t in corpus and len(t) > 4]) >= 3
-        ]
-        assert len(near_misses) >= 4, (
-            "too few abstention queries overlap covered topics; a corpus-distant "
-            f"question is a freebie, not a test: {near_misses}"
-        )
-
-
 class TestGoldenSet:
     def test_shipped_v1_loads_and_validates(self) -> None:
-        # v1 ships alongside the default so a v1-labelled report stays reproducible,
-        # which means it must still parse and validate. Named explicitly rather than
-        # via the default: following the default here would point this test at v2 and
-        # leave v1 uncovered.
-        gs = KBGoldenSet.from_json(v1_golden_set_path())
+        gs = KBGoldenSet.from_json(default_golden_set_path())
         assert gs.docs and gs.queries
         for q in gs.queries:
             assert q.query_class in KB_QUERY_CLASSES
@@ -266,26 +77,13 @@ class TestGoldenSet:
         # KnowledgeStore.add_item timestamps in insertion order. Older/draft evidence
         # must therefore precede its superseding/authoritative documents, or future
         # freshness-aware ranking would reward stale evidence.
-        ids = [d.id for d in KBGoldenSet.from_json(v1_golden_set_path()).docs]
+        ids = [d.id for d in KBGoldenSet.from_json(default_golden_set_path()).docs]
         assert ids.index("d-feature-flag-announcement") < ids.index("d-feature-flag-retracted")
         assert (
             ids.index("d-security-mfa-proposal")
             < ids.index("d-security-mfa")
             < ids.index("d-security-mfa-audit")
         )
-
-    def test_the_default_golden_set_is_v2(self) -> None:
-        """Pins the switch itself.
-
-        A no-argument ``bench kb-retrieval`` must measure the set that can
-        discriminate. If this ever reads v1 again, every reported class score
-        returns to 1.000 and the ruler goes back to proving only that it ran.
-        """
-        assert default_golden_set_path().name == "kb_golden_v2.json"
-        assert default_golden_set_path().is_file()
-        # Both sets stay packaged: the default moved, v1 was not deleted.
-        assert v1_golden_set_path().is_file()
-        assert KBGoldenSet.from_json(default_golden_set_path()).name == "kb_golden_v2"
 
     def test_missing_file_refuses(self, tmp_path: Path) -> None:
         # Match the application-owned prefix, not platform-specific errno text

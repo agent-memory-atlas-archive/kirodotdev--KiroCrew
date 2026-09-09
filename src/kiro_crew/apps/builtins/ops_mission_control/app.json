@@ -21,13 +21,6 @@
     "Rotation-aware: the on-shift automation tier arms and disarms itself"
   ],
   "defaultEnabled": false,
-  "platform": {
-    "os": [
-      "macos",
-      "linux",
-      "windows"
-    ]
-  },
   "permissions": {
     "api": [
       "/api/apps/ops-mission-control",

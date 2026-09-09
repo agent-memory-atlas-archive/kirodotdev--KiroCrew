@@ -84,9 +84,10 @@ def _format_backfill_parts(content: str, icon: str) -> list[str]:
     """Render one transcript row into postable Slack parts, icon included.
 
     Thin delegate to :func:`kiro_crew.slack.format.render_for_slack`, which owns
-    the redact/convert/split ordering. The icon is passed as the prefix rather
-    than prepended afterwards: decorating a maximally-sized part after the split
-    pushes it past ``SLACK_MSG_LIMIT`` by the width of the icon plus its space.
+    the redact/convert/split ordering this path used to implement privately. The
+    icon is passed as the prefix rather than prepended afterwards: decorating a
+    maximally-sized part after the split pushed it past ``SLACK_MSG_LIMIT`` by
+    the width of the icon plus its space.
     """
     return render_for_slack(
         strip_control_comments(content), prefix=f"{icon} ", redactor=redact_via_context
@@ -260,7 +261,7 @@ async def drain_slack_backfill(
     # removes the routing before this drain finishes posting, so the control we
     # just rendered as live belongs to a thread nothing owns any more: a click on
     # it starts a FRESH Slack session and answers a question that session never
-    # asked. The unlink abort covers the other order (a control already
+    # asked. Round 32's unlink abort covers the other order (a control already
     # tracked when the unlink arrives); this covers a control recorded after the
     # unlink already succeeded, where there was nothing yet for it to abort on.
     _unlinked = slot._slack_channel != channel or slot._slack_thread_ts != thread_ts
@@ -289,7 +290,7 @@ def _split_backfill_options(row: dict[str, Any]) -> tuple[str, list[str]]:
     actually shows (ANSI, emphasis and backtick splits, link markup) before
     scanning — strictly stronger than redacting the raw bytes here, and the body
     is covered by ``_format_backfill_parts``. Duplicating the ordering in this
-    function would let the two copies drift apart.
+    function is what previously let the two copies drift apart.
     """
     content = backfill_content(row)
     if row.get("role") == "user":
@@ -504,16 +505,16 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
         return done
 
     # Tear the link down with NO await in the middle, so nothing can interleave
-    # between reading the link and clearing it. That is what makes any
-    # compare-and-clear reconciliation unnecessary: the strike-through does not
-    # run BEFORE the teardown, so there is no await for a relink to land inside
-    # and nothing to reconcile afterwards.
+    # between reading the link and clearing it. That is what retires the
+    # compare-and-clear apparatus this handler used to carry: the strike-through no
+    # longer runs BEFORE the teardown, so there is no await for a relink to land
+    # inside and nothing to reconcile afterwards.
     #
-    # The ordering is therefore free, and striking first is not mandatory: a
-    # click carries the identity of the conversation that asked it, so one
-    # arriving after the link is gone is refused on its own terms instead of
-    # resolving to nothing and starting a brand-new session carrying a stale
-    # answer.
+    # The ordering is free now. Striking first used to be mandatory -- while the
+    # reverse index was still intact -- because a click arriving after teardown
+    # resolved to nothing and started a brand-new session carrying a stale answer.
+    # A click now carries the identity of the conversation that asked it, so one
+    # arriving after the link is gone is refused on its own terms.
     prev_channel = slot._slack_channel
     prev_thread_ts = slot._slack_thread_ts
     cleared = _clear_persisted_link_sync()
@@ -616,11 +617,11 @@ async def api_chat_slot_slack_pause(request: web.Request) -> web.Response:
     # Called ON the loop deliberately, NOT via ``to_thread``. ``SessionMap._save``
     # branches on whether its caller has a running loop: on the loop it marks the
     # map dirty and schedules ONE debounced flush that does the disk write in a
-    # worker, so the loop never pays the write inline; with no running
+    # worker (#2405), so the loop never pays the write inline; with no running
     # loop it writes inline on the calling thread. Offloading therefore selects
     # the inline-write branch and does that write while holding ``_MAP_LOCK``, so
     # any loop-side mutator then blocks the whole loop on the lock — strictly
-    # worse than calling it here.
+    # worse than calling it here. This is also why #2976 reverted the same idea.
     was_paused = bool(state.sessions.set_slack_paused(session_key, paused))
 
     # Posted INTO the Slack thread, not shown in the dashboard. Without it the

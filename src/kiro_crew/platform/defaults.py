@@ -393,7 +393,7 @@ class DefaultCapabilityManager:
     async def uninstall_mcp(self, server_id: str) -> "CapabilityResult":
         return CapabilityResult(ok=False, message="capability manager not available")
 
-    async def registry(self, query: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def registry(self) -> List[Dict[str, Any]]:
         return []
 
     async def list_skills(self) -> List[Dict[str, Any]]:

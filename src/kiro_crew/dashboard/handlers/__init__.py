@@ -639,9 +639,9 @@ def _prompt_dir_entry(path: Path, root_real: Path, src: str) -> dict[str, Any] |
       the scoped read already refuses a hardlinked prompt outright, so a listing
       that offered one would advertise a file its own scope will not serve.
     * An unreadable file is NOT refused. It keeps its entry with an empty
-      description: a bad mode or a transient I/O error must surface as the read
-      path's own error, not as a prompt silently vanishing from the user's
-      library.
+      description, exactly as before — a bad mode or a transient I/O error must
+      surface as the read path's own error, not as a prompt silently vanishing
+      from the user's library.
     * The stem must satisfy ``_plain_stem_ok``, the single predicate create, the
       scoped read and both write verbs already address a prompt by. A stem it
       rejects is one every other verb on this API answers ``invalid_name`` for, so

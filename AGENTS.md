@@ -38,7 +38,6 @@ in the **same commit** when you change what it documents.
 | `security.py`, `hooks.py`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
 | the security model as a whole, threat boundaries | [security-deep-dive](docs/architecture/security-deep-dive.md) |
 | `computer_use/` | [computer-use](docs/system-specs/modules/computer-use.md) |
-| monitoring loops, `monitoring/`, `irq.py`, watches | [monitor-architecture](docs/system-specs/modules/monitor-architecture.md) (the paradigm) + [agent-interrupt-controller](docs/system-specs/modules/agent-interrupt-controller.md) + [babysit-pr-watch](docs/system-specs/modules/babysit-pr-watch.md) |
 | `acp/`, kiro-cli transport, providers | [acp-client](docs/system-specs/modules/acp-client.md) + [providers](docs/system-specs/modules/providers.md) |
 | picking or defaulting a model anywhere | [model-selection](docs/system-specs/common/model-selection.md) + [model-fallback](docs/system-specs/modules/model-fallback.md) |
 | adding or adapting an agent harness (BYO, KAS, claude) | [harness-parity](docs/system-specs/modules/harness-parity.md) (invariants) + [harness-parity-gate](docs/ci/harness-parity-gate.md) (CI) |
@@ -60,7 +59,7 @@ in the **same commit** when you change what it documents.
 | themes | [themes](docs/system-specs/modules/themes.md) + [theming-contract](website/docs/theming-contract.md) |
 | anything under `website/` | [`website/AGENTS.md`](website/AGENTS.md) |
 | user-facing strings, dates, numbers, sort order | [i18n-catalog](website/docs/i18n-catalog.md) (authoring) + [i18n-gates](docs/ci/i18n-gates.md) (CI) |
-| tests: flakes, hangs, speed, memory, fixtures, sharding, side effects, host state (`~/.kiro`, `Path.home()`, the systemd user manager), conftest isolation, `monkeypatch.undo()`, env-var leaks, host-dependent tests (Windows, Python 3.13, per-user tools), what `TMPDIR` must not be | [testing-conventions](docs/system-specs/common/testing-conventions.md) + the [writing-tests](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md) skill; frontend and Electron tests: [website/docs/testing.md](website/docs/testing.md) |
+| tests: flakes, hangs, speed, memory, fixtures, sharding, side effects, host state (`~/.kiro`, `Path.home()`, the systemd user manager), conftest isolation, Windows | [testing-conventions](docs/system-specs/common/testing-conventions.md) + the [writing-tests](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md) skill; frontend and Electron tests: [website/docs/testing.md](website/docs/testing.md) |
 | browser E2E | [e2e-gate](docs/ci/e2e-gate.md) |
 | proving a worktree change against an isolated running gateway | [worktree-verification-recipes](docs/guides/worktree-verification-recipes.md) |
 | CI, PR flow, review gates, commit messages | [ci-and-reviews](docs/ci/ci-and-reviews.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |

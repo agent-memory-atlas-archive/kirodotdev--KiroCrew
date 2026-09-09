@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import make_dir_link, requires_symlinks
+from conftest import requires_symlinks
 from kiro_crew.artifacts import (
     MAX_CONTENT_BYTES,
     MAX_VERSIONS,
@@ -605,10 +605,7 @@ class TestSharedLockAcrossInstances:
         real = tmp_path / "real-artifacts"
         real.mkdir()
         link = tmp_path / "linked-artifacts"
-        # A directory link: the subject is that the two spellings RESOLVE to one
-        # root, which a junction exercises on Windows without the symlink
-        # privilege (see testing-conventions "Links").
-        make_dir_link(link, real)
+        link.symlink_to(real)
         a = ArtifactStore(root=real)
         b = ArtifactStore(root=link)
         assert a._lock is b._lock

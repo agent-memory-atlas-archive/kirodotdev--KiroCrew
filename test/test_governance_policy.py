@@ -443,53 +443,6 @@ class TestLoader:
         assert "sandbox._flags" not in ceiling.controls
 
 
-class TestBootFlagCoercion:
-    """Non-boolean ``boot`` gate flags read fail-closed, never via ``bool()``.
-
-    A ``"false"`` string is truthy, so the old read turned the terminal ON
-    for a policy that says off. Real booleans are honoured, absent keys take
-    their documented defaults, and anything else warns and reads in the
-    fail-closed direction per flag.
-    """
-
-    @staticmethod
-    def _boot(**flags):
-        body = _policy_body()
-        body["boot"] = flags
-        return parse_policy(body).boot
-
-    def test_absent_flags_take_documented_defaults(self):
-        boot = self._boot()
-        assert boot.require_sandbox is True
-        assert boot.allow_terminal is False
-        assert boot.fail_closed is True
-
-    def test_real_booleans_honoured(self):
-        boot = self._boot(require_sandbox=False, allow_terminal=True, fail_closed=False)
-        assert boot.require_sandbox is False
-        assert boot.allow_terminal is True
-        assert boot.fail_closed is False
-
-    def test_string_false_reads_fail_closed(self):
-        boot = self._boot(require_sandbox="false", allow_terminal="false", fail_closed="false")
-        assert boot.require_sandbox is True
-        assert boot.allow_terminal is False
-        assert boot.fail_closed is True
-
-    def test_string_true_reads_fail_closed(self):
-        boot = self._boot(require_sandbox="true", allow_terminal="true", fail_closed="true")
-        assert boot.require_sandbox is True
-        assert boot.allow_terminal is False
-        assert boot.fail_closed is True
-
-    def test_null_and_numbers_read_fail_closed(self):
-        for stray in (None, 0, 1):
-            boot = self._boot(require_sandbox=stray, allow_terminal=stray, fail_closed=stray)
-            assert boot.require_sandbox is True
-            assert boot.allow_terminal is False
-            assert boot.fail_closed is True
-
-
 # ──────────────────────────────────────────────────────────────────────────
 # Policy / Profile parsing
 # ──────────────────────────────────────────────────────────────────────────

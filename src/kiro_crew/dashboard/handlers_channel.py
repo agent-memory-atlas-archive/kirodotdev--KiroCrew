@@ -481,8 +481,8 @@ async def api_channel_approve_agent(request: web.Request) -> web.Response:
             # equality; the base tier stores one shlex-derived binary name,
             # refused outright for compound / quoted / env-prefixed /
             # unparseable commands. No pattern language, no derived
-            # sub-patterns: a derived pattern widens scope beyond what the
-            # card displayed.
+            # sub-patterns — every derivation scheme reviewed on this
+            # surface widened scope beyond what the card displayed.
             cmd = agent._pending_approval_command
             if not cmd:
                 return _deny_trust_grant(

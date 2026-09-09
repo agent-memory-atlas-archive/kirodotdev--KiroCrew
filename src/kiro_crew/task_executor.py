@@ -378,7 +378,6 @@ async def execute_task(
                             agent=agent,
                             tool_kind=event.tool_kind,
                             raw_params=event.raw_tool_params,
-                            diff_path=event.diff_path,
                             command=event.shell_command,
                             is_shell=event.is_shell,
                         )

@@ -101,12 +101,7 @@ Duplication here means the same decision or the same state implemented twice, no
 
 Step 1 lands first because it changes no behaviour, which makes it the cheapest thing to review, and every later step shrinks once it is in.
 
-Step 0, independent of all of the above and the only item with an external deadline: teach the goal popover to see a structured monitor, before [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) lands. The API half is done -- both legacy read routes now report that a monitor is armed, its cadence and its state, while the owner-gated route keeps sole custody of what is being watched. They do NOT report how far in it is -- see below -- so what is left of step 0 is that gap plus the popover rendering the shape it does receive.
-
-Two remainders of step 0 are DEFERRED rather than closed, and both are named here so neither reads as an oversight:
-
-- **The websocket does not push a structured change to a non-owner.** The REST reads now entitle a non-owner to a reduced monitor row, but the `autonudge_state` frame for a structured loop still goes through `broadcast_ws_owners` (`slack/gateway.py`), so that reader gets no invalidation and its view stays as fetched until it reconnects. Closing this means a reduced presence frame riding `broadcast_ws`, in the same file the step-0 API change deliberately did not touch. An owner is unaffected: it receives the frame and re-reads.
-- **The frame and the REST read now disagree about the same record.** The frame still carries `message`, `max_cycles` and `cycle_count` for a structured monitor. `message` is not a boundary crossing there, since the frame is owner-only, but the two counters are as misleading on the socket as they were on the read.
+Step 0, independent of all of the above and the only item with an external deadline: teach the goal popover to see a structured monitor, before [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) lands.
 
 ## Failure modes the merged design must carry
 
@@ -129,14 +124,14 @@ From [#9073](https://github.com/kirodotdev/KiroCrew/pull/9073), which every armi
 
 The dashboard's goal popover is part of this design, not a follow-up. It is the only place a person can see what is armed, and the merge breaks two of its premises.
 
-**It could not see a structured monitor at all, and now it can.** The popover reads `GET /api/autonudge/slot/{slot_key}`, which used to null a structured monitor out on purpose:
+**It cannot see a structured monitor at all today.** The popover reads `GET /api/autonudge/{slot_key}`, which nulls a structured monitor out on purpose:
 
 ```
 loop = svc.get_by_slot(slot_key)
 legacy = loop if loop is not None and not is_structured_monitor_loop(loop) else None
 ```
 
-The structured read lives on a different endpoint, `/api/session-monitor`, which requires an authenticated session binding and is the agent-facing path behind `monitor_inspect`. So the moment [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) routed babysit through `monitor_watch`, the popover would have reported no loop while a monitor was running. Step 0 closed that, and closed it by ENTITLEMENT rather than by returning the record: the legacy reads have no owner gate, so they now publish existence, cadence and state -- the loop's own entitled fields -- and withhold everything that describes what is being watched. `message` is withheld too, because on a structured monitor it IS the wake instructions. `/api/monitors`, behind `_require_monitor_owner`, stays the only place the full record appears. Two things remain open. The payload does NOT answer "how far in", because the cycle accounting it would have used is withheld as false and the `monitor_presence` object prepared for it was held back to ship with its reader rather than ahead of it. And the popover still has to render what does arrive.
+The structured read lives on a different endpoint, `/api/session-monitor`, which requires an authenticated session binding and is the agent-facing path behind `monitor_inspect`. So the moment [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) routes babysit through `monitor_watch`, the popover reports no loop while a monitor is running. That is a dated regression, not a future risk, and it has to be fixed before [#5186](https://github.com/kirodotdev/KiroCrew/pull/5186) lands rather than after.
 
 **Its armed-watch list is slot-scoped.** Watches are filtered with `runBelongsToSlot(session_key, slotKey)` against the `dashboard:<slotKey>` convention, and only script crons count. A watch that moves out of session has no slot in its identity, so batching many subjects into one poller makes every one of them invisible here.
 

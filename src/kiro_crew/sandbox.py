@@ -206,16 +206,6 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``apps/aws-control/``: a mask covers the leaf, not its ancestors, and an
     # agent-writable ancestor could be renamed out from under it mid-transfer.
     "aws-control-staging",
-    # Quarantine markers for auto-improvement clones whose provisional rollback AND
-    # retirement both failed. Each marker is the only durable record that a clone still
-    # carrying a REFUSED, unscanned commit must never be reused, and the process it has to
-    # outlive is an agent's: masked so a reviewer's shell cannot plant, rewrite or delete
-    # one. Nothing in-sandbox reads it -- the marker is written and consulted host-side by
-    # `auto_improvement.backend.clone_setup` -- so HIDDEN rather than READONLY. A TOP-LEVEL
-    # leaf for the `aws-control-staging` reason: a mask covers the leaf, not its ancestors,
-    # and a marker under `apps/auto-improvement/data/` would sit below a directory an agent
-    # can rename out from under the mount.
-    "quarantined-clones",
     "apps/meetings/data/edits",
     "whatsapp",
     # The refused-inbound spool. Fenced from agent FILE TOOLS by
@@ -632,17 +622,9 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: and the first import then creates it visible to every sandbox already running --
 #: where a same-UID agent can ``rm -rf`` packs the user cannot get back. The store
 #: tolerates finding its root already present and empty.
-#:
-#: ``quarantined-clones`` shares that first-use shape: the root is built when the
-#: first clone is quarantined, so an install that has never had one offers the mask
-#: loop no name, and the marker that must outlive an agent's process would be
-#: created visible to every sandbox already running. Its resolver treats an
-#: existing empty root as usable, and proves the root writable before certifying
-#: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
     "appearance-library",
-    "quarantined-clones",
 )
 
 #: What a materialised ceiling holds — the empty JSON object every reader above
@@ -5021,7 +5003,7 @@ def _parse_pid_segment(pid_str: str) -> int | None:
         return None
 
 
-def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = None) -> int:
+def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
     """Remove orphan sandbox files from <config_dir>/run/ and legacy /tmp.
 
     A file is removed when EITHER:
@@ -5039,21 +5021,13 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
     Called from the periodic cleanup sweep in session.py, offloaded to the
     maintenance executor (blocking I/O).  Safe to call from sync contexts too.
 
-    *data_home* is the data home every path below is rooted at. The sweep runs on
-    a pool thread, and a pool thread resolves ``config_dir()`` whenever it happens
-    to be scheduled, which, under the test suite, is routinely AFTER the test
-    that queued it has torn down its ``KIROCREW_HOME`` pin, so the sweep then
-    walked (and could stamp or remove under) the operator's real ``~/.kiro/crew``.
-    The caller that knows the home resolves it on ITS thread and passes it in;
-    there is deliberately no default, so no future caller can reopen that path.
-
     Returns:
         Number of stale files removed.
     """
     now = time.time()
     if legacy_dir is None:
         legacy_dir = _LEGACY_LAUNCHER_DIR
-    run_dir = str(data_home / "run")
+    run_dir = str(config_dir() / "run")
     removed = 0
 
     # ── Sweep <config_dir>/run/ (PID + age) ──
@@ -5121,8 +5095,8 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
             pass
 
     removed += _cleanup_stale_sandbox_mount_sources()
-    removed += _cleanup_legacy_mount_source_residue(data_home)
-    removed += _cleanup_retired_acp_snapshot_dir(data_home)
+    removed += _cleanup_legacy_mount_source_residue()
+    removed += _cleanup_retired_acp_snapshot_dir()
     return removed
 
 
@@ -5759,7 +5733,7 @@ def _bound_source_basenames(
     )
 
 
-def _cleanup_legacy_mount_source_residue(data_home: Path) -> int:
+def _cleanup_legacy_mount_source_residue() -> int:
     """One-shot reclaim of the pre-#6268, pid-less bind-mount source residue.
 
     An install that upgraded past #6268 gained a sweep that can never touch what
@@ -5809,7 +5783,7 @@ def _cleanup_legacy_mount_source_residue(data_home: Path) -> int:
     Returns:
         Number of entries removed.
     """
-    marker = data_home / _LEGACY_RESIDUE_MARKER
+    marker = config_dir() / _LEGACY_RESIDUE_MARKER
     try:
         if marker.exists():
             return 0
@@ -5963,7 +5937,7 @@ def _cleanup_legacy_mount_source_residue(data_home: Path) -> int:
     return removed
 
 
-def _cleanup_retired_acp_snapshot_dir(data_home: Path) -> int:
+def _cleanup_retired_acp_snapshot_dir() -> int:
     """Reclaim `<config_dir>/run/kiro-cli-snapshots` from before the in-place launch.
 
     KiroCrew used to copy the whole kiro-cli binary here per ACP spawn generation
@@ -5976,7 +5950,7 @@ def _cleanup_retired_acp_snapshot_dir(data_home: Path) -> int:
     when a tree was removed so the periodic sweep logs it.
     """
 
-    retired = data_home / "run" / "kiro-cli-snapshots"
+    retired = config_dir() / "run" / "kiro-cli-snapshots"
     if not retired.is_dir():
         return 0
     shutil.rmtree(retired, ignore_errors=True)

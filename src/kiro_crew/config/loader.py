@@ -173,7 +173,6 @@ from kiro_crew.config.sections import (  # noqa: F401
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
     FORWARD_DECLARED_ENV_DEFAULT,
     IMESSAGE_SERVICES,
-    IMPORT_CHUNK_BUDGET_MAX,
     JAIL_MODE_AUTO,
     JAIL_MODE_OFF,
     JAIL_MODE_ON,
@@ -573,18 +572,6 @@ def _write_migration_backup(path: Path) -> None:
 MIGRATE_WORKSPACES = "workspaces"
 MIGRATE_AGENTS = "agents"
 MIGRATE_DEFAULT_AGENT = "default_agent"
-MIGRATE_CONNECTIONS_UI = "connections_ui"
-
-#: Sidecar marker recording that the one-shot ``connections_ui`` launch
-#: migration ran. Pre-launch builds materialized ``connections_ui: false`` into
-#: every config they saved (the key was the opt-in gate then, so a stored false
-#: was default noise, never a choice); post-launch the same bytes are the
-#: deliberate opt-out. The marker is the boundary between those two readings:
-#: a stored false found BEFORE it exists is stripped once, and any false found
-#: AFTER it exists is honoured forever. It lives beside ``config.json`` rather
-#: than inside it for the same reason as the superseded-defaults ack file — a
-#: full ``to_dict()`` rewrite carries only schema fields and would drop it.
-CONNECTIONS_UI_MIGRATION_MARKER = "connections_ui_migrated.json"
 
 
 def _apply_document_migrations(
@@ -655,17 +642,6 @@ def _apply_document_migrations(
                     )
                 )
             }
-            changed = True
-
-    # Strip the pre-launch materialized ``connections_ui: false``. Re-checked
-    # against *data*: only an exact stored ``false`` is touched, so a concurrent
-    # writer that already removed the key, or set it ``true``, is left alone.
-    # The one-shot boundary (a deliberate post-launch ``false`` must survive
-    # every later load) is enforced by the caller via the marker file — this
-    # delta is only ever pending on a load that found no marker.
-    if MIGRATE_CONNECTIONS_UI in pending:
-        if data.get("connections_ui") is False:
-            del data["connections_ui"]
             changed = True
 
     # Point default_agent at an agent that exists. Resolved against the
@@ -1645,11 +1621,9 @@ def strip_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str,
 
     "Foreign process" is no longer the right framing for KAS: Crew reaches it
     through kiro-cli's ACP relay, so the child IS a kiro-cli. The strip still
-    applies because the v3 engine resolves its tokens either from kiro-cli's
-    OIDC store (``--auth-method cli``) or from Crew's own vault over its
-    ``_kiro/auth/getAccessToken`` callback, and an API key in its environment
-    would take precedence over both — the test is what the child's engine
-    consumes, not which binary it is.
+    applies because the v3 engine resolves its tokens from kiro-cli's OIDC store
+    (``--auth-method cli``) and never reads this variable — the test is what the
+    child's engine consumes, not which binary it is.
 
     Matches the platform env-key convention (exact on POSIX, case-folded on
     Windows) so a differently-cased Windows spelling cannot slip past. Mutates
@@ -3196,11 +3170,6 @@ class KiroCrewConfig:
                     500,
                     SWEEP_CHUNK_BUDGET_MAX,
                 ),
-                import_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("import_chunk_budget", 0),
-                    0,
-                    IMPORT_CHUNK_BUDGET_MAX,
-                ),
                 embed_rate_limit=_safe_nonnegative_int(
                     knowledge_data.get("embed_rate_limit", 120), 120, EMBED_RATE_LIMIT_MAX
                 ),
@@ -3914,25 +3883,10 @@ class KiroCrewConfig:
                     cfg.default_agent = "default"
                 pending.add(MIGRATE_DEFAULT_AGENT)
 
-            # One-shot launch migration for ``connections_ui`` (see the marker
-            # constant's docstring). Decided on the BASE document, not the
-            # merged view: the overlay is user-owned prose we never rewrite,
-            # and the stale materialization only ever landed in config.json.
-            connections_marker = config_dir() / CONNECTIONS_UI_MIGRATION_MARKER
-            connections_migrating = False
-            if not connections_marker.exists():
-                if data.get("connections_ui") is False:
-                    # In-memory half: this very load must already serve the
-                    # launch default — the strip below is the on-disk echo.
-                    cfg.connections_ui = True
-                    pending.add(MIGRATE_CONNECTIONS_UI)
-                connections_migrating = True
-
             needs_migration = bool(pending)
 
-            persisted = True
             if needs_migration and not cfg._degraded_sections:
-                persisted = _persist_config_migration(
+                _persist_config_migration(
                     path,
                     frozenset(pending),
                     default_kiro_agent=cfg.agent.default_agent or "kirocrew",
@@ -3952,30 +3906,6 @@ class KiroCrewConfig:
                     "degraded section(s) %s and writing back would erase the "
                     "evidence; fix the file to clear",
                     sorted(cfg._degraded_sections),
-                )
-
-            # Record the connections_ui boundary only after a pass that was
-            # allowed to act on it AND whose write-back actually landed. A
-            # degraded load skips both the strip and the marker; a contended
-            # lock makes _persist_config_migration return False with nothing
-            # written, and the marker MUST defer with the strip — marker
-            # without strip would freeze the stale false as a deliberate
-            # opt-out forever. (The already-migrated-by-another-writer path
-            # also returns False; the marker then lands on the next load,
-            # which finds nothing to strip. One extra boot, same endpoint.)
-            # Failure to write the marker itself is logged and retried next
-            # load — the strip's own condition makes the retry converge.
-            if connections_migrating and persisted and not cfg._degraded_sections:
-                atomic_write(
-                    connections_marker,
-                    json.dumps(
-                        {
-                            "migrated_at": datetime.now(timezone.utc).isoformat(),
-                            "stripped_stale_false": MIGRATE_CONNECTIONS_UI in pending,
-                        },
-                        indent=2,
-                    )
-                    + "\n",
                 )
         except Exception as e:
             # Migration write-back is best-effort; never block startup.

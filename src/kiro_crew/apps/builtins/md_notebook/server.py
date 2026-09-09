@@ -41,7 +41,6 @@ from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
 from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config.paths import config_dir
-from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.sel import sel
@@ -566,32 +565,6 @@ async def record_last_sync(vault_id: str) -> int:
 _gh_cache: dict[str, Any] = {"value": None, "at": 0.0}
 
 
-def _windows_gh_candidates() -> list[str]:
-    """Fixed GitHub-CLI install roots on Windows. PATH is still NOT consulted.
-
-    Only the machine-wide install roots: ``%ProgramFiles%`` and
-    ``%ProgramW6432%`` (where a 64-bit install lands when the host interpreter
-    is 32-bit and ``%ProgramFiles%`` resolves to the x86 tree). Both need an
-    admin-elevated installer to write to, matching the no-PATH-hijack property
-    ``_find_gh``'s docstring relies on.
-
-    Deliberately NOT ``%LOCALAPPDATA%\\Programs`` (winget's per-user install
-    root): unlike Program Files, it sits inside the user's own profile and is
-    writable by anything running as that user -- including this agent. Trusting
-    a ``gh.exe`` planted there would let it run unsandboxed the next time a
-    vault operation mints a gh-derived token, with the backend's PAT and proxy
-    secret in scope. A user who installed gh per-user only (no admin rights)
-    still authenticates via a stored PAT; this is a narrower gh-derived-auth
-    surface on Windows, not a hard requirement.
-    """
-    roots: list[str] = []
-    for var in ("ProgramFiles", "ProgramW6432"):
-        value = os.environ.get(var)
-        if value and value not in roots:
-            roots.append(value)
-    return [os.path.join(root, "GitHub CLI", "gh.exe") for root in roots]
-
-
 def _find_gh() -> Optional[str]:
     """Absolute path to a trusted ``gh``, or None. PATH is NOT consulted — a
     workspace-writable entry could shadow ``gh`` with a planted binary that runs
@@ -612,11 +585,6 @@ def _find_gh() -> Optional[str]:
             "/usr/bin/gh",
         ]
     )
-    if not override and platform_compat.IS_WINDOWS:
-        # None of the entries above can ever match on Windows, so gh-derived auth
-        # was unavailable there however the user had logged in. Same rule, same
-        # reason: fixed install roots only, never PATH.
-        candidates = _windows_gh_candidates()
     for candidate in candidates:
         if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
@@ -712,51 +680,7 @@ async def vault_path(vault: dict[str, Any], rel: Optional[str] = None) -> Path:
     return await asyncio.to_thread(_resolve)
 
 
-#: Characters Win32 forbids in a path component. Refused for a name the app is
-#: about to CREATE on every platform, and for every name when running on Windows,
-#: because a vault is meant to be portable: a note named ``a:b.md`` created on
-#: macOS makes the Windows clone of the same vault un-checkoutable (git's own
-#: ``core.protectNTFS`` refuses it, reported only as a clone failure), and on
-#: Windows the same move does not fail at all — ``os.replace`` writes an NTFS
-#: ALTERNATE DATA STREAM on a file named ``a``, which ``_list_note_files_sync``
-#: never walks, so the note silently disappears from the app instead of erroring.
-_UNPORTABLE_CHARS = frozenset('<>:"|?*')
-
-
-def _reject_unportable_component(part: str, field: str) -> None:
-    """Refuse one path component Win32 cannot represent. Raises ``ApiError`` 400.
-
-    Applied on EVERY platform for a name the caller is about to CREATE (a move
-    destination), so an unportable name never enters a vault that is meant to
-    travel; and on Windows for every name, where such a path is not merely unwise
-    but silently wrong. Reading and re-saving an oddly-named note that already
-    exists on a POSIX host stays allowed — that is the only way a user can rename
-    it to something portable.
-    """
-    if _UNPORTABLE_CHARS.intersection(part) or any(ord(ch) < 32 for ch in part):
-        raise ApiError(
-            f'{field} must not contain < > : " | ? * or a control character — '
-            "such a name cannot exist on Windows, so it would break any Windows "
-            "clone of this vault",
-            400,
-            code="path_not_a_note",
-        )
-    if part != part.rstrip(". "):
-        raise ApiError(
-            f"{field} must not have a path component ending in a dot or a space — "
-            "Windows silently strips it, so the name would not round-trip",
-            400,
-            code="path_not_a_note",
-        )
-    if part.split(".", 1)[0].lower() in WINDOWS_DEVICE_STEMS:
-        raise ApiError(
-            f"{field} uses '{part}', a name Windows reserves for a device",
-            400,
-            code="path_not_a_note",
-        )
-
-
-def require_note_path(rel: Any, field: str = "path", *, for_new: bool = False) -> str:
+def require_note_path(rel: Any, field: str = "path") -> str:
     """Validate a caller-supplied path as one this app is allowed to touch.
 
     Containment is not enough. ``safe_join`` / ``vault_mutation_path`` only prove
@@ -774,10 +698,6 @@ def require_note_path(rel: Any, field: str = "path", *, for_new: bool = False) -
 
     Raises ``ApiError`` 400; callers pass ``field`` so the message names the
     parameter the caller actually sent (``from`` / ``to`` on a move).
-
-    ``for_new`` marks a path the caller is about to CREATE (a move destination).
-    Those are additionally held to what Win32 can represent, on every platform,
-    so a vault does not acquire a note only some of its clones can check out.
     """
     if not rel or not isinstance(rel, str):
         raise ApiError(f"{field} is required", 400, code="path_required")
@@ -788,9 +708,6 @@ def require_note_path(rel: Any, field: str = "path", *, for_new: bool = False) -
             400,
             code="path_not_a_note",
         )
-    if for_new or platform_compat.IS_WINDOWS:
-        for part in parts:
-            _reject_unportable_component(part, field)
     if not parts[-1].lower().endswith(".md"):
         raise ApiError(f"{field} must be a .md note", 400, code="path_not_a_note")
     return rel
@@ -813,11 +730,6 @@ def require_folder_path(folder: Any) -> Optional[str]:
             400,
             code="path_not_a_note",
         )
-    if platform_compat.IS_WINDOWS:
-        # The folder itself is not created here, so this is not a new-name gate —
-        # it stops a note being written into a folder Win32 cannot address.
-        for part in parts:
-            _reject_unportable_component(part, "folder")
     return folder
 
 
@@ -2083,7 +1995,7 @@ async def api_note_move(request: web.Request) -> web.Response:
     require_writable(vault)
     body = await json_body(request)
     src_rel = require_note_path(body.get("from"), "from")
-    dst_rel = require_note_path(body.get("to"), "to", for_new=True)
+    dst_rel = require_note_path(body.get("to"), "to")
     if src_rel == dst_rel:
         return web.json_response({"ok": True, "path": dst_rel})
     src = await vault_mutation_path(vault, src_rel)
@@ -2276,12 +2188,7 @@ async def api_pick_folder(request: web.Request) -> web.Response:
     process, so it can ask the OS and hand back what the user picked.
     """
     if not pick_folder_supported():
-        raise ApiError(
-            "the folder chooser is only available on macOS — on Windows and Linux, "
-            "paste the vault folder's absolute path into the field instead",
-            501,
-            code="folder_chooser_unsupported",
-        )
+        raise ApiError("folder chooser is only available on macOS", 501, code="folder_chooser_unsupported")
     path = await asyncio.to_thread(_pick_folder_sync)
     return web.json_response({"path": path, "cancelled": path is None})
 

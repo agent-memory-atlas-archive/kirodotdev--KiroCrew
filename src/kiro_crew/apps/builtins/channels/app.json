@@ -17,13 +17,6 @@
   ],
   "defaultEnabled": false,
   "hidden": true,
-  "platform": {
-    "os": [
-      "macos",
-      "linux",
-      "windows"
-    ]
-  },
   "permissions": {
     "api": [
       "/api/channels"

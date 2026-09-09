@@ -295,9 +295,9 @@ def _resolve_cwd(cfg: dict, requested: str | None) -> str:
 def _resolve_shell(cfg: dict) -> tuple[str, str | None]:
     """Resolve the shell program the terminal launches.
 
-    Resolution order is the configured ``dashboard.terminal.shell``, else
-    ``$SHELL`` (POSIX only), else the platform default (``/bin/bash`` /
-    ``powershell.exe``). Each candidate
+    Resolution order is unchanged from the historical one — the configured
+    ``dashboard.terminal.shell``, else ``$SHELL`` (POSIX only), else the
+    platform default (``/bin/bash`` / ``powershell.exe``) — but each candidate
     must now resolve to an executable (``shutil.which`` handles both absolute
     paths and bare names on ``PATH``). A configured value that does not resolve
     falls back rather than failing the open: a typo'd setting must never leave
@@ -320,7 +320,7 @@ def _resolve_shell(cfg: dict) -> tuple[str, str | None]:
 
     When no candidate resolves at all, the platform default is returned
     unvalidated so the spawn's own error — not a silent substitution — is what
-    the user sees on such a host.
+    the user sees, matching the historical behavior on such a host.
     """
     configured = str(cfg.get("shell") or "").strip()
     if configured:
@@ -629,14 +629,14 @@ def _bash_ready_env(token: str) -> dict[str, str]:
 
     Bash reads an ``--init-file`` only when it is *not* a login shell, so the
     marker cannot ride an injected rc file without giving up ``-l`` — and giving
-    up ``-l`` breaks the profile chain: ``shopt -q login_shell`` is then false, so
+    up ``-l`` is the bug in #5885: ``shopt -q login_shell`` is then false, so
     every profile stanza guarded on login-ness silently no-ops and the user's
     environment never loads. Sourcing the same files from an rc file cannot
     substitute, because that option is read-only and stays off.
 
     A login shell does honour a ``PROMPT_COMMAND`` inherited from its
     environment, and runs it after the profile chain returns and before the first
-    prompt — exactly where the readiness marker has to fire.
+    prompt — the point the injected marker used to occupy.
 
     The snippet is single-shot and self-removing: it emits only while the token
     variable is still set, unsets that token so neither a later prompt nor a
@@ -666,7 +666,8 @@ def _bash_ready_env(token: str) -> dict[str, str]:
     guard: every carrier a login shell inherits is visible to the profile chain,
     and the carriers that are invisible to it (``BASH_ENV``, non-interactive only;
     ``ENV``, POSIX mode only; ``INPUTRC``, cannot run commands) do not run at the
-    post-profile point a readiness marker needs.
+    post-profile point a readiness marker needs. Tracked with the alternatives in
+    #7657.
     An operator who EXPORTED ``PROMPT_COMMAND`` into the gateway's own
     environment keeps it: the exported value is the readiness hook followed by
     the inherited command, and the withdrawal restores the inherited command
@@ -784,19 +785,34 @@ async def _kill_session(sess: _TerminalSession) -> None:
         except (OSError, RuntimeError):
             pass
         return
-    # The child goes FIRST, then the PTY's controller descriptor, and the order
-    # is the fix for a real deadlock. Closing the controller end while the reader
-    # task is blocked in os.read() on it behaves differently per kernel: Linux
-    # hangs up the terminal end and the read returns EIO, which is what let the
-    # close come first; macOS (and the BSDs) make close() wait for that
-    # outstanding read, so with an interactive bash still holding the terminal
-    # end the close never returned, and four PTY tests timed out at 120 s on
-    # every macOS run, each parking a pool thread forever. Ending the session's
-    # process tree first releases the terminal end on both, so the read returns
-    # EOF, the close completes. SIGHUP is what a vanished terminal
-    # delivers and the one signal an interactive shell does not ignore (it
-    # ignores SIGTERM, which alone would cost the 5 s escalation wait); SIGTERM
-    # follows for everything else, SIGKILL after the wait as before.
+    # Close master_fd first — unblocks reader_task's os.read() in executor.
+    #
+    # os.close() on a PTY master fd can BLOCK in the kernel: when the far-end
+    # shell is wedged (uninterruptible sleep), the tty teardown waits on it.
+    # Run it on the dedicated subprocess pool, never the event loop — a wedged
+    # close then costs at most one pool thread instead of freezing the whole
+    # gateway, and shares no workers with the orphan-reaping maintenance sweep.
+    if sess.master_fd >= 0:
+        fd = sess.master_fd
+        # Clear the handle BEFORE the await: if this coroutine is cancelled while
+        # suspended on the executor (e.g. aiohttp cancels the request handler on
+        # client disconnect), the fd must not be left referenced on the session.
+        sess.master_fd = -1
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), os.close, fd,
+            )
+        except (OSError, RuntimeError):
+            # OSError: close failed. RuntimeError: the subprocess pool was
+            # already torn down (shutdown races interpreter exit) — submit
+            # raises rather than returning a future; the fd is reaped on exit.
+            pass
+    if sess.reader_task is not None:
+        sess.reader_task.cancel()
+        try:
+            await sess.reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
     if sess.proc is not None and sess.proc.returncode is None:
         # Route through platform_compat.kill_process_tree so the whole terminal
         # handler stays platform-portable (killpg on POSIX, taskkill /T on
@@ -804,17 +820,18 @@ async def _kill_session(sess: _TerminalSession) -> None:
         # ws returns an error on Windows before any session is created — but
         # keeping a single shim call site avoids a raw-os.killpg vs shim
         # inconsistency across the module, and the tests all patch the shim.
-        for sig in (platform_compat.SIGHUP, platform_compat.SIGTERM):
-            try:
-                # Async variants offload Windows taskkill to subprocess_executor
-                # so this PTY teardown path never blocks the event loop on
-                # taskkill.exe. POSIX os.killpg stays inline.
-                await platform_compat.kill_process_tree_async(sess.proc.pid, sig)
-            except (ProcessLookupError, PermissionError):
-                # PermissionError (EPERM): the child made the PTY its controlling
-                # terminal (TIOCSCTTY) and leads a session/group we can't signal.
-                # Fall through to wait()/kill the proc directly.
-                pass
+        try:
+            # Async variants offload Windows taskkill to subprocess_executor
+            # so this PTY teardown path never blocks the event loop on
+            # taskkill.exe. POSIX os.killpg stays inline.
+            await platform_compat.kill_process_tree_async(
+                sess.proc.pid, platform_compat.SIGTERM
+            )
+        except (ProcessLookupError, PermissionError):
+            # PermissionError (EPERM): the child made the PTY its controlling
+            # terminal (TIOCSCTTY) and leads a session/group we can't signal.
+            # Fall through to wait()/kill the proc directly.
+            pass
         try:
             await asyncio.wait_for(sess.proc.wait(), timeout=5)
         except asyncio.TimeoutError:
@@ -829,33 +846,6 @@ async def _kill_session(sess: _TerminalSession) -> None:
             except ProcessLookupError:
                 pass
             await sess.proc.wait()
-    # os.close() on a PTY controller fd can still BLOCK in the kernel when the far
-    # end is wedged (uninterruptible sleep, or a child this process may not
-    # signal). Run it on the dedicated subprocess pool, never the event loop, so a
-    # wedged close then costs at most one pool thread instead of freezing the
-    # whole gateway, and shares no workers with the orphan-reaping maintenance
-    # sweep.
-    if sess.master_fd >= 0:  # wokeignore:rule=master
-        fd = sess.master_fd  # wokeignore:rule=master
-        # Clear the handle BEFORE the await: if this coroutine is cancelled while
-        # suspended on the executor (e.g. aiohttp cancels the request handler on
-        # client disconnect), the fd must not be left referenced on the session.
-        sess.master_fd = -1  # wokeignore:rule=master
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), os.close, fd,
-            )
-        except (OSError, RuntimeError):
-            # OSError: close failed. RuntimeError: the subprocess pool was
-            # already torn down (shutdown races interpreter exit): submit
-            # raises rather than returning a future; the fd is reaped on exit.
-            pass
-    if sess.reader_task is not None:
-        sess.reader_task.cancel()
-        try:
-            await sess.reader_task
-        except (asyncio.CancelledError, Exception):
-            pass
 
 
 async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.Response:
@@ -1099,13 +1089,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             # because the kernel can't find the foreground process group.
             #
             # This is the one async spawn that deliberately keeps preexec_fn
-            # rather than using the post-exec shim. The shim exists to deliver
-            # RESOURCE LIMITS, and this spawn carries none: it is the user's own
-            # interactive shell, not agent-executed code, so it has no rlimits
-            # and no OOM bias to apply. Routing it through the shim therefore
-            # buys nothing and costs an interpreter startup on every terminal
-            # open -- doubling the wall time of the terminal test file, and
-            # slowing a user-facing surface.
+            # rather than moving to the post-exec shim (see issue #935). The
+            # shim exists to deliver RESOURCE LIMITS, and this spawn carries
+            # none: it is the user's own interactive shell, not agent-executed
+            # code, so it has no rlimits and no OOM bias to apply. Routing it
+            # through the shim therefore bought nothing and cost an interpreter
+            # startup on every terminal open -- measurably doubling the wall time
+            # of the terminal test file, and slowing a user-facing surface.
             #
             # Residual risk, stated plainly: this still forks the threaded
             # gateway. It is the smallest such fork in the codebase -- one
@@ -1169,8 +1159,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         )
         if ready_marker is None:
             # The reliable injection above intentionally targets Bash, the
-            # reported shell. Configured shells whose startup protocol we cannot
-            # control fall back to transport-ready.
+            # reported shell. Preserve the historical transport-ready behavior
+            # for configured shells whose startup protocol we cannot control.
             sess.shell_ready = True
             try:
                 async with sess.send_lock:
@@ -1764,7 +1754,7 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
     Two mutually exclusive tiers, chosen by the CLIENT because only the client can
     see the screen row:
 
-    * **path** (no ``argv`` in the body) — the default tier. Body
+    * **path** (no ``argv`` in the body) — the historical behaviour. Body
       ``{session_id, token, folders_only?}`` where ``token`` is the DEQUOTED
       literal path the cursor sits in (``"../Kiro"``, ``"src/"``, ``""``); the
       client decodes backslash escapes before asking, so an on-screen ``my\\ dir/``

@@ -1647,12 +1647,7 @@ read-your-writes should add it deliberately, with its own tests.
   in `mcp_core._vet_channel_governance`; dashboard cross-surface mirror creation
   in `dashboard.chat_mirror` reuses the fail-closed
   `dashboard.chat_runner._resolve_channel_target` ladder before opaque target
-  resolution and at every outbound send boundary (the pre-resolve call carries
-  `check_recipient=False` — its link holds the `user:<id>` configured-target
-  spelling, which a recipient predicate over conversation ids can never match —
-  and the handler re-decides recipient authorization against the resolved
-  conversation id, SEL-audited, immediately after; the `channels` governance
-  decision itself always precedes the resolve's network side effect); the per-transport **startup** gate in
+  resolution and at every outbound send boundary; the per-transport **startup** gate in
   `slack.gateway._channel_transport_permitted` (a `channels` deny for a member
   keeps that transport — `slack`/`wecom`/`telegram`/`discord`/`webex` — from
   connecting at boot; resolved under `session_key=HOST_SESSION_KEY` so a

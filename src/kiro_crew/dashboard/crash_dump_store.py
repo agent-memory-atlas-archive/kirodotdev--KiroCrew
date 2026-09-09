@@ -16,7 +16,7 @@ Dump directory: ``<data home>/logs/crash-dumps/`` (data home = ``config_dir()``,
 i.e. ``~/.kiro/crew`` or ``$KIROCREW_HOME``)
 Filename pattern: ``loopstall-<ISO timestamp>.txt``
 
-**fd lifetime guarantee:**
+**fd lifetime guarantee (issue #1571):**
 
 ``faulthandler.dump_traceback_later`` captures a raw C file descriptor at arm
 time and writes to it on its own C thread when the timer fires.  If the fd is
@@ -758,9 +758,9 @@ def dump_replay_lines(
     FIRST, before the other threads, so the one stack that explains the stall
     always survives the caps.  Real dumps routinely exceed them — a gateway
     with a saturated default executor produces 200+ stack lines of idle
-    workers, and top-down order truncates the replay before ever reaching the
-    main thread, leaving a journal of only ``Queue.get`` workers and
-    ``[truncated]``.
+    workers, and top-down order truncated the replay before ever reaching the
+    main thread (observed on the 2026-08-09 stall dumps: the journal showed
+    only ``Queue.get`` workers and ``[truncated]``).
     """
     try:
         all_lines = _read_dump_lines(dump_path)

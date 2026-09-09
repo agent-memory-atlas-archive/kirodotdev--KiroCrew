@@ -43,19 +43,6 @@ design point so drift turns a build red. A checked-in recipe is not a
 precondition: scenarios exist precisely so agents can seed known states natively
 at debug time instead of designing fixtures on the spot.
 
-Some states are not reachable by authoring a few more rows, and those are the
-ones worth a scenario. History paging is the worked example: the slot-detail
-fast path answers `has_more=false` unless a session has size-rotated `archive/`
-segments, and rotation only happens once a transcript outgrows a 10 MiB budget,
-so every scenario built from a handful of messages leaves "load earlier"
-structurally unreachable. Seed `sessions-long-history` for anything on that
-seam - it ships one pinned session whose oldest 60 rows sit below a real
-rotation boundary, so the initial slot load answers `has_more=true` with a
-cursor that pages into the archive. Its archive segment is real
-`ConversationLog` rotation output rather than authored bytes; regenerate it by
-driving the writer as its `fixture.yaml` describes, and do not hand-edit the
-JSONL.
-
 ## Find the verification surface without searching the repository
 
 Start at [`../feature-map/README.md`](../feature-map/README.md). Its row for a
@@ -136,7 +123,7 @@ printf '%s\n' "$HANDLE" | jq -e '
   .status == "up" and (.base_url | startswith("http://127.0.0.1:"))
 ' >/dev/null
 
-bash "$HARNESS" "$WT" --no-suppress-first-run
+bash "$HARNESS" "$WT" --fe-only --no-suppress-first-run
 
 jq -se '
   any(.[]; .phase == "smoke" and .status == "pass") and

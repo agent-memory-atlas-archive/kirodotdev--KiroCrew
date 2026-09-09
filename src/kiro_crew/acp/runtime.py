@@ -58,16 +58,7 @@ from kiro_crew.acp.kas_agents import (
     KasAgentTranslationError,
     build_kas_custom_agents,
 )
-from kiro_crew.acp.kas_host_auth import (
-    HostAuthCallbackError,
-    answer_get_access_token,
-    vault_holds_identity_off_loop,
-)
-from kiro_crew.acp.kas_transport import (
-    KAS_AUTH_CALLBACK_ERROR_CODE,
-    METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
-    build_kas_argv,
-)
+from kiro_crew.acp.kas_transport import build_kas_argv
 from kiro_crew.acp.session_handle import (
     AcpRequestTimeout,
     AcpRuntimeDead,
@@ -80,7 +71,6 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
-    ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_POD_HOME_REMAP,
@@ -731,16 +721,6 @@ class AcpRuntime:
         # later sessions inherit the claiming crew, not the pool's spawn state.
         self._crew_agent = crew_agent
         self._acp_backend = acp_backend
-        # Whether THIS process was spawned with Crew as the engine's auth owner
-        # (relay started without ``--auth-method cli`` because the Crew vault
-        # held an identity at spawn). Decided once in _resolve_spawn_argv and
-        # read by the reader loop: a credential callback is answered from the
-        # vault only on a process that was spawned expecting it.
-        self._kas_host_auth = False
-        # First answered credential callback per runtime is logged at INFO as a
-        # positive "the engine is drawing its credential from Crew" signal; later
-        # ones (the engine refreshes ahead of expiry) drop to DEBUG.
-        self._kas_host_auth_logged = False
         if model is not None:
             if not MODEL_ID_RE.match(model):
                 raise ValueError(
@@ -1138,20 +1118,7 @@ class AcpRuntime:
             kas_bin = await _resolve_kiro_bin_for_spawn(environ=spawn_environ, home=spawn_home)
             if not kas_bin:
                 raise AcpRuntimeError(await self._kiro_cli_missing(spawn_environ, spawn_home))
-            # Auth owner: Crew when its own vault holds a signed-in identity,
-            # kiro-cli otherwise. Decided per spawn so a sign-in or sign-out in
-            # the dashboard takes effect on the next process, and remembered on
-            # the instance so the reader loop answers the engine's credential
-            # callback only on a process that was started expecting Crew to.
-            # The probe reads the vault (file IO) off the loop and never raises.
-            self._kas_host_auth = await vault_holds_identity_off_loop()
-            if self._kas_host_auth:
-                logger.info(
-                    "KAS auth owner=crew — Crew vault holds an identity; relay spawned "
-                    "without --auth-method cli (agent=%s)",
-                    self._agent or "<none>",
-                )
-            return build_kas_argv(kas_bin, host_auth=self._kas_host_auth)
+            return build_kas_argv(kas_bin)
 
         kiro_bin = await _resolve_kiro_bin_for_spawn(environ=spawn_environ, home=spawn_home)
         if not kiro_bin:
@@ -1306,13 +1273,10 @@ class AcpRuntime:
             # KIRO_API_KEY is kiro-cli's own MODEL credential for its v2
             # agent loop, so only the kiro backend is handed it. KAS takes the
             # strip branch even though its process is now a kiro-cli (the ACP
-            # relay): the v3 engine authenticates either from kiro-cli's OIDC
-            # store (--auth-method cli) or from Crew's vault over the
-            # _kiro/auth/getAccessToken callback, and in BOTH shapes this
-            # variable must be absent — the engine gives an API key in its
-            # environment precedence over the callback, so leaving it set would
-            # silently override the credential the operator signed in with.
-            # Unchanged from when KAS was a bare Node process.
+            # relay): the v3 engine authenticates from kiro-cli's OIDC store via
+            # --auth-method cli and never reads this variable, so injecting it
+            # would widen credential exposure for a consumer that does not
+            # exist. Unchanged from when KAS was a bare Node process.
             if self._acp_backend == ACP_BACKEND_KIRO:
                 inject_kiro_cli_api_key(env)
             else:
@@ -2193,41 +2157,13 @@ class AcpRuntime:
                     continue
 
                 # Inbound server→client REQUEST (method + id, no result/error).
-                # The one connection-level request Crew answers itself is the
-                # KAS engine's credential callback (_kiro/auth/getAccessToken),
-                # and only on a process spawned with Crew as the auth owner
-                # (see _resolve_spawn_argv / kas_transport.build_kas_argv). It
-                # carries no sessionId — the first one arrives before
-                # session/new has even returned — so it is handled here, OFF
-                # this loop: resolving and possibly refreshing a token must not
-                # block stdout demux for every other multiplexed session. On a
-                # cli-owned spawn the frame never arrives; on any other backend
-                # it falls through to the -32601 ownerless answer below rather
-                # than ever being paid with a credential (membership in
-                # ACP_BACKENDS_HOST_AUTH_CALLBACK is the authorization).
-                if (
-                    msg.id is not None
-                    and msg.result is None
-                    and msg.error is None
-                    and msg.is_method(METHOD_KAS_AUTH_GET_ACCESS_TOKEN)
-                    and self._kas_host_auth
-                    and self._acp_backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
-                ):
-                    # Same bounded progress-or-dead admission as permission
-                    # answers: this is a request, so the counted-drop path that
-                    # is valid for notifications is not — and it shares the one
-                    # answer-task set so the combined total stays under the real
-                    # resource ceiling.
-                    if not await self._wait_for_answer_capacity(msg, request_kind="KAS auth"):
-                        continue
-                    _auth_task = asyncio.ensure_future(self._answer_get_access_token(msg.id))
-                    self._answer_tasks.add(_auth_task)
-                    _auth_task.add_done_callback(self._answer_tasks.discard)
-                    continue
-                # Any other request that arrives without a sessionId is
-                # unroutable and is answered -32601 by
-                # _answer_ownerless_request below, rather than being left to
-                # hang.
+                # Crew answers no connection-level request of its own: the KAS
+                # engine's credential callback (_kiro/auth/getAccessToken) is
+                # served by kiro-cli's relay, not by this host (see
+                # :mod:`kiro_crew.acp.kas_transport`). A request that still
+                # arrives without a sessionId is therefore unroutable and is
+                # answered -32601 by _answer_ownerless_request below, rather
+                # than being left to hang.
 
                 # Route notifications by sessionId
                 session_id = (msg.params or {}).get("sessionId")
@@ -2411,50 +2347,6 @@ class AcpRuntime:
             # crash) so a trickle that never reached the interval is still
             # accounted for instead of vanishing with the task.
             self._flush_dropped_frames()
-
-    async def _answer_get_access_token(self, request_id: int | str) -> None:
-        """Answer the engine's ``_kiro/auth/getAccessToken`` from Crew's vault.
-
-        Runs OFF the reader loop. The response is built by
-        :func:`kiro_crew.acp.kas_host_auth.answer_get_access_token` (resolve,
-        refresh under the cross-process lock, refresh token withheld) and
-        handed straight to the engine — never cached here, never logged. On any
-        failure the engine is sent a JSON-RPC error, which it treats as an
-        expired credential and turns into its sign-in prompt, rather than being
-        left to hang on the callback. Only reached for a process spawned with
-        Crew as auth owner (the reader-loop guard); the INFO line is the positive
-        "engine is drawing its credential from Crew" signal, logged once per
-        runtime and only AFTER a response was actually written, so a callback
-        that failed never counts as served.
-        """
-        try:
-            result = await answer_get_access_token()
-        except HostAuthCallbackError as exc:
-            # str(exc) is token-free by construction (see kas_host_auth).
-            logger.warning("KAS auth callback failed: %s", exc)
-            try:
-                await self.send_error(request_id, KAS_AUTH_CALLBACK_ERROR_CODE, str(exc))
-            except AcpRuntimeDead:
-                pass
-            return
-        try:
-            await self.send_response(request_id, result)
-        except AcpRuntimeDead:
-            # Process gone before the answer could be written; nothing to do.
-            return
-        if not self._kas_host_auth_logged:
-            self._kas_host_auth_logged = True
-            logger.info(
-                "KAS auth callback served from Crew vault — agent=%s (PID %s)",
-                self._agent or "<none>",
-                self._pid,
-            )
-        else:
-            logger.debug(
-                "KAS auth callback served from Crew vault — agent=%s (PID %s)",
-                self._agent or "<none>",
-                self._pid,
-            )
 
     async def _answer_ownerless_request(self, request_id: int | str, method: str) -> None:
         """Answer a server→client request that names no session with -32601.
@@ -2879,88 +2771,6 @@ class AcpRuntime:
             return True
         return agent in ids
 
-    async def _verify_spawn_agent_active(
-        self,
-        session_id: str,
-        resp: dict[str, Any],
-        *,
-        override: str | None,
-    ) -> None:
-        """Fail closed when the agent the ``--agent`` flag selected never loaded.
-
-        Guard (A2) — the spawn-flag half of Guard (A) in :meth:`create_session`.
-        ``set_mode`` only ever activates an EXPLICIT override (or, on KAS, the
-        injected default), so on kiro-cli the agent chosen by ``--agent`` — the
-        agent of every ordinary session — reaches no availability check at all.
-        It needs one, because that spec can fail to load silently: kiro-cli
-        validates ``~/.kiro/agents/<agent>.json`` with ``deny_unknown_fields``
-        and, on ANY unknown field, rejects the spec wholesale and runs its own
-        default agent instead. :func:`kiro_crew.agent.migrate_agent_specs` exists
-        to strip the two keys already known to trip it; nothing validates the
-        rest, and a spec written by another tool (or by a product this install
-        superseded) can carry more.
-
-        Nothing downstream notices the substitution. The ``set_mode`` response is
-        never read back, ``currentModeId`` is never re-compared, and
-        :mod:`kiro_crew.acp.mcp_session_report` only LOGS — its own docstring
-        forbids reading a missing report as "not mounted". The session then runs
-        with NONE of Kiro Crew's control plane, while the global provider
-        ``mcp.json`` that Kiro Crew pins off only on specs IT writes stays
-        merged. So third-party MCP servers declared there keep working and every
-        Kiro Crew tool the injected prompt names — ``learn_add`` among them —
-        answers "does not exist", which the agent reports to the user as its
-        memory being unavailable.
-
-        Skipped when an override is requested: Guard (A) checks the agent
-        ``set_mode`` will activate.
-
-        ``currentModeId`` is read as PROOF, in both directions. A live probe of
-        this backend settles what it means: a spec that loads is reported as the
-        current mode AND listed in ``availableModes``, while a spec the backend
-        refuses is absent from the list and ``currentModeId`` names the backend's
-        own default instead. So a non-empty ``currentModeId`` naming something
-        OTHER than the spawn agent is positive evidence of the substitution, and
-        fails closed even when no advertised list came back. Treating a
-        current-mode mismatch as an extra ADMIT is the hole this avoids: a
-        ``currentModeId``-only response naming a substituted agent would otherwise
-        sail through the compatibility escape.
-
-        That escape is therefore narrow. It applies only when the response names
-        NO current mode, where the advertised list is the sole signal and its
-        absence is no evidence of a substitution -- so older kiro-cli and the
-        offline fake backend behave exactly as before.
-
-        Scoped to ``ACP_BACKEND_KIRO`` -- the backend whose argv actually carries
-        ``--agent`` -- and written as a POSITIVE identity test, because an
-        inequality would silently capture every harness added later
-        (harness-parity H5). On KAS the agent travels over the wire as an injected
-        custom agent and is activated by ``set_mode``, which Guard (A) already
-        covers. Scoped on the backend rather than on "the KAS projection came back
-        None" so the same call serves :meth:`load_session`, which never builds
-        that projection.
-        """
-        if override or not self._agent:
-            return
-        if self._acp_backend == ACP_BACKEND_KIRO:
-            spawn_agent = self._agent
-            ids, current, _adv = parse_session_modes(resp)
-            if current:
-                if current == spawn_agent:
-                    return
-            elif self._mode_available(spawn_agent, resp):
-                return
-            await self.terminate_session(session_id)
-            raise AcpRuntimeError(
-                f"Agent {spawn_agent!r} was spawned with --agent but is not the "
-                f"agent this session is running (current mode: "
-                f"{current or '(none reported)'}; advertised: {ids or 'none'}). Its "
-                f"~/.kiro/agents/{spawn_agent}.json is missing, or the backend "
-                f"refused to load it. Refusing to run the backend's own default "
-                f"agent in its place, which would silently drop every Kiro Crew "
-                f"tool the agent's prompt relies on. Run `kirocrew setup "
-                f"--agent-only` to rewrite the agent config."
-            )
-
     async def _kas_custom_agents(
         self, agent: str, *, member_dispatch: bool = False
     ) -> list[dict[str, Any]] | None:
@@ -3152,10 +2962,6 @@ class AcpRuntime:
 
         # Populate state from session/new response (configOptions, available models)
         handle.store_session_config(resp)
-        # Both halves of that snapshot are now known, which is what makes the
-        # served-default check answerable: the model the backend picked for
-        # this session can be one the account's partition does not serve.
-        await handle.ensure_served_default()
         # The roster this session put on the wire. Set BEFORE drain_init so the
         # report can be read as "of the N we sent, these reported" rather than
         # as a bare list of names.
@@ -3178,11 +2984,6 @@ class AcpRuntime:
         # rather than silently leaving the session on kiro-cli's default mode: for
         # a restricted/app agent that would run a BROADER agent than requested (a
         # privilege escalation), so we terminate and raise an actionable error.
-        #
-        # Guard (A2) runs FIRST: the guard below never sees the agent `--agent`
-        # selected, which on kiro-cli is every ordinary session's agent. See
-        # _verify_spawn_agent_active.
-        await self._verify_spawn_agent_active(session_id, resp, override=agent)
         # The agent to ACTIVATE. An explicit request always applies. When a KAS
         # custom agent was injected (``kas_agents`` non-empty) the runtime
         # default must be activated too: KAS has no --agent flag, so an injected
@@ -3459,11 +3260,6 @@ class AcpRuntime:
             crew_agent=_crew,
         )
         handle.store_session_config(resp)
-        # session/load echoes ``currentModelId`` exactly like session/new, and a
-        # session persisted before the account's served list changed can come
-        # back on a default the account does not serve — so the resumed session gets
-        # the same served-default check as a fresh one.
-        await handle.ensure_served_default()
         # session/load re-initializes this session's servers, so the resumed
         # session gets its own report against the roster load re-declared.
         handle.mcp_session_report().begin_session(mcp_servers)
@@ -3477,13 +3273,6 @@ class AcpRuntime:
         # succeeded so kiro-cli holds it; a plain local unregister would leak it
         # in the shared process (and leave the reader routing late transcript-
         # replay frames to an abandoned queue). terminate_session unregisters too.
-        #
-        # Guard (A2), same as create_session: the check below reads `agent`, and
-        # this method's only caller passes `agent=agent or None`, so a resume with
-        # no override reaches no check at all. A fresh runtime resuming a session
-        # re-reads the spec from disk, so the spawn agent can fail to load here
-        # exactly as it can on a cold start.
-        await self._verify_spawn_agent_active(resume_sid, resp, override=agent)
         if agent and self._mode_available(agent, resp):
             # Same reason as create_session: measured before the request goes
             # out, the only moment "queued" and "pre-switch" mean the same thing.

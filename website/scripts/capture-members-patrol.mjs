@@ -8,13 +8,9 @@
  *
  *   radar   active loop, cycle 3/24, 20-minute interval, banner set   -> accent badge
  *   ledger  active loop, UNLIMITED cap (61 cycles so far), no banner   -> accent badge
- *   scout   loop stopped by its cycle cap                             -> no badge
- *   scribe  loop stopped because a tool approval went unanswered      -> no badge
+ *   scout   loop stopped by its cycle cap                             -> warn badge
+ *   scribe  loop stopped because a tool approval went unanswered      -> warn badge
  *   fixer   nothing armed                                             -> no badge
- *
- * The roster badge is two-state: it renders only while a loop is ACTIVE. A
- * stopped loop and a never-armed member both show nothing on the avatar; the
- * stopped loop's reason lives in the drawer block (frames 04 / 05).
  *
  * Frames:
  *   01-active-dark      radar's drawer, dark: "Patrolling" block, badge, and the
@@ -28,10 +24,8 @@
  *   10-error-dark       registry read failed: roster-level ErrorNotice + drawer block ErrorNotice
  *
  * Recordings (the two animated state changes):
- *   07-badge-arm-disarm.webm   fixer's avatar gains the badge when a loop arms
- *                              and FADES it out when the loop stops (no
- *                              intermediate "stopped" mark) as the registry
- *                              flips and the page re-reads it
+ *   07-badge-arm-disarm.webm   fixer's avatar gains and loses the badge as the
+ *                              registry flips and the page re-reads it
  *   08-block-crossfade.webm    fixer's open drawer block cross-fades none ->
  *                              active -> stopped
  *
@@ -40,9 +34,9 @@
  * harness holds the page's `/api/ws` socket, mutates the stub's registry, and
  * pushes an `autonudge_state` frame the way the gateway does.
  *
- * Every frame asserts the block's `data-state` and the roster badges (exactly
- * one per ACTIVE loop, none for stopped or never-armed) before capturing, so a
- * frame can only be written from the state its filename claims.
+ * Every frame asserts the block's `data-state` and the roster badges (two
+ * active, two stopped) before capturing, so a frame can only be written from
+ * the state its filename claims.
  *
  * Usage: node scripts/capture-members-patrol.mjs [outDir]
  */
@@ -172,7 +166,7 @@ async function openMembers(theme, { record = false } = {}) {
   await page.routeWebSocket(/\/api\/ws/, (ws) => { wsServer = ws })
   await page.goto(base + '/members')
   await page.getByText('radar', { exact: true }).first().waitFor({ timeout: 15000 })
-  if (registry.mode === 'ok') await expectBadges(page, { active: 2 })
+  if (registry.mode === 'ok') await expectBadges(page, { active: 2, stopped: 2 })
   /** Push one `autonudge_state` frame for `loop` (gateway envelope). */
   const pushLoop = async (event, loop) => {
     if (!wsServer) throw new Error('the page never opened /api/ws')
@@ -181,15 +175,15 @@ async function openMembers(theme, { record = false } = {}) {
   return { page, context, pushLoop }
 }
 
-/** Exactly the badges the registry implies: one accent badge per ACTIVE loop
- *  and nothing else — a stopped loop and a member that never armed one both
- *  render no badge (the roster badge is presence-only, like the working dot). */
+/** Exactly the badges the registry implies: accent per active loop, warn per
+ *  stopped one, none for a member that never armed. */
 async function expectBadges(page, want) {
   await page.waitForFunction(
     (w) => {
       const all = Array.from(document.querySelectorAll('[data-testid="member-patrol-dot"]'))
       const active = all.filter((b) => b.getAttribute('data-state') === 'active').length
-      return all.length === w.active && active === w.active
+      const stopped = all.filter((b) => b.getAttribute('data-state') === 'stopped').length
+      return active === w.active && stopped === w.stopped
     },
     want,
     { timeout: 15000 },
@@ -242,7 +236,7 @@ console.log(`03-unlimited-dark: ledger cycles read "${cycles}"`)
 
 await openDrawerFor(dark, 'scout', 'stopped')
 await dark.screenshot({ path: `${OUT}/04-stopped-dark.png` })
-console.log('04-stopped-dark: scout stopped at its cycle cap — reason in the drawer, no badge on the avatar')
+console.log('04-stopped-dark: scout stopped at its cycle cap')
 
 await openDrawerFor(dark, 'scribe', 'stopped')
 await dark.screenshot({ path: `${OUT}/05-stalled-dark.png` })
@@ -287,21 +281,20 @@ await darkCtx.close()
   await page.waitForTimeout(800)
   registry.loops = [...BASELINE, FIXER_ACTIVE]
   await pushLoop('added', FIXER_ACTIVE)
-  await expectBadges(page, { active: 3 })
+  await expectBadges(page, { active: 3, stopped: 2 })
   await page.waitForTimeout(1200)
   registry.loops = [...BASELINE, FIXER_STOPPED]
   await pushLoop('expired', FIXER_STOPPED)
-  // The stop FADES the badge out — no warn recolour in between.
-  await expectBadges(page, { active: 2 })
+  await expectBadges(page, { active: 2, stopped: 3 })
   await page.waitForTimeout(1200)
   registry.loops = BASELINE
   await pushLoop('removed', FIXER_STOPPED)
-  await expectBadges(page, { active: 2 })
+  await expectBadges(page, { active: 2, stopped: 2 })
   await page.waitForTimeout(800)
   const video = page.video()
   await context.close()
   if (video) { await video.saveAs(`${OUT}/07-badge-arm-disarm.webm`); await video.delete() }
-  console.log('07-badge-arm-disarm.webm: fixer badge fades in when the loop arms, fades out when it stops')
+  console.log('07-badge-arm-disarm.webm: fixer badge in (accent), stopped (warn), then out')
 }
 
 // 08: the drawer block cross-fading none -> active -> stopped on fixer.

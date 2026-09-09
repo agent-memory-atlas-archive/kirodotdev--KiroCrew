@@ -67,6 +67,7 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
     subject), so it is reused rather than re-derived -- the same reason
     ``ask_question`` and ``mcp_apps`` reuse it. Reads are refused too: the GET
     names the account id and caller ARN that a keystone read is fenced from.
+    Both findings came from review.
     """
     if is_owner_dashboard_request(request):
         return None

@@ -22,11 +22,12 @@ logger = logging.getLogger(__name__)
 #: *uncompressed*, so a compressed archive under 2 GiB cannot be refused here
 #: without the two limits contradicting each other.
 #:
-#: A tighter ceiling (512 MB, say) is a NEW restriction rather than a restored
-#: one -- the upload streams to disk, so nothing downstream needs it -- and it
-#: would 413 a legitimate export exactly when the source machine may be gone.
-#: The cap exists only so an unbounded upload cannot fill the disk, and 2 GiB is
-#: the largest value consistent with the guard downstream.
+#: An earlier revision set this to 512 MB and justified it as restoring a bound
+#: streaming had removed. That was wrong on the facts: the previous
+#: implementation already streamed to disk with no cap at all, so 512 MB was a
+#: NEW restriction that could 413 a legitimate export -- exactly when the source
+#: machine may be gone. The cap exists only so an unbounded upload cannot fill
+#: the disk, and 2 GiB is the largest value consistent with the guard downstream.
 _MAX_IMPORT_BYTES = 2 * 1024**3
 
 
@@ -123,14 +124,16 @@ async def api_portability_import(request: web.Request) -> web.Response:
 
         summary = await asyncio.to_thread(apply_import_zip, zip_path, mode)
 
-        # `staging` is recorded here, not only returned. Nothing renders it, and
+        # `staging` is recorded here, not only returned. Review pointed out that nothing
+        # renders it, which made a field added for truthfulness invisible to everyone -- and
         # whether an import was pinned, mixed or unpinned is a security property of the
         # operation, so the audit trail is where it belongs more than a UI badge does. The
         # response still carries it for whatever renders it later.
         #
-        # A refused component merge (the cron merge can refuse and import nothing)
-        # is logged as `partial`, not `ok` -- a flat ok would make the audit trail
-        # agree with a summary that claims a merge that never happened.
+        # A refused component merge (issue #8217: the cron merge can refuse and
+        # import nothing) is logged as `partial`, not `ok` -- a flat ok here made
+        # the audit trail agree with a summary that claimed a merge that never
+        # happened.
         refused = summary.get("refused_merges") or []
         _sel().log_api_access(
             caller=caller,

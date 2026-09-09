@@ -383,46 +383,9 @@ def _mean(xs: Sequence[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
-def golden_set_dir() -> Path:
-    """Directory holding the packaged golden sets."""
-    return Path(__file__).resolve().parent / "data"
-
-
 def default_golden_set_path() -> Path:
-    """Path to the golden set a no-argument run measures: v2.
-
-    v2, not v1, because v1 cannot discriminate: on it every class scores 1.000
-    recall under BOTH a keyword-only and a semantic retriever, so the number
-    confirms only that the harness ran. That is a property of v1's shape rather
-    than its size -- each of its gold documents is the only one in that corpus
-    using its topic's vocabulary, so matching a single term wins. v2 carries
-    competing distractors, and the legs separate on it: keyword-only
-    (deterministic: FTS5 + graph, no model) scores nDCG@3 0.825 / MRR@3 0.804,
-    against 0.903 / 0.887 for the semantic leg measured with
-    ``qwen3-embedding:0.6b``, and ``multi_hop`` recall_all@3 reads 0.400 keyword
-    versus 1.000 semantic. Re-measure the semantic pair after a model or
-    quantization change; only the keyword pair is reproducible from the corpus
-    alone.
-
-    Consequence for anyone comparing runs: a v1 report and a v2 report measure
-    DIFFERENT corpora and their metrics are not comparable. Nothing mechanical
-    stops that comparison -- ``bench kb-retrieval`` PRINTS its report and writes no
-    file (it has no ``--out-dir``), and ``bench compare`` only diffs saved
-    memory-retrieval reports, so it never sees a KB run at all. The one guard is
-    the corpus name in the printed header (``KB retrieval eval: kb_golden_v2``):
-    read it before putting two of these numbers side by side.
-    """
-    return golden_set_dir() / "kb_golden_v2.json"
-
-
-def v1_golden_set_path() -> Path:
-    """Path to the smaller v1 set, packaged alongside the default.
-
-    Shipped so a v1-labelled report stays reproducible. Not the default: it cannot
-    separate two retrievers, because each of its gold documents is the only one in
-    that corpus using its topic's vocabulary (see :func:`default_golden_set_path`).
-    """
-    return golden_set_dir() / "kb_golden_v1.json"
+    """Path to the shipped v1 golden set (packaged next to this module)."""
+    return Path(__file__).resolve().parent / "data" / "kb_golden_v1.json"
 
 
 def _fail_closed_embed(

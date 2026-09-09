@@ -22,7 +22,7 @@ import { createTranscriptRenderers } from './chat/transcriptRenderers'
 export { isBrowseCommand }
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import type { ResizeInfo } from '../utils/resizeImage'
-import { useAppSelector, useAppDispatch, useAppStore, store } from '../store'
+import { useAppSelector, useAppDispatch, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
@@ -45,7 +45,6 @@ import {
 } from '../store/chatSlice'
 import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
-import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
 import { runInTerminalText } from '../utils/fenceShell'
@@ -329,9 +328,12 @@ import type { ChatMessage } from '../types'
 
 import { shouldMountSidePanel, isSidePanelHidden, sidePanelDockMotion } from './chat/sidePanelMount'
 import type { ParsedSubagentCompletion } from './chat/subagentCompletion'
+import { renderMcpOAuthMessage } from './chat/McpOAuthBanner'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
+import StopEventCard from './chat/StopEventCard'
+import NoticeCard from './chat/NoticeCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
@@ -4022,18 +4024,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     availableModels,
     _modelsDegraded,
     currentSlot?.model_withheld,
-    // Names the backend's own choice when the slot inherits, so the chip is not
-    // a bare `auto` for a session running one specific model.
-    currentSlot?.served_model,
-  )
-  // The same answer WITHOUT that substitution, for the pin-to-agent row: that
-  // row asks about the PIN, and it must stay disabled for a withheld one even
-  // now that the chip names the model the session inherited instead.
-  const _pinShownModel = displayModel(
-    currentSlot?.model || resolvedModel || '',
-    availableModels,
-    _modelsDegraded,
-    currentSlot?.model_withheld,
   )
   // Context-window fallback for a peer-bound session BEFORE its first turn. Once a
   // turn has run the real number arrives with the relayed `context_usage` frame and
@@ -4316,25 +4306,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const t = setTimeout(() => { setContinuing(false) }, 30_000)
     return () => clearTimeout(t)
   }, [continuing])
-  // Fix affordances on a model-entitlement error row. The picker is the same
-  // portal the composer's model chip opens, anchored to that chip so it lands
-  // where the user already knows to look; when the chip is not on screen (a
-  // collapsed composer) the picker still opens, anchored to the composer edge.
-  const openModelPickerFromError = useCallback(() => {
-    const chip = document.querySelector<HTMLElement>('[data-testid="composer-model-chip"]')
-    const rect = chip?.getBoundingClientRect()
-      ?? new DOMRect(16, Math.max(0, window.innerHeight - 96), 160, 28)
-    setModelBtnRect(rect)
-    setModelDropdown(true)
-  }, [setModelDropdown])
-  // The Default Model setting lives only on the full dashboard's Settings →
-  // Chat tab. /embed/settings is a different page (Display), and a popout has
-  // no settings route at all, so on both surfaces the affordance is omitted
-  // rather than pointed at a page that does not carry the setting.
-  const openDefaultModelSetting = useCallback(() => {
-    navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))
-  }, [navigate])
-
   const handleContinue = useCallback(() => {
     if (!activeSlot || continuing || !continuable) return
     setContinuing(true)
@@ -4350,73 +4321,45 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the shared row set from the transcript it is handed -- see
   // transcriptRenderers.tsx `lastErrorIndex`.)
 
+  const [flyingQuote, setFlyingQuote] = useState<{ text: string; from: DOMRect } | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
 
-  // Quote / Ask on selected assistant text — the shared chat-core seam
-  // (chat-core/composer/selectionActions): Quote lands in this composer with
-  // the transit animation, Ask seeds the Side Chat. This page's Side Chat
-  // surface is the activity panel's `side` tab; the /side slash command opens
-  // it through the same `openActivityToTab('side')` bridge.
-  const openSideChat = useCallback(() => { dispatch(openActivityToTab('side')) }, [dispatch])
-  const { onQuote: handleQuote, onAsk: handleAsk, quoteFlight: flyingQuote, endQuoteFlight } = useSelectionQuoteAsk({
-    slot: activeSlot,
-    setInput,
-    revealComposer,
-    openSideChat,
-  })
-  // Split view's panes ask about THEIR slot, but the activity panel — and the
-  // Side Chat inside it — is bound to the active slot. Re-bind it first (the
-  // same switchSlot the grid's collapse path uses; split mode itself is not
-  // left), then open the tab. The seed names the slot, so it waits for the
-  // re-bound panel's composer rather than landing on the old slot's.
-  //
-  // Offline, the re-bind is withheld like every other switchSlot in this file
-  // (the tab strip, the sidebar row, the ?sid deep link): a rejected switch
-  // clears the pane's active messages and the transcript the reader just
-  // selected from disappears until reconnect. The grid is handed no
-  // `openSideChat` at all while disconnected, so the panes' toolbars offer
-  // Copy / Quote only (capability by omission, never an Ask into the void);
-  // the guard here covers the frame between the drop and the re-render, and
-  // rather than open a Side Chat bound to some OTHER slot it does nothing.
-  // Read at click time, not captured: the callback is memoized and the
-  // gateway can drop between renders (the tab strip's own gate, now inside
-  // useChatPageSessionController, keeps its ref the same way).
-  const connectedRef = useRef(connected)
-  connectedRef.current = connected
-  // The store this page is rendered under (not the module singleton): the
-  // opener reads live state after an await, and it must be the same store
-  // its dispatches went to.
-  const boundStore = useAppStore()
-  const openSideChatForPane = useCallback((slot: string): boolean | Promise<boolean> => {
-    if (slot === activeSlot) {
-      dispatch(openActivityToTab('side'))
-      return true
+  const handleQuote = useCallback((text: string, rect: DOMRect) => {
+    const quoted = text.split('\n').map(line => `> ${line}`).join('\n')
+    setInput(prev => {
+      // Append new quote after existing content (supports multiple quotes)
+      if (!prev.trim()) return `${quoted}\n\n`
+      return `${prev.trimEnd()}\n\n${quoted}\n\n`
+    })
+    // Trigger flying animation
+    setFlyingQuote({ text, from: rect })
+    revealComposer()
+  }, [])
+
+  // "Ask" (Select-to-Ask): open the isolated /side conversation seeded with the
+  // selection, WITHOUT touching the main chat context (unlike handleQuote, which
+  // injects into the main composer). Mirrors the /side slash command's
+  // openActivityToTab('side') bridge, then hands the selection to SideChat via a
+  // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab —
+  // no new prop-drilling, no backend change). No transit
+  // animation: the popup routes the selection straight to the Side Chat panel
+  // (matches Codex's "Ask in side chat" behavior).
+  const handleAsk = useCallback((text: string) => {
+    dispatch(openActivityToTab('side'))
+    // The Side Chat panel (and its `side-seed` listener) mounts asynchronously
+    // once the panel opens. Poll a few frames for its input as a mount signal,
+    // then dispatch the seed. Fall back to dispatching after a cap so the
+    // feature still works even if the input never resolves.
+    const trySeed = (attempt = 0) => {
+      const mounted = document.querySelector('[data-side-chat-input] textarea[data-composer-input]')
+      if (mounted || attempt >= 20) {
+        window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
+      } else {
+        requestAnimationFrame(() => trySeed(attempt + 1))
+      }
     }
-    // `false` tells the selection seam the Ask did NOT happen, so it does
-    // not seed a quote into a Side Chat that never opened.
-    if (!connectedRef.current) return false
-    // The re-bind is a request the server can reject (the pane's session was
-    // deleted under it); `switchSlot.rejected` then falls back to the slot the
-    // page was on. Report the verdict only once it is known: the seam seeds
-    // on `true`, and a rejection is surfaced through the page's ErrorNotice
-    // instead of leaving a silent, invisible seed behind.
-    return dispatch(switchSlot(slot)).unwrap().then(
-      () => {
-        // A later switch (the user clicked another pane, or Asked from it)
-        // may have landed while this one was in flight; the panel is bound to
-        // whatever is active NOW, so opening the Side tab here would show the
-        // other pane's Side Chat with this quote hidden in this slot's draft.
-        // Report the Ask as not happened instead of seeding a stale slot.
-        if (boundStore.getState().chat.activeSlot !== slot) return false
-        dispatch(openActivityToTab('side'))
-        return true
-      },
-      (e: unknown) => {
-        showActionError(i18nT('pages.chatPage.side_chat_pane_gone', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
-        return false
-      },
-    )
-  }, [activeSlot, boundStore, dispatch, showActionError])
+    requestAnimationFrame(() => trySeed())
+  }, [dispatch])
 
   const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
     if (!activeSlot || slotRunning) return
@@ -5699,14 +5642,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // is the page's precedence order, unchanged from the if-chain it replaces:
   // the shared dashboard set (sub-agent completion, launch cards, tool,
   // thinking, file, nudge, recovery inject, workflow completion, error), then
-  // permission, undrawn, hidden invisible assistant, and the conversational
-  // bubble. Roles none of these claim fall to the registry defaults (`undrawn`
-  // for queued/system/done and the reasoning roles; `tool_lifecycle` for raw
-  // wire shapes the store normalizes away; the stop-event card, the notice
-  // card and the MCP OAuth banner -- P5-c deleted the page's copies of those
-  // three, which drew the same component from the same inputs), and a role
-  // NOBODY claims renders as the bubble, which is what the if-chain's
-  // fall-through did.
+  // stop_event, notice, permission, undrawn, mcp_oauth, hidden invisible
+  // assistant, and the conversational bubble. Roles none of these
+  // claim fall to the registry defaults (`undrawn` for queued/system/done and
+  // the reasoning roles; `tool_lifecycle` for raw wire shapes the store
+  // normalizes away), and a role NOBODY claims renders as the bubble, which is
+  // what the if-chain's fall-through did.
   //
   // Memoized with the deps the old renderMessage carried: UI-state deps
   // (chatConfig, linkPreviewsOn, disclosure, pin state, ...) deliberately STAY
@@ -5824,12 +5765,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // tool lines and launch cards, thinking block, nudge, recovery inject, the
     // two completion cards, the error card with Continue), wired with this
     // page's behaviours through its options; ChatPane calls the same factory
-    // with fewer. Only rows that are genuinely page-specific follow it. The
-    // stop-event card, the notice card and the MCP OAuth banner are NOT among
-    // them: the SDK defaults draw each from the same component and the same
-    // inputs (`ctx.hideCardOwnedOAuth` is this page's `connectionsUiOn`), and
-    // this page's `ctx.row` is a keyed passthrough, so the page reads those
-    // three rows from the registry exactly as every pane does (P5-c).
+    // with fewer. Only rows that are genuinely page-specific follow it.
     const shared = createTranscriptRenderers({
       slot: activeSlot || undefined,
       // An unparseable file row has always fallen through to the bubble on
@@ -5854,14 +5790,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       interrupted,
       continuing,
       onContinue: handleContinue,
-      onPickModel: openModelPickerFromError,
-      onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
       onSessionOpen: selectSessionTab,
       sessions: connected ? sessionTitles : undefined,
       activeSession: activeSlot || undefined,
     })
     const renderers = mergeRenderers([
       ...shared,
+      {
+        id: 'stop_event',
+        roles: ['*'],
+        match: m => m.kind === 'stop_event' || m.meta?.kind === 'stop_event',
+        render: (m, ctx) => <StopEventCard key={m.meta?.id as string ?? ctx.key} message={m} />,
+      },
+      { id: 'notice', roles: ['notice'], render: (m, ctx) => <NoticeCard key={ctx.key} content={m.content} /> },
       {
         // Approval flow: the permission cards own it; grouped, never a standalone row.
         id: 'permission',
@@ -5880,6 +5821,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         render: () => null,
       },
       {
+        id: 'mcp_oauth',
+        roles: ['mcp_oauth'],
+        render: (m, ctx) => {
+          const key = ctx.key
+      const banner = renderMcpOAuthMessage(m, connectionsUiOn)
+      return banner ? <div key={key}>{banner}</div> : null
+        },
+      },
+      {
         // A quiet monitor-loop cycle replies with a bare zero-width space
         // (U+200B): the content is truthy but renders as nothing, so the row
         // would draw as an empty bubble -- one per quiet cycle, historical
@@ -5893,7 +5843,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -6905,7 +6855,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         {splitMode && splitFeatureEnabled ? (
           <SessionGridView
             seedSlot={splitAnchor ?? activeSlot}
-            openSideChat={connected ? openSideChatForPane : undefined}
             onClose={() => setSplitMode(false)}
             onCollapse={(slot, anchorTs, anchorMid) => {
               dispatch(switchSlot(slot))
@@ -7406,7 +7355,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
-              {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
+              {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
               <div ref={inputAreaRef} className="relative z-10">
               {/* The refused-press answer sits directly above the composer,
                   adjacent to the message-footer controls that raised it, so the
@@ -7707,9 +7656,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
               modelName={shownModel}
-              // The served default is shown exactly when the pin alone would
-              // have read `auto`; that is the inherited case the marker names.
-              modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
               onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect) => { setModelBtnRect(rect); setModelDropdown(!modelDropdown) }}
               onProjectClick={(rect) => {
@@ -7905,7 +7851,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 }}
                 agentName={_modelPinAgent}
                 pinModelName={_modelPinActive || 'auto'}
-                pinModelUnavailable={pinIsWithheld(_modelPinActive, _pinShownModel)}
+                pinModelUnavailable={pinIsWithheld(_modelPinActive, shownModel)}
                 pinnedToAgent={_modelPinPinned}
                 onPinToAgent={() => {
                   setModelDropdown(false)

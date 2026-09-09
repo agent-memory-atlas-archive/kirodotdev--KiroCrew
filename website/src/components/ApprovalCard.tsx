@@ -92,13 +92,7 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
       }
       {toolInput && <ToolInputPreview toolInput={toolInput} threshold={200} />}
       {showButtons && !decided && !failure?.terminal && (
-        // Grouped so a screen reader announces approve / trust / reject as one
-        // decision cluster rather than three loose buttons; operators batch-
-        // approve, so the controls must read as a set (Req 2.5, WCAG AA). The
-        // buttons carry visible text, so their accessible name comes from that
-        // text — a redundant aria-label would only override it, so only the
-        // otherwise-unnamed group gets an explicit label.
-        <div ref={buttonsRef} role="group" aria-label={i18nT('components.approvalCard.actions_group')} className="mt-1.5 flex gap-1.5 flex-wrap">
+        <div ref={buttonsRef} className="mt-1.5 flex gap-1.5 flex-wrap">
           <button className={btnClass} onClick={() => handle('approved')}><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approve')}</button>
           {showTrust && <TrustDropdown fullCommand={hasCommand ? normalized : ''} baseCommand={baseCmd} isShell={hasCommand && isShell} hasCommand={hasCommand} trustAllLabelKey={trustAllLabelKey} className={btnClass} onAction={(action, pattern) => handle(action, pattern)} />}
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>

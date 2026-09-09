@@ -8,7 +8,6 @@ import json
 import locale
 import os
 import re
-import stat
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -703,20 +702,6 @@ async def _own_commits_count(path: str) -> int | None:
     return int(out) if out and out.isdigit() else None
 
 
-def _is_directory_at(name: str, dir_fd: int) -> bool:
-    """Whether *name*, resolved relative to the pinned *dir_fd*, is a directory.
-
-    ``lstat`` through the descriptor and without following links, so the answer is
-    about the entry the failed ``unlink`` addressed and not about whatever a link
-    at that name points to. Any error reads as "not a directory": the caller then
-    reports the original failure instead of a guess.
-    """
-    try:
-        return stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
-    except OSError:
-        return False
-
-
 def _discard_untracked_files(worktree: str, rel_paths: list[str]) -> str | None:
     """Delete exactly the approved untracked files. None on success, else a reason.
 
@@ -818,14 +803,6 @@ def _discard_untracked_files(worktree: str, rel_paths: list[str]) -> str | None:
                     "file that was confirmed"
                 )
             except OSError as exc:
-                if exc.errno == errno.EPERM and _is_directory_at(parts[-1], dir_fds[-1]):
-                    # macOS and the BSDs answer unlink() on a directory with EPERM,
-                    # not Linux's EISDIR, so the type change arrives here instead of
-                    # in the clause above. Same refusal: nothing recurses into it.
-                    return (
-                        f"refusing to discard {rel!r}: it is now a directory, not the "
-                        "file that was confirmed"
-                    )
                 if walked < len(root_parts) - 1 and exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     # A component of the worktree path is a symlink. Could be a
                     # host whose home directory is linked, could be an ancestor
@@ -985,11 +962,6 @@ async def _find_worktree_by_path(path: str) -> tuple[dict | None, str | None]:
     if not path:
         return None, "'path' must be a non-empty string"
     try:
-        # Explicit on every platform: POSIX ``realpath`` raises ValueError on an
-        # embedded NUL, but Windows' swallows it and resolves the string anyway,
-        # which would send garbage on to the enumeration instead of refusing it.
-        if "\x00" in path:
-            raise ValueError("embedded null byte")
         want = Path(path).resolve()
     except (OSError, ValueError, RuntimeError):
         return None, f"invalid path: {path!r}"

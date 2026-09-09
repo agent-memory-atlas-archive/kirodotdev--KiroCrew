@@ -1781,13 +1781,14 @@ async def _stop_apps_running_on_blanket_trust(
         # the apps whose recorded state was least trustworthy from the sweep that
         # exists to stop them.
         #
-        # Builtin exemption comes from `builtin_app_names()` ALONE, never from
-        # `origin == "builtin"`: `origin` is a field of the app's own
-        # `installed.json` record — writable by any app trusted to run code — so a
-        # trusted app could stamp itself first-party and walk out of the sweep that
-        # exists to stop it. `builtin_app_names()` cannot be forged: it requires a
-        # SHIPPED `app.json` to declare the name, and its own contract is that
-        # `installed.json` is consulted only to REMOVE trust, never to widen it.
+        # Builtin exemption comes from `builtin_app_names()` ALONE. The candidate
+        # query used to also skip `origin == "builtin"`, but `origin` is a field of
+        # the app's own `installed.json` record — writable by any app trusted to run
+        # code — so a trusted app could stamp itself first-party and walk out of the
+        # sweep that exists to stop it. `builtin_app_names()` cannot be forged: it
+        # requires a SHIPPED `app.json` to declare the name, and its own contract is
+        # that `installed.json` is consulted only to REMOVE trust, never to widen
+        # it. Reading `origin` here inverted exactly that rule.
         granted = set(build_trusted_apps_snapshot()["apps"])
         builtins = builtin_app_names()
         return [

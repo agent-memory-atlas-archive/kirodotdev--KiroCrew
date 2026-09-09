@@ -132,8 +132,8 @@ def _audit(caller: str, operation: str, outcome: str, resources: str = "", error
     """Enqueue one SEL row for a ledger touch.
 
     A bare enqueue, NOT wrapped in ``asyncio.to_thread``: SEL is warmed at
-    gateway startup, so the first-touch filesystem initialization off-loading
-    would protect against never runs here. Guarded because a FAILED
+    gateway startup, so the first-touch filesystem initialization that
+    off-loading existed for never runs here (#8741). Guarded because a FAILED
     warm leaves construction to retry on this thread and possibly raise, and the
     audit must never change the route's outcome.
     """
@@ -733,10 +733,10 @@ def _refuse_unowned_worker(
         # it LANDS, so it would write the new item's status, summary, artifacts and
         # pr, and there is no unbind path to undo it.
         #
-        # An idle check on the worker slot does not guard that: it is a TOCTOU,
-        # since a turn can start during the awaits between it and the commit, and
-        # closing THAT would mean making turn admission and binding replacement
-        # atomic — a coordination mechanism across two subsystems, for a
+        # An earlier revision guarded that with an idle check on the worker slot.
+        # That check is a TOCTOU: a turn can start during the awaits between it and
+        # the commit, and closing THAT would mean making turn admission and binding
+        # replacement atomic — a coordination mechanism across two subsystems, for a
         # capability nothing needs. The RFC's lifecycle dispatches one session per
         # item, so refusing reuse costs a conductor one ``session_create`` and makes
         # the race UNREPRESENTABLE rather than guarded. The store keeps its

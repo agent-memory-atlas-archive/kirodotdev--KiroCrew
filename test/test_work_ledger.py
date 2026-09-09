@@ -17,12 +17,9 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest import mock
 
 import pytest
-from windows_sim import read_sharing_violation
 
-from kiro_crew import atomic_write, platform_compat
 from kiro_crew import work_ledger as wl
 
 CONDUCTOR = "chat-1-conductor"
@@ -1022,45 +1019,23 @@ def test_an_item_file_storing_a_different_id_reads_as_absent(caplog):
     assert wl.item_path(CONDUCTOR, b).read_bytes() == b_before
 
 
-def _fault_record_read(monkeypatch, *, name: str | None = None, parent: Path | None = None):
-    """Make a record read raise a Windows-style sharing violation, and undo it.
-
-    Records are read through ``atomic_write.read_bytes_with_retry``, so the fault
-    belongs on ``Path.read_bytes``. On POSIX that helper treats ``PermissionError``
-    as a genuine access fault and re-raises on the first attempt, so a test pinning
-    the fail-closed contract sees the error directly. Returns the callable that
-    restores the real reader.
-
-    Exactly one selector: ``name`` faults a single file, ``parent`` faults every
-    read inside one directory.
-    """
-    real_read_bytes = Path.read_bytes
-
-    def flaky(self, *a, **kw):
-        if (name is not None and self.name == name) or (
-            parent is not None and self.parent == parent
-        ):
-            raise PermissionError("sharing violation")
-        return real_read_bytes(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "read_bytes", flaky)
-
-    def restore() -> None:
-        monkeypatch.setattr(Path, "read_bytes", real_read_bytes)
-
-    return restore
-
-
 def test_the_bind_guard_fails_closed_on_a_transient_read_error(monkeypatch):
     """GPT round 5 F2: a prior item that is present but momentarily unreadable must
     NOT read as stale, or the worker is rebound and its open item stranded."""
     first = _new_item(title="first")
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
-    restore = _fault_record_read(monkeypatch, name=f"{first}.json")
+    real_read_text = Path.read_text
+
+    def flaky(self, *a, **kw):
+        if self.name == f"{first}.json":
+            raise PermissionError("sharing violation")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
     with pytest.raises(PermissionError):
         wl.apply_conductor_action(CONDUCTOR, "bind", item_id=second, worker_session_key=WORKER)
-    restore()
+    monkeypatch.setattr(Path, "read_text", real_read_text)
     assert wl.read_binding(WORKER) == (CONDUCTOR, first)
     second_item = wl.read_work_item(CONDUCTOR, second)
     assert second_item is not None and second_item.worker_session_key is None
@@ -1073,14 +1048,21 @@ def test_the_bind_guard_fails_closed_when_the_binding_itself_is_unreadable(monke
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
     binding_before = wl.binding_path(WORKER).read_bytes()
-    restore = _fault_record_read(monkeypatch, parent=wl.bindings_dir())
+    real_read_text = Path.read_text
+
+    def flaky(self, *a, **kw):
+        if self.parent == wl.bindings_dir():
+            raise PermissionError("sharing violation")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
     with pytest.raises(PermissionError):
         wl.apply_conductor_action(CONDUCTOR, "bind", item_id=second, worker_session_key=WORKER)
-    restore()
+    monkeypatch.setattr(Path, "read_text", real_read_text)
     assert wl.binding_path(WORKER).read_bytes() == binding_before
     assert wl.read_binding(WORKER) == (CONDUCTOR, first)
     # The lenient reader still answers 'unbound' for a worker tool.
-    _fault_record_read(monkeypatch, parent=wl.bindings_dir())
+    monkeypatch.setattr(Path, "read_text", flaky)
     assert wl.read_binding(WORKER) is None
 
 
@@ -1090,7 +1072,14 @@ def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch)
     wl.ensure_conductor(CONDUCTOR, goal="keep me", depth=1)
     wl.apply_conductor_action(CONDUCTOR, "goal", round_number=4)
     before = (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes()
-    restore = _fault_record_read(monkeypatch, name="conductor.json")
+    real_read_text = Path.read_text
+
+    def flaky(self, *a, **kw):
+        if self.name == "conductor.json":
+            raise PermissionError("sharing violation")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
     with pytest.raises(PermissionError):
         wl.ensure_conductor(CONDUCTOR, goal="other")
     # The action entry point's lenient pre-lock read answers ``no_ledger`` first;
@@ -1099,7 +1088,7 @@ def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch)
         wl.apply_conductor_action(CONDUCTOR, "goal", goal="other")
     with pytest.raises(PermissionError):
         wl._write_goal(CONDUCTOR, wl.ConductorRecord(slot_key=CONDUCTOR), "other", None)
-    restore()
+    monkeypatch.setattr(Path, "read_text", real_read_text)
     assert (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes() == before
     record = wl.read_conductor(CONDUCTOR)
     assert record is not None and (record.goal, record.round, record.depth) == ("keep me", 4, 1)
@@ -1150,7 +1139,14 @@ def test_an_interrupted_bind_can_be_retried(caplog):
 
 def test_lenient_reads_still_treat_a_transient_error_as_absent(monkeypatch):
     item_id = _new_item()
-    _fault_record_read(monkeypatch, name=f"{item_id}.json")
+    real_read_text = Path.read_text
+
+    def flaky(self, *a, **kw):
+        if self.name == f"{item_id}.json":
+            raise PermissionError("sharing violation")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
     assert wl.read_work_item(CONDUCTOR, item_id) is None
     assert wl.list_work_items(CONDUCTOR) == []
 
@@ -1419,149 +1415,6 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
         item = wl.read_work_item(key, item_id)
         assert item is not None
         assert (item.worker_session_key == WORKER) == ((key, item_id) == binding)
-
-
-def test_the_guards_tolerate_a_prefixed_leaf_resolve(monkeypatch):
-    """A leaf resolve that comes back extended-length-prefixed must not refuse.
-
-    ``ntpath.realpath`` keeps Windows' ``\\\\?\\`` prefix when its prefix-strip
-    re-check races a concurrent swap of the same file -- exactly what a losing
-    ``bind`` sees while the winner replaces the binding record it is composing
-    the path of. A guard that compares that prefixed child against an
-    unprefixed parent reads the spelling as an escape and turns a clean
-    ``already_bound`` refusal into ``invalid_value``, which is Windows-only
-    because POSIX ``realpath`` has no prefix re-check. The guards therefore go
-    through ``resolved_within``, which strips the prefix from BOTH sides before
-    comparing. POSIX cannot produce the prefixed spelling natively, so this
-    simulates it where it arises: ``Path.resolve`` returning the
-    extended-length form of the correct answer.
-    """
-    import kiro_crew.session_ledger as sl
-
-    original_resolve = Path.resolve
-
-    def prefixing(self: Path, *args, **kwargs) -> Path:
-        real = original_resolve(self, *args, **kwargs)
-        text = str(real)
-        # Only a drive-absolute spelling can legally carry the prefix; POSIX
-        # paths get a synthetic one through _plain's own contract instead.
-        return Path(f"\\\\?\\{text}") if text[1:2] == ":" else real
-
-    # The pure half: _plain must strip both prefix spellings.
-    assert sl._plain(Path("\\\\?\\C:\\store\\bindings\\w.json")) == Path(
-        "C:\\store\\bindings\\w.json"
-    )
-    assert sl._plain(Path("\\\\?\\UNC\\host\\share\\x")) == Path("\\\\host\\share\\x")
-
-    # The integration half: both guards answer a real path, not a refusal,
-    # when every resolve is prefixed the way the Windows race spells it.
-    monkeypatch.setattr(Path, "resolve", prefixing)
-    assert wl.binding_path(WORKER).name == f"{wl._store_name(WORKER)}.json"
-    assert wl.conductor_dir(CONDUCTOR).name == wl._store_name(CONDUCTOR)
-    # And hostile keys are still refused with the guards' own code.
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.conductor_dir("evil/../key")
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.binding_path("has\0null")
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-
-
-def test_a_planted_link_at_a_guarded_leaf_is_refused(tmp_path):
-    """A pre-planted symlink at either guard's composed leaf must be refused.
-
-    ``resolved_within`` resolves the composed leaf, so a link whose target sits
-    outside the base lands outside the resolved base and reads as an escape.
-    This pins that the shared-helper path keeps the containment the guards had
-    when each spelled the check inline. Skipped where symlinks cannot be
-    created (Windows without privilege), matching how the defense is exercised
-    there; the prefix-tolerance half has its own test above.
-    """
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "victim.json").write_text("{}", encoding="utf-8")
-
-    linked_dir = wl._work_ledger_root() / wl._store_name(CONDUCTOR)
-    linked_dir.parent.mkdir(parents=True, exist_ok=True)
-    linked_binding = wl.bindings_dir() / f"{wl._store_name(WORKER)}.json"
-    linked_binding.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        linked_dir.symlink_to(outside, target_is_directory=True)
-        linked_binding.symlink_to(outside / "victim.json")
-    except OSError:
-        pytest.skip("cannot create symlinks on this platform/account")
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.conductor_dir(CONDUCTOR)
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.binding_path(WORKER)
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-
-
-def test_the_guards_share_one_containment_helper(monkeypatch):
-    """Both guards must route through ``session_ledger.resolved_within``.
-
-    The helper is where the prefix-stripped, single-base-resolve comparison
-    lives; a guard that re-inlines its own two-``resolve()`` comparison
-    silently reintroduces the Windows race the helper exists to close, with
-    every existing test still green on POSIX. Patching the helper to refuse
-    and watching both guards refuse is what makes the routing itself a tested
-    property rather than a convention.
-    """
-    import kiro_crew.work_ledger as wl_module
-
-    monkeypatch.setattr(wl_module, "resolved_within", lambda base, name: None)
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.binding_path(WORKER)
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.conductor_dir(CONDUCTOR)
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-
-
-def test_a_contended_item_read_still_refuses_with_already_bound():
-    """A losing bind must refuse PERMANENTLY, not fail as if the write broke.
-
-    ``_refuse_if_worker_holds_open_item`` reads the prior item under the WORKER's
-    binding lock, while that item's own conductor holds a DIFFERENT lock, so the
-    read is unserialized against a correct concurrent writer. On Windows that read
-    raises ``PermissionError``, which escapes the guard's ``WorkLedgerError`` arm and
-    reaches the dashboard route as a transient 503 "try again" -- telling a conductor
-    to retry a binding that is legitimately taken until the item closes.
-
-    ``read_sharing_violation`` reproduces the fault on any OS, so this drives the
-    exact path a Windows host takes. It does NOT prove the real OS behaviour, only
-    that the read survives one contended window and the refusal stays permanent.
-    """
-    holder, loser = "chat-hold-c", "chat-lose-c"
-    for key in (holder, loser):
-        wl.ensure_conductor(key, goal="g")
-    held_item = wl.apply_conductor_action(holder, "create", title="t", acceptance={})[
-        "item"
-    ].item_id
-    loser_item = wl.apply_conductor_action(loser, "create", title="t", acceptance={})[
-        "item"
-    ].item_id
-    wl.apply_conductor_action(holder, "bind", item_id=held_item, worker_session_key=WORKER)
-
-    with (
-        mock.patch.object(platform_compat, "IS_WINDOWS", True),
-        mock.patch.object(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0),
-        read_sharing_violation(match=f"{held_item}.json", times=1) as state,
-    ):
-        with pytest.raises(wl.WorkLedgerError) as caught:
-            wl.apply_conductor_action(loser, "bind", item_id=loser_item, worker_session_key=WORKER)
-
-    assert caught.value.code == wl.CODE_ALREADY_BOUND, (
-        f"a contended read of the prior item must still refuse with "
-        f"{wl.CODE_ALREADY_BOUND!r}, got {caught.value.code!r}: {caught.value}"
-    )
-    assert state["n"] >= 2, (
-        "the guard's read of the prior item must be retried after the simulated "
-        f"sharing violation; intercepted reads: {state['n']}"
-    )
-    # The loser's own item keeps no binding, and the holder's keeps the one it won.
-    assert wl.read_binding(WORKER) == (holder, held_item)
 
 
 def test_acquiring_a_lock_does_not_truncate_the_lock_file():

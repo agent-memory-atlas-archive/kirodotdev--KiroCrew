@@ -7,7 +7,7 @@ comes from the provider's out-of-band ``_meta.kiro`` channel, which is a
 kiro-cli engine feature: an ACP backend that does not emit it leaves the gate
 with no trusted source, and a gate with no trusted source correctly refuses
 every directive. The whole control plane (loops, project changes, cards) then
-fails closed on that backend, which the gate reports as a diagnostic.
+fails closed on that backend — silently, until #6970 added the diagnostic.
 
 This module is the second delivery path, and it carries the payload OUT OF BAND
 rather than through the model's tool result. The MCP tool, having validated its
@@ -26,9 +26,9 @@ of the ACP ``tool_call`` frame it saw the model make. Neither reading passes
 through the tool RESULT, which is the one thing every backend reshapes at will:
 KAS re-serialises the envelope, copies the text into two fields, swaps one for
 an offload reference above a threshold, and caps every string with the
-tail-anchored marker falling off the end. Reading the selector out of that body
-would make each of those shapes one more repair branch in the shared ACP parser.
-None of them touch ``rawInput``.
+tail-anchored marker falling off the end. The consumer used to read its selector
+out of that body, and each shape was one more repair branch in the shared ACP
+parser (#8182, #8841). None of them touch ``rawInput``.
 
 Why this is not weaker than the marker gate it backs up
 ------------------------------------------------------

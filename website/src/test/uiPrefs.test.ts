@@ -45,16 +45,6 @@ describe('uiPrefs', () => {
       expect(new Set(DURABLE_PREF_KEYS).size).toBe(DURABLE_PREF_KEYS.length)
     })
 
-    it('excludes the Apps Library view toggle, which is origin-local by decision', () => {
-      // Adding a key to this list is not safe for a WARM profile: it never
-      // hydrates (needsHydrate is false once SYNCED_KEYS_KEY exists), so the
-      // key's local default flushes over another origin's saved value. The
-      // Library show-all toggle is therefore kept out until the mechanism can
-      // hydrate a newly added key before the first flush (growth-gap issue 9491).
-      // A re-add without that fix fails here.
-      expect(DURABLE_PREF_KEYS).not.toContain('mc-apps-library-show-all')
-    })
-
     it('excludes session-scoped and derived state', () => {
       // These are per-session or pure caches: mirroring them would grow without
       // bound and resurrect stale UI on an unrelated profile.

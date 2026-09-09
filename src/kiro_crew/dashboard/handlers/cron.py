@@ -178,8 +178,9 @@ def _invalid_path_id_response(value: str, name: str) -> web.Response | None:
     than ``MAX_SHORT_STRING``, else ``None``. This is the single validator the
     cron routes apply to every path-param id — the job/run routes and both
     cron-folder routes — so a malformed id is rejected before any lock
-    acquisition, thread dispatch, or state lookup. These ids are server-minted,
-    so an over-long value only arrives from a malformed/hostile client.
+    acquisition, thread dispatch, or state lookup (the asymmetric-perimeter gap
+    #5789/#5808 closed). These ids are server-minted, so an over-long value only
+    arrives from a malformed/hostile client.
     """
     if not value or len(value) > MAX_SHORT_STRING:
         return web.json_response(
@@ -355,12 +356,6 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
     strict_schedule = body.get("strict_schedule", False)
     hide_in_chat = body.get("hide_in_chat", False)
-    # A job created on a full context pays for memory, lessons, steering, skills
-    # and prior history on every wake, whether or not the wake had anything to
-    # do. The store has carried this flag since the tool path gained it; only
-    # this handler dropped it, so a job created from the dashboard could not opt
-    # out of that cost without a later edit from chat or the CLI.
-    minimal_context = body.get("minimal_context", False)
     # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
     # anything else is a 400 so the two entry points cannot diverge.
     folder_id = body.get("folder_id", "")
@@ -406,7 +401,6 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "timezone": (timezone_val or ""),
         "strict_schedule": bool(strict_schedule),
         "hide_in_chat": bool(hide_in_chat),
-        "minimal_context": bool(minimal_context),
         "folder_id": folder_id,
     }
     if approval_mode:
@@ -548,14 +542,13 @@ async def api_cron_update(request: web.Request) -> web.Response:
         "silent",
         "strict_schedule",
         "hide_in_chat",
-        "minimal_context",
         "folder_id",
     ):
         if key in body:
             kwargs[key] = body[key]
     # name routes through the same validator as POST (type check +
     # sanitize_string + length cap) so the two REST surfaces cannot diverge:
-    # without it PATCH would pass the value through unvalidated, letting a
+    # PATCH previously passed it through entirely unvalidated, letting a
     # non-string or oversize name persist verbatim into crons.json.
     if "name" in kwargs:
         try:
@@ -564,7 +557,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
             return web.json_response({"error": str(exc), "code": "invalid_name"}, status=400)
     # message routes through the same validator as POST (type check +
     # sanitize_string + length cap) so the two REST surfaces cannot diverge:
-    # without it PATCH would pass the value through unvalidated. Sanitizing here
+    # PATCH previously passed it through entirely unvalidated. Sanitizing here
     # also keeps length measured post-normalization, matching create.
     if "message" in kwargs:
         try:
@@ -1030,8 +1023,8 @@ async def _promote_pending_grant(
         )
     # The commit landed and the promoting write already consumed the pending
     # request, so the grant is fully active with nothing left to clear.
-    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton);
-    # guarded because a FAILED warm leaves construction to retry here.
+    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton,
+    # #8608); guarded because a FAILED warm leaves construction to retry here.
     try:
         _sel().log_api_access(
             caller="dashboard",
@@ -1810,7 +1803,7 @@ async def _recognize_session(
     # A channel-originated session (Slack, Telegram, Discord, Webex,
     # WeCom, …) is a legitimate established session: its key is namespaced
     # ``{channel}:{conversation_id}`` and the transport publishes
-    # ``session_pid`` so the gateway resolves this X-Session-Key.
+    # ``session_pid`` so the gateway resolves this X-Session-Key (#232).
     # Recognise the WHOLE channel-namespace family via the canonical
     # ``is_channel_session_key`` — not just Slack. Two reasons this is the
     # right gate, both already true for Slack:
@@ -1824,11 +1817,11 @@ async def _recognize_session(
     #     dropped) while the file is ``dashboard_<safe_key>.jsonl`` with
     #     colons folded to ``_``, so no probed name ever matches (and a
     #     colon is now rejected outright by ``_persisted_session_path``).
-    # Accepting only ``slack:`` would fail learn_add with HTTP 400
-    # "unknown session" from every OTHER channel (Telegram / Discord /
-    # Webex / WeCom) even though the session is fully identified. The bare
-    # Slack thread_ts shim covers native-Slack keys.
-    # Incognito/temporary sessions are still blocked by each route's
+    # Before this, only ``slack:`` was accepted, so learn_add failed with
+    # HTTP 400 "unknown session" from every OTHER channel (Telegram /
+    # Discord / Webex / WeCom) even though the session is fully identified
+    # (#1268). The bare Slack thread_ts shim stays for legacy native-Slack
+    # keys. Incognito/temporary sessions are still blocked by each route's
     # live-slot policy check (Slack is the only channel with that concept),
     # so widening the namespace does not widen memory writes to ephemeral
     # sessions.
@@ -2024,11 +2017,12 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             repo_scope,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
-        # its preflight refuses (reachable because ``negative`` is forwarded here) and
-        # for a dedup refusal. Discarding the result would let a refused write still
-        # run the sweep below, where _resolve_and_supersede would delete_semantic an
-        # older contradicted lesson whose "replacement" was never stored -- destroying
-        # a lesson on a request that persisted nothing, under HTTP 200. Superseding on
+        # its preflight refuses (reachable now that ``negative`` is forwarded here at
+        # all -- this call site passed a literal None before) and for a dedup refusal.
+        # The result used to be discarded, so a refused write still ran the sweep
+        # below, and _resolve_and_supersede would delete_semantic an older
+        # contradicted lesson whose "replacement" was never stored -- destroying a
+        # lesson on a request that persisted nothing, under HTTP 200. Superseding on
         # the authority of a write that did not happen is wrong for every declining
         # outcome, so gate on ``wrote`` rather than on the cause.
         outcome = result.outcome.value
@@ -2108,9 +2102,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # ``ok`` answers the question the caller actually asked -- is the lesson I
     # submitted in the store -- so it stays true for a no-op re-submit (it is stored,
     # there was simply nothing to write) and turns false when a dedup rule or
-    # validation kept it out. An unconditional true would tell the caller its
-    # lesson was saved even when the store refused the value, and the ``learn_add``
-    # tool and the CLI would both report "Saved" on that response.
+    # validation kept it out. It used to be an unconditional true, which told the
+    # caller its lesson was saved even when the store had refused the value; the
+    # ``learn_add`` tool and the CLI both reported "Saved" on that response.
     # ``outcome`` and ``reason`` are additive, so a client that only reads ``ok``
     # keeps working. ``superseded`` is additive for the same reason, and it is the
     # only channel that can carry the rules this write DELETED: they are tombstoned,
@@ -2251,10 +2245,6 @@ async def api_crons(request: web.Request) -> web.Response:
             "silent": j.silent,
             "strict_schedule": j.strict_schedule,
             "hide_in_chat": j.hide_in_chat,
-            # Returned so the edit form can show the job's real setting instead
-            # of defaulting the control to off and silently clearing the flag on
-            # the next save.
-            "minimal_context": j.minimal_context,
             "folder_id": j.folder_id,
             "last_run_ts": j.last_run_ts,
             "has_result": bool(j.last_result),
@@ -2306,7 +2296,7 @@ async def api_crons(request: web.Request) -> web.Response:
 # requests cannot race on the in-memory list + disk persist cycle. The lock is
 # created lazily and re-created if the running event loop changes (Python 3.10
 # binds a Lock to the loop it first waits on) — loop-bound via the shared
-# LoopBoundLock.
+# LoopBoundLock (#4800).
 _cron_folders_lock = LoopBoundLock()
 
 

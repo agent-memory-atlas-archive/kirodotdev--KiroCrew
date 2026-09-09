@@ -780,7 +780,15 @@ def _self_floor_can_fire(text_lower: str) -> bool:
     # `k""iro""crew token`, `"kirocrew" token`, `python -c "ex""ec(...)"`.
     # Both must be re-checked here -- testing only the name would let a glued
     # `exec(` payload skip the descent while the floor still denies it.
-    stripped = _SELF_FLOOR_QUOTE_JUNK_RE.sub("", text_lower)
+    #
+    # A line continuation is removable glue of the same kind: the shell drops
+    # `\` + newline while reading, so `kiro\` + newline + `_crew` IS the single
+    # word `kiro_crew`. Stripping the backslash alone leaves the newline behind,
+    # which pushes the two halves past the one-separator budget in the name hint
+    # and makes this gate answer "provably cannot fire" for a command the floor
+    # would deny -- an UNDER-trigger, the one direction the contract above
+    # forbids. Folding first can only admit more text to the full scan.
+    stripped = _SELF_FLOOR_QUOTE_JUNK_RE.sub("", _shell_join_continuations(text_lower))
     if _SELF_FLOOR_NAME_HINT_RE.search(stripped):
         return True
     return bool(_INLINE_DYNAMIC_EXEC_RE.search(stripped))

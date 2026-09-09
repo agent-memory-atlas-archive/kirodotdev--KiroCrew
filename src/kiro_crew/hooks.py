@@ -146,6 +146,19 @@ class ToolHookResult:
     #: and deny-by-default-shell messages do not), so matching on it would
     #: classify a sensitive-path or exfiltration deny as non-security.
     security_deny: bool = True
+    #: True when a TOOL_AUTO_APPROVE is the read-only CLASSIFIER's verdict —
+    #: i.e. a statement about what the call can DO: the deny-by-default bash
+    #: classifier, and for a non-shell call either the interactive path's
+    #: ACP-kind allow-list / read-only title fallback or, under
+    #: ``classifier_only``, the host-known read-only built-in identity alone
+    #: (``_HOST_READ_ONLY_BUILTIN_TOOLS``).
+    #: False when it is a GRANT: an ``auto_approve_tools`` glob or the
+    #: app-own-server rule vouches for who is calling and says nothing about
+    #: the call's effect. ``ToolApprovalPolicy.READ_ONLY`` honours only the
+    #: former; a surface with an interactive approver treats both alike. The
+    #: action alone cannot say which branch produced it, and a result built
+    #: outside the factory stays unproven (False) — fail-closed.
+    read_only: bool = False
 
     @staticmethod
     def _count(action: str, security_deny: bool) -> None:
@@ -186,9 +199,10 @@ class ToolHookResult:
         return ToolHookResult(action=TOOL_ALLOW)
 
     @staticmethod
-    def auto_approve() -> ToolHookResult:
+    def auto_approve(*, read_only: bool = False) -> ToolHookResult:
+        """Auto-approve; ``read_only=True`` marks a classifier verdict, never a grant."""
         ToolHookResult._count(TOOL_AUTO_APPROVE, False)
-        return ToolHookResult(action=TOOL_AUTO_APPROVE)
+        return ToolHookResult(action=TOOL_AUTO_APPROVE, read_only=read_only)
 
     @staticmethod
     def deny(reason: str) -> ToolHookResult:
@@ -566,6 +580,7 @@ class HookManager:
         mcp_server_name: str = "",
         mcp_tool_name: str = "",
         resolved_agent: str = "",
+        classifier_only: bool = False,
     ) -> ToolHookResult:
         """Check if a tool should be auto-approved, denied, or handled normally.
 
@@ -663,6 +678,30 @@ class HookManager:
         so a deny on EITHER denies the call. Empty (no ``_meta.kiro.toolName``)
         means the tool cannot be identified, so the own-server auto-approve does
         NOT fire (fall through to interactive approval — fail-closed).
+
+        ``classifier_only`` drops the two GRANT tiers — the operator's
+        ``auto_approve_tools`` globs and the app-own-server rule — so the only
+        auto-approve left is the read-only classifier's, which carries
+        ``read_only=True`` on the result. A grant vouches for the caller and
+        says nothing about the call's effect; ``ToolApprovalPolicy.READ_ONLY``
+        (the side chat) has no approver behind it, so a grant honoured there
+        would execute a mutating tool. Every deny tier and governance still
+        run, and a call a grant would have approved is classified on its own
+        merits instead of being refused outright. Default ``False``: a caller
+        with an interactive approver keeps the grants.
+
+        Under the flag the classifier also tightens WHAT counts as proof: with
+        no approver to catch an over-approval, read-only must follow from
+        HOST-TRUSTED facts alone — the recovered shell ``command`` judged by
+        ``is_read_only_bash``, or a built-in the host knows to be read-only,
+        named by the non-model-authored ``mcp_tool_name`` with no
+        ``mcp_server_name`` (``_HOST_READ_ONLY_BUILTIN_TOOLS``). The
+        agent-influenced inputs — the ACP ``tool_kind`` and the title — may
+        NARROW (a non-read kind refuses) but never prove, so a mutating tool
+        labelled ``kind="read"`` or titled ``Read …`` is not auto-approved; an
+        MCP-served tool, which carries no host-trusted read-only marker, is not
+        provable either. Off the flag the interactive path keeps its ACP-kind
+        allow-list and title fallback unchanged.
         """
         # Deny-by-default: a shell tool whose command could not be recovered
         # must not be evaluated on the untrusted title alone — that is the very
@@ -1072,9 +1111,18 @@ class HookManager:
         # a completely different runtime agent. An empty ``resolved_agent`` (an
         # uncached permission event, or a caller that does not thread it through)
         # yields no identity — fail-closed to interactive approval.
+        #
+        # The two GRANT tiers — this app-own-server rule and the operator's
+        # ``auto_approve_tools`` globs below — vouch for the CALLER and say
+        # nothing about what the call does. ``classifier_only`` skips exactly
+        # these two, so the read-only classifier further down judges the call
+        # on its own merits (a grant that shadows a read costs nothing, a grant
+        # that shadows a write approves nothing). Every deny tier and governance
+        # ran above regardless of the flag.
         owner_app = app or _builtin_app_for_agent(resolved_agent)
         if (
-            _app_owns_mcp_server(mcp_server_name, owner_app)
+            not classifier_only
+            and _app_owns_mcp_server(mcp_server_name, owner_app)
             and _is_first_party_app(owner_app)
             and _is_declared_builtin_mcp_server(mcp_server_name)
         ):
@@ -1103,9 +1151,10 @@ class HookManager:
         # ONLY because a shell call whose command could not be recovered was
         # already hard-denied above, so no unverified command can reach it. Do not
         # weaken that refusal without also gating this loop.
-        for pattern in self._config.auto_approve_tools:
-            if _tool_matches(pattern, tool_name) or _tool_matches(pattern, normalized):
-                return ToolHookResult.auto_approve()
+        if not classifier_only:
+            for pattern in self._config.auto_approve_tools:
+                if _tool_matches(pattern, tool_name) or _tool_matches(pattern, normalized):
+                    return ToolHookResult.auto_approve()
 
         # KiroCrew-side read-only auto-approve — the LAST branch before allow(),
         # AFTER every early-return deny (deny-by-default shell, sensitive-path,
@@ -1115,6 +1164,9 @@ class HookManager:
         # "reads don't nag" UX now that kiro-cli's autoAllowReadonly is retired.
         # Imports are function-local: slack.gateway imports hooks at module top,
         # so a top-level import here would create a boot import cycle.
+        # Every auto-approve below carries ``read_only=True``: a verdict about the
+        # call's EFFECT, and the only auto-approve READ_ONLY honours. The grant
+        # tiers above stay untagged.
         if is_shell:
             # A shell read-only classification uses the deny-by-default bash
             # classifier (rejects redirects/substitution/backgrounding). When the
@@ -1123,18 +1175,41 @@ class HookManager:
             from kiro_crew.dashboard.state import is_read_only_bash
 
             if command and is_read_only_bash(command):
-                return ToolHookResult.auto_approve()
+                return ToolHookResult.auto_approve(read_only=True)
         else:
             from kiro_crew.slack.gateway import _is_read_only_tool
 
             kind = (tool_kind or "").strip().lower()
+            if classifier_only:
+                # READ_ONLY has no approver behind it, so a read-only verdict
+                # here EXECUTES the call unattended. Under this flag the proof
+                # must come from HOST-TRUSTED facts alone. The shell branch
+                # above already judges the recovered command; this branch
+                # accepts only a built-in the host knows to be read-only,
+                # identified by the non-model-authored ``_meta.kiro.toolName``
+                # (``mcp_tool_name``) with no MCP server behind it. The two
+                # agent-influenced inputs that reach this point prove nothing:
+                # ``kind`` is the ACP ``kind`` field passed through verbatim
+                # (the interactive path below keeps its existing kind
+                # allow-list, unchanged), and the title is model-authored
+                # prose. Both may NARROW — a non-read kind refuses even a
+                # host-known read tool, so the two must agree — never widen.
+                # An MCP-served tool carries no host-trusted read-only marker
+                # on the permission event (``readOnlyHint`` is a manifest claim
+                # nothing forwards to the gate), so it is not provable here and
+                # falls to the caller's path, which under READ_ONLY refuses.
+                if kind and kind not in _READ_ONLY_TOOL_KINDS:
+                    return ToolHookResult.allow()
+                if _is_host_read_only_builtin(mcp_tool_name, mcp_server_name):
+                    return ToolHookResult.auto_approve(read_only=True)
+                return ToolHookResult.allow()
             # Trust the SEMANTIC kind, as an ALLOW-list. `tool_kind` is passed
             # through verbatim from the ACP `kind` field (``acp/_dispatch.py``), so it
             # is an arbitrary agent-influenced string and a DENYLIST of mutating kinds
             # can never be complete — `kind="other"` is a real ACP value. Only these
             # two spellings mean "this cannot change anything".
             if kind in _READ_ONLY_TOOL_KINDS:
-                return ToolHookResult.auto_approve()
+                return ToolHookResult.auto_approve(read_only=True)
             # Computer-use observation tools ("reads don't nag" for this feature too),
             # and they require an EXPLICIT read-only kind — reached only under the
             # branch above. Two agent-controlled inputs meet here and neither may
@@ -1159,7 +1234,7 @@ class HookManager:
             # still wins. There is deliberately no approval-floor clamp to mention: the
             # `computer_use.approval` ordinal was removed with the rest of that model.
             if kind in _READ_ONLY_TOOL_KINDS and _cu_read_only_auto_approve(tool_name):
-                return ToolHookResult.auto_approve()
+                return ToolHookResult.auto_approve(read_only=True)
             # Any other non-empty kind falls through to interactive approval, whatever
             # the call titles itself. Over-blocking costs one prompt; under-blocking
             # costs the prompt.
@@ -1171,7 +1246,7 @@ class HookManager:
             # (verified) — so a forged computer-use title cannot reach an auto-approve
             # through this path either.
             if _is_read_only_tool(tool_name):
-                return ToolHookResult.auto_approve()
+                return ToolHookResult.auto_approve(read_only=True)
 
         return ToolHookResult.allow()
 
@@ -1217,6 +1292,36 @@ class HookManager:
 # branch. Deliberately minimal — excludes "search"/"edit"/"execute"/"delete"/
 # "move"; add conservatively (auto-approving trusts an agent-supplied field).
 _READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
+
+# Built-in tools the HOST knows to be read-only, keyed by the non-model-authored
+# ``_meta.kiro.toolName`` identity kiro-cli stamps on every tool call it serves.
+# This is the ONLY non-shell read-only proof ``on_tool_call`` accepts under
+# ``classifier_only`` (``ToolApprovalPolicy.READ_ONLY``, the side chat): the ACP
+# ``kind`` and the title are agent-influenced and may narrow but never prove.
+# Every name here maps to a read scope in ``governance.BUILTIN_TOOL_SCOPES``
+# (``filesystem.read`` / ``network.egress``) and never to ``filesystem.write``
+# or ``commands`` — a test pins that, so a write-capable built-in (``code``,
+# ``fs_write``) cannot join by mistake. Add conservatively: an entry here runs
+# unattended on a surface with no approver.
+_HOST_READ_ONLY_BUILTIN_TOOLS: frozenset[str] = frozenset(
+    {"fs_read", "glob", "grep", "web_fetch", "web_search"}
+)
+
+
+def _is_host_read_only_builtin(mcp_tool_name: str, mcp_server_name: str) -> bool:
+    """True when the host-trusted identity names a known read-only BUILT-IN.
+
+    ``mcp_tool_name`` is ``_meta.kiro.toolName``, which kiro-cli sets for
+    built-ins too; ``mcp_server_name`` is set only for MCP-served calls. An MCP
+    server may expose a tool that happens to be called ``fs_read``, so a
+    non-empty server name fails closed: only a built-in — no server behind it —
+    can match. An empty tool name (a backend that omits ``_meta.kiro``, an
+    uncached permission event) identifies nothing and matches nothing.
+    """
+    if mcp_server_name or not mcp_tool_name:
+        return False
+    return mcp_tool_name in _HOST_READ_ONLY_BUILTIN_TOOLS
+
 
 # Semantic kinds known to mutate/execute. DOCUMENTATION ONLY — the gate no longer
 # branches on this set, and must not start again: `tool_kind` arrives verbatim from

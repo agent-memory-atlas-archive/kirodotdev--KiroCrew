@@ -259,9 +259,47 @@ Two prompt constants lifted from the upstream protocol:
 
 Three aiohttp handlers + `_run_side_turn` background driver.
 `_run_side_turn` acquires an isolated session via `state.sessions.get_or_create`,
-streams with `ToolApprovalPolicy.REJECT_ALL` (defense-in-depth against tool
-calls), broadcasts chunks over `broadcast_side_result`, and appends the
-final assembled text to `slot._side.messages`.
+streams with `ToolApprovalPolicy.READ_ONLY`, broadcasts chunks over
+`broadcast_side_result`, and appends the final assembled text to
+`slot._side.messages`.
+
+`READ_ONLY` is the dashboard Reads mode's semantics with reject as the
+fallback, because the side chat has no approval card. The gate (the operator's
+configured `HookManager`, so Settings > Security opt-outs and deny patterns
+apply here too) runs its deny floor and governance first; then only the
+read-only classifier may auto-approve, and its verdict carries
+`ToolHookResult.read_only`. The gate is asked `classifier_only`, so the
+operator's `auto_approve_tools` globs and the app-own-server rule are skipped
+rather than honoured (they vouch for the caller, not for the call's effect),
+and an auto-approve without the tag is rejected. A grant that shadows a read
+therefore still gets the read approved; a grant that shadows a write approves
+nothing. Every other call is rejected before any interactive callback could
+widen the policy, and a missing gate rejects everything.
+
+Because no approver stands behind the verdict, `classifier_only` accepts only
+HOST-TRUSTED proof of read-only. Exactly two sources qualify:
+
+- the shell command recovered from the tool call's cached params, judged by
+  `is_read_only_bash` (the deny-by-default bash classifier);
+- a built-in tool the host knows to be read-only —
+  `hooks._HOST_READ_ONLY_BUILTIN_TOOLS` (`fs_read`, `glob`, `grep`,
+  `web_fetch`, `web_search`), matched on the non-model-authored
+  `_meta.kiro.toolName` identity with no `_meta.kiro.mcpServerName` behind it.
+
+The agent-influenced inputs — the ACP `kind` field (passed through verbatim
+from the agent) and the model-authored title — may narrow but never prove: a
+non-read kind refuses even a host-known read tool, and `kind="read"` on an
+unknown or mutating tool, a read-looking title on a kindless call, and every
+MCP-served tool (the permission event carries no host-trusted read-only marker
+for one) are rejected. The interactive Reads mode (`HOOK_BASED`) is unchanged
+and keeps its `{read, fetch}` ACP-kind allow-list and title fallback, because a
+card stands behind it.
+
+Governance identity: the gate is called with the side session's own key,
+`side:<slot>`, which `sel._infer_source` classifies as the `dashboard` surface.
+A profile bound to `surface: dashboard` therefore governs side turns exactly
+as it governs the parent slot, while the key itself keeps the side session's
+SEL rows and ACP session apart from the parent's.
 
 ### `dashboard/ws.py` — `broadcast_side_result`
 
@@ -357,7 +395,8 @@ existing subagent/tool dispatch cases.
 
 | Concern | Mitigation |
 |---------|-----------|
-| Tool execution | System prompt prohibition + REJECT_ALL approval policy |
+| Tool execution | System prompt prohibition + READ_ONLY approval policy: only the read-only classifier's verdict approves, and under `classifier_only` that verdict rests on host-trusted facts alone (`is_read_only_bash` on the recovered shell command, or a `_HOST_READ_ONLY_BUILTIN_TOOLS` name on the non-model-authored `_meta.kiro.toolName` with no MCP server); the agent-influenced ACP `kind` and title may narrow but never prove; operator `auto_approve_tools` globs and app-own-server grants are skipped and an unclassified auto-approve is rejected |
+| Governance identity | The gate runs under the side session's own key `side:<slot>`, which `sel._infer_source` classifies as the `dashboard` surface, so a profile bound to `surface: dashboard` binds side turns exactly as it binds the parent slot (it fell through to the `slack` fallback before) |
 | Memory pollution | No calls to memory/learn/save; sidecar never serialised |
 | Context leak to main | `build_message` byte-frozen; side uses separate module |
 | Slot visibility | No new `_ChatSlot` created; sidebar doesn't show phantom entries |
@@ -375,6 +414,9 @@ Backend invariants are covered by `test/test_side.py`:
 | Non-blocking stream | `test_side_turn_returns_before_run_finishes` |
 | Channel separation | `test_side_run_id_never_leaks_to_main_channels` |
 | Tool-rejection fallback | `test_empty_llm_output_produces_visible_fallback` |
+| READ_ONLY honours the classifier, never a grant | `test_read_only_policy_refuses_a_write_the_config_grant_matches`, `test_read_only_policy_refuses_an_app_own_server_grant`, `test_read_only_policy_classifies_a_read_the_grant_also_matches`, `test_read_only_policy_does_not_trust_a_read_kind_alone` (`test/test_llm_helpers_tool_gate.py`) |
+| READ_ONLY proof is host-trusted only | `test_read_only_policy_rejects_a_read_kind_on_a_mutating_tool`, `test_read_only_policy_rejects_a_read_kind_with_no_host_identity`, `test_read_only_policy_rejects_a_read_looking_title_alone`, `test_read_only_policy_rejects_an_mcp_tool_with_a_read_kind`, `test_read_only_policy_rejects_a_host_known_read_tool_under_a_non_read_kind`, `test_read_only_policy_approves_a_host_known_read_tool`, `test_read_only_policy_approves_a_read_only_shell_command`, `test_hook_based_policy_still_approves_a_read_kind_tool` (`test/test_llm_helpers_tool_gate.py`); `TestClassifierOnlyHostTrustedProof` (`test/test_hooks.py`) |
+| Dashboard-bound profile governs a side turn | `test_dashboard_bound_profile_governs_a_side_turn` (`test/test_side.py`), `test_side_key_binds_the_dashboard_surface` (`test/test_governance_profiles.py`), `TestInferSource` (`test/test_sel.py`) |
 
 Busy-send invariants live in `test/test_side_steer_queue.py`:
 
@@ -422,8 +464,9 @@ exists this file does not claim one.
   upstream wire format for the ``chat.side_result`` event.
 - Memory mode: side conversations are born ephemeral and never write to
   vector store, learn store, KiroCrew session JSONL, or the consolidation
-  pipeline. Tool execution is rejected via `ToolApprovalPolicy.REJECT_ALL`
-  so the side LLM cannot call `learn_add` or any other write tool. The
+  pipeline. Tool calls run under `ToolApprovalPolicy.READ_ONLY`: only a call
+  the hook gate's read-only classifier proves read-only executes, and every
+  other call — `learn_add` and any other write tool included — is rejected.
   `side:` prefix is registered in `session._STATELESS_PREFIXES`, so the
   isolated kiro-cli ACP session is never resumed across gateway restarts;
   its on-disk transcript at `~/.kiro/sessions/cli/<sid>.jsonl` exists

@@ -63,9 +63,7 @@ def _make_side_app(
     app = web.Application()
     app["state"] = state
     app["kiro_prerequisite_service"] = (
-        prerequisite_service
-        if prerequisite_service is not None
-        else _READY_KIRO_PREREQUISITE
+        prerequisite_service if prerequisite_service is not None else _READY_KIRO_PREREQUISITE
     )
     app.router.add_post("/api/chat/slots/{slot}/side/open", api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", api_side_turn)
@@ -489,9 +487,9 @@ async def test_side_turn_runs_in_the_slot_project_dir(tmp_path, monkeypatch):
 
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
-    assert captured["cwd"] == parent.project, (
-        f"side session created without the slot's project cwd: {captured.get('cwd')!r}"
-    )
+    assert (
+        captured["cwd"] == parent.project
+    ), f"side session created without the slot's project cwd: {captured.get('cwd')!r}"
 
 
 @pytest.mark.asyncio
@@ -628,9 +626,7 @@ def _dispatch_recorder(state) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_side_turn_refuses_to_substitute_the_default_for_an_app_agent(
-    tmp_path, monkeypatch
-):
+async def test_side_turn_refuses_to_substitute_the_default_for_an_app_agent(tmp_path, monkeypatch):
     """An app slot whose agent never materialized must not answer as the default.
 
     An app's agents live only in ``~/.kiro/agents/<app>--<agent>.json``, so
@@ -695,18 +691,16 @@ async def test_side_turn_refuses_to_substitute_the_default_for_an_app_agent(
     assert warms == [1], "the snapshot-rescan rung did not run exactly once: %r" % (warms,)
     errors = _side_errors(events)
     assert errors, "the refusal was silent; the side panel has no other channel"
-    assert "notes--assistant" in errors[0], (
-        "the error does not name the agent the user asked for: %r" % (errors[0],)
-    )
-    assert "see server logs" not in errors[0], (
-        "the actionable message was flattened into the generic failure text"
-    )
+    assert (
+        "notes--assistant" in errors[0]
+    ), "the error does not name the agent the user asked for: %r" % (errors[0],)
+    assert (
+        "see server logs" not in errors[0]
+    ), "the actionable message was flattened into the generic failure text"
 
 
 @pytest.mark.asyncio
-async def test_side_turn_self_heals_a_cold_app_agent_and_then_dispatches_it(
-    tmp_path, monkeypatch
-):
+async def test_side_turn_self_heals_a_cold_app_agent_and_then_dispatches_it(tmp_path, monkeypatch):
     """When a rung succeeds, the turn proceeds on the app's own agent.
 
     The refusal above must not be the only outcome: a cold snapshot is the common
@@ -749,9 +743,9 @@ async def test_side_turn_self_heals_a_cold_app_agent_and_then_dispatches_it(
 
     await _run_side_turn(state, slot, "run-1", "q", is_first_turn=True)
 
-    assert dispatched == ["notes--assistant"], (
-        "the healed app agent did not reach get_or_create: %r" % (dispatched,)
-    )
+    assert dispatched == [
+        "notes--assistant"
+    ], "the healed app agent did not reach get_or_create: %r" % (dispatched,)
     assert recovered == [], (
         "the expensive register-from-source rung ran even though the rescan had "
         "already resolved the agent"
@@ -806,3 +800,117 @@ async def test_side_turn_self_heal_is_scoped_to_app_slots(tmp_path, monkeypatch)
     assert dispatched == ["kirocrew"], "a non-app slot stopped dispatching: %r" % (dispatched,)
     assert warms == [], "a non-app slot paid for the app-only snapshot rescan"
     assert not _side_errors(events), "a non-app slot was refused by the app-only guard"
+
+
+@pytest.mark.asyncio
+async def test_side_turn_streams_under_read_only_policy(tmp_path, monkeypatch):
+    """The side turn must run READ_ONLY (Reads-mode semantics, reject fallback)
+    with a real hook gate and the side session's own identity — not REJECT_ALL,
+    and never AUTO_APPROVE. A missing hooks kwarg would make the policy fail
+    closed to reject-everything, silently reverting the feature."""
+    from kiro_crew.hooks import HookManager
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user(_SIDE_QUESTION)
+    parent._side.last_run_id = "run-ro"
+    parent._side.is_complete = False
+
+    mock_provider = MagicMock()
+
+    async def _fake_get_or_create(key, **kwargs):
+        return mock_provider, True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    stream_mock = AsyncMock(return_value=_SIDE_ANSWER)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
+        stream_mock,
+    )
+
+    await _run_side_turn(
+        state,
+        parent,
+        "run-ro",
+        _SIDE_QUESTION,
+        is_first_turn=True,
+    )
+
+    assert stream_mock.await_count == 1
+    kwargs = stream_mock.await_args.kwargs
+    assert kwargs["approval_policy"] is ToolApprovalPolicy.READ_ONLY
+    assert isinstance(kwargs["hooks"], HookManager)
+    # Gate identity: the SIDE session's key, so SEL rows and the governance
+    # profile lookup describe the side surface rather than the parent slot.
+    assert kwargs["session_key"] == "side:parent"
+    assert kwargs["agent"]
+
+
+def test_dashboard_bound_profile_governs_a_side_turn(tmp_path, monkeypatch):
+    """A governance profile bound to ``surface: dashboard`` must refuse, on a
+    side turn, the tool it forbids on the parent slot's turns.
+
+    The side turn hands the gate its own key, ``side:<slot>``. Before
+    ``sel._infer_source`` classified that prefix, the key matched no
+    ``dashboard:``/messaging branch and fell through to the ``slack`` fallback,
+    so ``resolve_active_scope`` looked up the slack binding and a
+    dashboard-scoped profile governed nothing on the side chat — its read-only
+    classifier then auto-approved a tool the operator had forbidden, on a turn
+    with no approver. The gate is exercised exactly as ``_resolve_permission``
+    calls it for READ_ONLY: classifier-only, with the host-trusted built-in
+    identity, so the deny below is the PROFILE's and nothing else's.
+    """
+    import json
+
+    from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, HookManager
+    from kiro_crew.platform import governance_profiles as gp
+
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
+    gp.reset_store()
+    try:
+        gate = HookManager()
+
+        def _side_call(session_key: str):
+            return gate.on_tool_call(
+                "web_fetch",
+                session_key=session_key,
+                agent="kirocrew",
+                tool_kind="fetch",
+                mcp_tool_name="web_fetch",
+                classifier_only=True,
+            )
+
+        # Positive control: with no profile bound, the host-known read tool is
+        # the classifier's own auto-approve — so a deny below is governance's.
+        unbound = _side_call("side:parent")
+        assert unbound.action == TOOL_AUTO_APPROVE and unbound.read_only
+
+        (profiles / "dashboard-reads.json").write_text(
+            json.dumps(
+                {
+                    "name": "dashboard-reads",
+                    "bind": {"type": "surface", "id": "dashboard"},
+                    "tools": {"mode": "allow", "allow": ["fs_read"]},
+                }
+            )
+        )
+        gp.reset_store()
+
+        # The parent slot's own turns are governed by the binding...
+        assert _side_call("dashboard:parent").action == TOOL_DENY
+        # ...and so is the side turn, by the SAME profile: the side key
+        # classifies as the dashboard surface rather than falling to "slack".
+        side = _side_call("side:parent")
+        assert side.action == TOOL_DENY, (
+            "a dashboard-bound profile skipped the side turn — `side:*` fell "
+            "through _infer_source to the slack fallback"
+        )
+        assert "governance" in (side.reason or "").lower()
+    finally:
+        gp.reset_store()

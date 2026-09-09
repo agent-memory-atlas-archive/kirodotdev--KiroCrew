@@ -1,7 +1,9 @@
 """HTTP handlers for /side: ephemeral Q&A attached to a parent slot.
 
 Sidecar buffer on ``slot._side``; isolated ``side:{slot.key}`` LLM session;
-tool calls hard-rejected via ``REJECT_ALL``. Side messages never enter
+read-only tool calls auto-approved and everything else hard-rejected via
+``READ_ONLY`` (the Reads approval mode's classifier with reject as the
+fallback instead of the approval card). Side messages never enter
 ``slot.messages`` or any persistent store.
 """
 
@@ -34,6 +36,7 @@ from kiro_crew.dashboard.side_state import (
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.ws import broadcast_side_queue, broadcast_side_result
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
@@ -356,8 +359,16 @@ async def _run_side_turn(
         # after this block). Captured inside the try so the raise lives OUTSIDE
         # it and is not swallowed by the resolve except.
         _app_agent_unresolved = False
+        # The READ_ONLY policy's classifier. Built from the loaded config so the
+        # user's Settings>Security state (disabled built-in rules, own deny
+        # patterns) is honored on this surface too; when the config load fails
+        # the default-constructed manager keeps every built-in rule — stricter,
+        # never looser, and the policy itself fails closed to reject-everything
+        # if this somehow stays None.
+        side_hooks: HookManager | None = None
         try:
             cfg = KiroCrewConfig.load()
+            side_hooks = HookManager(hooks_config_from_config_dict(cfg.hooks))
             # Warm off-loop, resolve inline — same reasoning as the main chat path
             # (offloading the resolver itself would swallow a StopIteration into a
             # Future and hang the await).
@@ -401,6 +412,11 @@ async def _run_side_turn(
                 slot.key,
                 exc_info=True,
             )
+        if side_hooks is None:
+            # Config never loaded: default HooksConfig = all built-in rules
+            # active, no user opt-outs. Fail-closed relative to the configured
+            # gate.
+            side_hooks = HookManager()
 
         # FAIL-LOUD, exactly as the main chat does: an app-owned slot whose agent
         # STILL did not resolve must NOT run the default agent. Substituting it
@@ -432,7 +448,19 @@ async def _run_side_turn(
             response_text = await stream_and_collect(
                 provider,
                 message,
-                approval_policy=ToolApprovalPolicy.REJECT_ALL,
+                # Reads-mode semantics with reject as the fallback: provably
+                # read-only calls run, everything else is refused (side chat
+                # has no approval card to fall back to). The gate's identity is
+                # the SIDE key: ``sel._infer_source`` classifies ``side:*`` as
+                # the dashboard surface, so a dashboard-bound governance
+                # profile binds this turn exactly as it binds the parent slot,
+                # while SEL rows and the ACP session stay keyed to the side
+                # session rather than the parent's.
+                approval_policy=ToolApprovalPolicy.READ_ONLY,
+                hooks=side_hooks,
+                session_key=side_key,
+                agent=slot.agent or "kirocrew",
+                app=slot._app or "",
                 on_chunk=_on_chunk,
                 on_steer_consumed=_on_steer_consumed,
             )
@@ -464,8 +492,9 @@ async def _run_side_turn(
 
         if not chunks:
             response_text = (
-                "Tool and MCP execution is intentionally unavailable in Side Chat. "
-                "Ask in the main chat if you want me to use tools or take action."
+                "Side Chat can only look things up — write, execute, and MCP "
+                "tools are intentionally unavailable here. "
+                "Ask in the main chat if you want me to make changes or take action."
             )
             logger.info(
                 "Side turn produced no text (tool rejection): " "slot=%s run_id=%s",
@@ -759,12 +788,9 @@ async def api_side_turn(request: web.Request) -> web.Response:
                             f"question_len={len(question)}"
                         ),
                     )
-                    return web.json_response(
-                        {"ok": True, "steered": True, "run_id": run_before}
-                    )
+                    return web.json_response({"ok": True, "steered": True, "run_id": run_before})
                 if ledger == STEER_PENDING and (
-                    side_before.last_run_id == run_before
-                    and not side_before.is_complete
+                    side_before.last_run_id == run_before and not side_before.is_complete
                 ):
                     # Genuinely in flight, consumption unproven. Report that
                     # instead of claiming delivery: the outcome arrives as a frame
@@ -942,15 +968,11 @@ async def _read_side_queue_body(request: web.Request) -> str | web.Response:
     """Parse ``{"content": str}`` from a side-queue edit. Returns the trimmed
     content, or the error response to send."""
     if not request.body_exists:
-        return web.json_response(
-            {"error": "missing JSON body", "code": "missing_body"}, status=400
-        )
+        return web.json_response({"error": "missing JSON body", "code": "missing_body"}, status=400)
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON body", "code": "invalid_body"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_body"}, status=400)
     if not isinstance(body, dict):
         return web.json_response(
             {"error": "body must be a JSON object", "code": "invalid_body"},
@@ -989,9 +1011,7 @@ def _resolve_side_queue_slot(
     state: DashboardState = request.app["state"]
     slot = state._slots.get(request.match_info["slot"])
     if not slot:
-        return None, web.json_response(
-            {"error": "not found", "code": "slot_not_found"}, status=404
-        )
+        return None, web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     own = _check_slot_ownership(request, slot, operation)
     if own is not None:
         return None, own

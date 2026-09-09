@@ -623,3 +623,454 @@ def test_doctor_offers_the_commands_when_something_is_unacked(tmp_path, monkeypa
     assert "kirocrew config defaults --adopt" in out
     assert "kirocrew config defaults --keep" in out
     assert issues == []
+
+
+# --------------------------------------------------------------------------
+# One-shot auto-adoption: the entries whose old value has no second meaning.
+# --------------------------------------------------------------------------
+
+SUBAGENT_ENTRY = next(
+    e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "agent.subagent_timeout_secs"
+)
+
+TURN_ENTRY = next(
+    e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "agent.chat_turn_timeout_secs"
+)
+
+
+def test_only_unpinned_broken_budgets_adopt_themselves():
+    """A row adopts only when no other suite pins its old value as supported.
+
+    The dividing line is NOT how wide the value's range is. That test was tried and
+    is wrong: ``instances.warm_set_cap`` is numeric with a range, and an operator
+    running five crews who types 5 stores exactly the old default. What separates the
+    two groups is whether the repository already GUARANTEES the stored value
+    elsewhere -- a value some other suite pins as a supported configuration is not
+    stale noise, whatever its type.
+
+    Pinned as a property of the whole registry, because both failures it guards
+    against are registry-shaped: a row that adopts by accident, and a row losing its
+    exemption without the suite that pins it being consulted.
+    """
+    assert (
+        SupersededDefault(
+            dotted_key="a.b", old_default=1, new_default=2, changed_in="#1"
+        ).auto_adopt
+        is False
+    ), "the dataclass default stays False, so an appended row adopts only when it says so"
+    adopting = {e.dotted_key for e in SD.SUPERSEDED_DEFAULTS if e.auto_adopt}
+    assert adopting == {
+        "agent.subagent_timeout_secs",
+        "agent.chat_turn_timeout_secs",
+    }
+    # Each of these has its stored value pinned as supported by a named test
+    # elsewhere in the suite; adopting one turns that suite red, which is how this
+    # line was found.
+    for pinned in (
+        "session.autocompact_pct",
+        "dashboard.loop_stall_exit_after_secs",
+        "stt.streaming",
+        "stt.model",
+        "mcp_gateway.forward_declared_env",
+        "instances.warm_set_cap",
+    ):
+        assert pinned not in adopting, f"{pinned}'s stored value is guaranteed elsewhere"
+
+
+def test_every_adopting_key_clears_in_one_load(tmp_path, monkeypatch):
+    """One load clears both stale timeout budgets an upgraded install holds.
+
+    Written as one load over one document rather than a test per key: what an
+    operator actually has is both at once, and the failure worth catching is a key
+    that silently sits out the sweep.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(
+        tmp_path,
+        {"agent": {"subagent_timeout_secs": 1800, "chat_turn_timeout_secs": 7200}},
+    )
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 10800
+    assert cfg.agent.chat_turn_timeout_secs == 14400
+    assert _on_disk(tmp_path).get("agent", {}) == {}
+
+
+def test_a_pinned_stored_value_is_never_adopted(tmp_path, monkeypatch):
+    """The rows other suites guarantee survive a load untouched, on disk and in memory.
+
+    Four at once, because the regression that set this boundary surfaced them one CI
+    round at a time: a dashboard voice opt-out, a maxed compaction slider, a managed
+    service's explicit watchdog budget, and a warm-set cap.
+    """
+    _point_home(tmp_path, monkeypatch)
+    stored = {
+        "stt": {"streaming": False, "model": "turbo"},
+        "session": {"autocompact_pct": 90.0},
+        "dashboard": {"loop_stall_exit_after_secs": 25},
+        "instances": {"warm_set_cap": 5},
+    }
+    _write_config(tmp_path, stored)
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.stt.streaming is False
+    assert cfg.session.autocompact_pct == 90.0
+    assert cfg.dashboard.loop_stall_exit_after_secs == 25
+    assert cfg.instances.warm_set_cap == 5
+    on_disk = _on_disk(tmp_path)
+    for section, fields in stored.items():
+        for field, value in fields.items():
+            assert on_disk[section][field] == value, f"{section}.{field} was rewritten"
+    assert SD.adopted_superseded() == {}
+
+
+def test_the_ledger_write_never_blocks_the_event_loop(tmp_path, monkeypatch):
+    """``record_adoptions`` must take the sidecar lock SINGLE-SHOT.
+
+    The config load path runs on the asyncio event-loop thread in places, so a
+    blocking acquire here stalls every gateway request and the heartbeat for as long
+    as another writer keeps the lock. Asserted on the flag passed to ``file_lock``
+    rather than by timing a real contended acquire: a timing test would be the flaky
+    way to check the same one bit.
+    """
+    _point_home(tmp_path, monkeypatch)
+    seen: list[bool] = []
+    real = platform_compat.file_lock
+
+    def _spy(fd, **kwargs):
+        seen.append(bool(kwargs.get("wait", True)))
+        return real(fd, **kwargs)
+
+    monkeypatch.setattr(platform_compat, "file_lock", _spy)
+
+    SD.record_adoptions({"agent.subagent_timeout_secs": 1800})
+    assert seen == [False], "the load path must not wait on the sidecar lock"
+
+    seen.clear()
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+    assert seen == [True], "a CLI caller has no loop to stall and keeps the wait"
+
+
+def test_a_contended_sidecar_defers_the_adoption(tmp_path, monkeypatch):
+    """A held sidecar lock defers the adoption instead of stalling or half-applying.
+
+    Deferral is the correct outcome, not a compromise: the config keeps its value,
+    the next load retries, and nothing is written in between.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+
+    def _contended(_values):
+        raise BlockingIOError("another writer holds the sidecar")
+
+    monkeypatch.setattr(L, "record_adoptions", _contended)
+
+    KiroCrewConfig.load()
+
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+    assert SD.adopted_superseded() == {}
+
+
+def test_the_loader_has_no_second_spelling_of_the_stored_value_lookup():
+    """One dotted-key lookup, exported, rather than a copy in the loader.
+
+    Two spellings of "read `<section>.<field>` out of the stored document" can come
+    to disagree about an edge case (a non-dict section, an absent key) while both
+    look correct in isolation.
+    """
+    import inspect
+
+    from kiro_crew.config import loader
+
+    assert not hasattr(loader, "_stored_scalar")
+    assert SD.stored_value_or_none({"agent": {"x": 1}}, "agent.x") == 1
+    assert SD.stored_value_or_none({"agent": {}}, "agent.x") is None
+    assert SD.stored_value_or_none({"agent": "not-a-dict"}, "agent.x") is None
+    assert "stored_value_or_none" in inspect.getsource(loader._apply_document_migrations)
+
+
+def test_a_failed_config_write_rolls_the_ledger_back(tmp_path, monkeypatch):
+    """Ledger-before-removal must not strand a key as adopted-but-stale.
+
+    The write order that makes a LOST record impossible creates the mirror hazard: an
+    entry whose config rewrite then fails marks the key adopted while its old value is
+    still stored, and the one-shot filter would never revisit it -- the stale ceiling
+    would then be permanent. The rollback restores the pre-load state exactly, so the
+    next load retries.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+
+    def _fail_backup(_path):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(L, "_write_migration_backup", _fail_backup)
+
+    KiroCrewConfig.load()
+
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+    assert SD.adopted_superseded() == {}, "the ledger entry must not outlive its write"
+
+    # And the retry actually happens: the next load, with the write path healthy,
+    # adopts. Without the rollback this second load would find the key already
+    # adopted and leave 1800 in place forever.
+    monkeypatch.undo()
+    _point_home(tmp_path, monkeypatch)
+    L._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    assert cfg.agent.subagent_timeout_secs == 10800
+    assert "subagent_timeout_secs" not in _on_disk(tmp_path).get("agent", {})
+
+
+def test_a_deferred_adoption_is_not_frozen_behind_the_cache(tmp_path, monkeypatch):
+    """A deferred adoption drops the validated-data cache so the next load retries.
+
+    Only a load that READS the base document can decide an adoption, so a
+    read-and-defer that left its document cached would have every later load serve
+    the stale value from that cache and never retry -- the ceiling the operator
+    upgraded to fix would come back and stay.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+
+    calls: list[int] = []
+
+    def _contended(_values):
+        calls.append(1)
+        raise BlockingIOError("another writer holds the sidecar")
+
+    monkeypatch.setattr(L, "record_adoptions", _contended)
+
+    first = KiroCrewConfig.load()
+    assert first.agent.subagent_timeout_secs == 10800  # in memory only
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+
+    # A second load with no file change: it must RE-READ (and try again) rather than
+    # serve the cached document, which is what the retry depends on.
+    KiroCrewConfig.load()
+    assert len(calls) == 2, "the deferred adoption was never retried"
+
+
+def test_an_unreadable_ledger_adopts_nothing(tmp_path, monkeypatch, caplog):
+    """A sidecar that exists but cannot be parsed fails CLOSED on adoption.
+
+    Reading it as empty would re-arm the one-shot over a value the operator restored,
+    which is the single outcome the ledger exists to prevent. Declining costs at most
+    a deferral; the ACK half stays fail-soft, because a missed ack costs one report
+    line.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    SD.ack_file_path().write_text("{ this is not json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger=SD.__name__):
+        cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 1800
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+    assert any("could not be read" in r.getMessage() for r in caplog.records)
+
+
+def test_a_missing_ledger_is_not_an_unreadable_one(tmp_path, monkeypatch):
+    """No file means nothing was ever adopted, which is a trustworthy answer.
+
+    The negative control for the test above: if the fail-closed branch also caught
+    the absent-file case, adoption could never happen at all on a fresh install --
+    green on the safety test, silently dead as a feature.
+    """
+    _point_home(tmp_path, monkeypatch)
+    assert not SD.ack_file_path().exists()
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 10800
+
+
+def test_the_escape_hatch_key_never_auto_adopts():
+    """``forward_declared_env``'s stored False is an opt-out, so it stays report-only.
+
+    The one entry the whole read-only design was reasoned from. If a future change
+    ever flips this, the gateway env suite's ``test_a_real_false_still_turns_it_off``
+    is what breaks, and this test is the earlier warning.
+    """
+    assert FDE_ENTRY.auto_adopt is False
+    base = {"mcp_gateway": {"forward_declared_env": False}}
+    assert SD.auto_adoptable(base, acked={}, adopted={}) == []
+
+
+def test_load_adopts_the_stale_timeout_on_disk_and_in_memory(tmp_path, monkeypatch, caplog):
+    """The complaint this fixes: upgrade, restart, still cut at 30 minutes.
+
+    In memory as well as on disk, because the subagent manager reads the budget once
+    at gateway start -- a disk-only fix would leave the run that performed it still
+    reaping at the old value.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+
+    with caplog.at_level(logging.INFO, logger=L.__name__):
+        cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 10800
+    assert "subagent_timeout_secs" not in _on_disk(tmp_path).get("agent", {})
+    assert SD.adopted_superseded() == {"agent.subagent_timeout_secs": 1800}
+    assert any("adopted the current default" in r.getMessage() for r in caplog.records)
+
+
+def test_a_deliberately_chosen_value_survives_the_adoption(tmp_path, monkeypatch):
+    """Only the exact old default is adopted; any other number is a real choice."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 2400}})
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 2400
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 2400
+    assert SD.adopted_superseded() == {}
+
+
+def test_adoption_is_one_shot_so_a_restored_value_is_left_alone(tmp_path, monkeypatch):
+    """The property that makes an automatic rewrite safe at all.
+
+    Setting the key back to the old default AFTER an adoption is the operator's own
+    choice, and the ledger is what tells the two apart -- without it every load
+    would re-remove the value they just restored.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    KiroCrewConfig.load()
+    assert SD.adopted_superseded() == {"agent.subagent_timeout_secs": 1800}
+
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 1800
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+
+
+def test_keep_pre_empts_an_adoption_that_has_not_happened_yet(tmp_path, monkeypatch):
+    """An acknowledged value is not drift, so ``--keep`` still wins over adoption.
+
+    This is the answer for an operator who genuinely did choose 1800: affirm it, and
+    the automatic path never touches it.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    SD.write_acked_superseded({"agent.subagent_timeout_secs": 1800})
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 1800
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+    assert SD.adopted_superseded() == {}
+
+
+def test_an_overlay_value_outranks_the_adoption_in_memory(tmp_path, monkeypatch):
+    """The base's stale bytes are cleared; the overlay's live choice is not replaced."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    _write_local(tmp_path, {"agent": {"subagent_timeout_secs": 3600}})
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 3600
+    assert "subagent_timeout_secs" not in _on_disk(tmp_path).get("agent", {})
+
+
+def test_both_timeout_keys_adopt_in_one_load(tmp_path, monkeypatch):
+    """A real upgraded install holds both, so both clear in a single write."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(
+        tmp_path, {"agent": {"subagent_timeout_secs": 1800, "chat_turn_timeout_secs": 7200}}
+    )
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.subagent_timeout_secs == 10800
+    assert cfg.agent.chat_turn_timeout_secs == 14400
+    assert _on_disk(tmp_path).get("agent", {}) == {}  # both keys cleared in one write
+    assert set(SD.adopted_superseded()) == {
+        "agent.subagent_timeout_secs",
+        "agent.chat_turn_timeout_secs",
+    }
+
+
+def test_the_load_does_not_tell_the_operator_to_fix_what_it_just_fixed(
+    tmp_path, monkeypatch, caplog
+):
+    """An adopted key is excluded from the warning; a report-only one still appears."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(
+        tmp_path,
+        {
+            "agent": {"subagent_timeout_secs": 1800},
+            "mcp_gateway": {"forward_declared_env": False},
+        },
+    )
+
+    with caplog.at_level(logging.WARNING, logger=L.__name__):
+        KiroCrewConfig.load()
+
+    warnings = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    assert "forward_declared_env" in warnings
+    assert "subagent_timeout_secs" not in warnings
+
+
+def test_a_failed_ledger_write_aborts_the_adoption(tmp_path, monkeypatch):
+    """Record-then-remove: a removal whose record was lost would repeat forever.
+
+    Repeating is the one failure mode that can override a value the operator
+    restored, so a ledger that cannot be written leaves the config untouched and the
+    key reported like any other drift.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+
+    def _refuse(_values):
+        raise OSError("read-only data home")
+
+    monkeypatch.setattr(L, "record_adoptions", _refuse)
+
+    cfg = KiroCrewConfig.load()
+
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+    assert cfg.agent.subagent_timeout_secs == 10800  # in-memory only, not persisted
+
+
+def test_the_ledger_and_the_acks_share_one_file_without_erasing_each_other(tmp_path, monkeypatch):
+    """Both maps live in one document, so writing one must carry the other through.
+
+    A dropped adoption record is not cosmetic: it re-opens the repeat-adoption path
+    the ledger exists to close.
+    """
+    _point_home(tmp_path, monkeypatch)
+    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
+    SD.record_adoptions({"agent.subagent_timeout_secs": 1800})
+
+    assert SD.acked_superseded() == {"session.autocompact_pct": 90.0}
+    assert SD.adopted_superseded() == {"agent.subagent_timeout_secs": 1800}
+
+    SD.write_acked_superseded({"stt.streaming": False})
+
+    assert SD.adopted_superseded() == {"agent.subagent_timeout_secs": 1800}
+
+
+def test_the_registered_new_defaults_match_the_live_dataclass_defaults():
+    """Negative control for the in-memory half.
+
+    ``_adopt_in_memory`` reads the field's OWN default rather than the row's
+    ``new_default``, so this pins that the two agree for the auto-adopting keys --
+    if they ever diverge, the disk and memory halves would resolve different
+    numbers and the divergence would be invisible.
+    """
+    from kiro_crew.config.sections import AgentConfig
+
+    assert AgentConfig.__dataclass_fields__["subagent_timeout_secs"].default == (
+        SUBAGENT_ENTRY.new_default
+    )
+    assert AgentConfig.__dataclass_fields__["chat_turn_timeout_secs"].default == (
+        TURN_ENTRY.new_default
+    )

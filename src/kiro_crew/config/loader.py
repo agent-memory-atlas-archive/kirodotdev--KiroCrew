@@ -24,7 +24,7 @@ import stat as _stat
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -303,7 +303,17 @@ from kiro_crew.config.sections import (  # noqa: F401
 
 # Superseded-default reporting (#5244). Leaf module: stdlib only, so importing it
 # here creates no cycle.
-from kiro_crew.config.superseded_defaults import drift_summary, superseded_default_drift
+# The same module owns the one-shot adoption of the entries that opt into it.
+from kiro_crew.config.superseded_defaults import (
+    SupersededDefault,
+    auto_adoptable,
+    drift_summary,
+    drop_adoptions,
+    drop_drifted_keys,
+    record_adoptions,
+    stored_value_or_none,
+    superseded_default_drift,
+)
 
 # Schema validation + the validated-data cache live in ``config.validation``.
 # Re-exported here for backward compatibility — callers and tests still
@@ -574,6 +584,11 @@ MIGRATE_WORKSPACES = "workspaces"
 MIGRATE_AGENTS = "agents"
 MIGRATE_DEFAULT_AGENT = "default_agent"
 MIGRATE_CONNECTIONS_UI = "connections_ui"
+#: Un-materialize the stored values that still hold a superseded default an entry
+#: marked ``auto_adopt``. Unlike the three above, this one carries a payload: the
+#: keys the load decided on travel separately in ``adopt_keys``, because the set is
+#: per-install rather than a fixed schema shape.
+MIGRATE_SUPERSEDED_DEFAULTS = "superseded_defaults"
 
 #: Sidecar marker recording that the one-shot ``connections_ui`` launch
 #: migration ran. Pre-launch builds materialized ``connections_ui: false`` into
@@ -593,6 +608,8 @@ def _apply_document_migrations(
     *,
     overlay_kiro_agent: str | None,
     default_kiro_agent: str,
+    adopt_keys: frozenset[str] = frozenset(),
+    recorded_adoptions: list[str] | None = None,
 ) -> bool:
     """Apply the pending write-back migrations to a raw config document in place.
 
@@ -684,6 +701,44 @@ def _apply_document_migrations(
                 data["default_agent"] = "default"
             changed = data["default_agent"] != stored_default or changed
 
+    # Un-materialize the auto-adopting superseded defaults this load found. Four
+    # properties are load-bearing and all four live here rather than at the call
+    # site, because this is the only code that runs inside the config write lock:
+    #
+    # * RE-DETECTED against *data*, so a value another writer changed since this
+    #   load's read is left alone -- the same rule every migration above follows,
+    #   and the reason a live ``config set`` is never clobbered;
+    # * the ledger is written BEFORE the removal is reported as done. A removal
+    #   whose record did not land would repeat on the next load, and repeating is
+    #   the one failure that can override a value the operator restored. A failing
+    #   record therefore propagates and aborts the whole migration write;
+    # * every key it records is reported back through *recorded_adoptions*, because
+    #   writing the ledger first creates the mirror hazard: if the config write then
+    #   fails, the key is marked adopted while the stale value is still stored, and
+    #   the one-shot filter would never revisit it. The caller rolls those entries
+    #   back when the write does not land, which restores the pre-load state exactly;
+    # * ``drop_drifted_keys`` REMOVES the key rather than writing the new number, so
+    #   the field resolves through ``data.get(key, DEFAULT)`` until the next full
+    #   rewrite of the document re-materializes it.
+    #
+    # Lock order is config-then-ack, matching ``record_acks`` -- the only two sites
+    # that nest these locks, and they nest them the same way.
+    if MIGRATE_SUPERSEDED_DEFAULTS in pending and adopt_keys:
+        fresh = [
+            entry.dotted_key for entry in auto_adoptable(data) if entry.dotted_key in adopt_keys
+        ]
+        if fresh:
+            record_adoptions({key: stored_value_or_none(data, key) for key in fresh})
+            if recorded_adoptions is not None:
+                recorded_adoptions.extend(fresh)
+            if drop_drifted_keys(data, fresh):
+                logger.info(
+                    "config: adopted the current default for %s — the stored value "
+                    "was a superseded default this install never chose",
+                    ", ".join(fresh),
+                )
+                changed = True
+
     return changed
 
 
@@ -722,6 +777,7 @@ def _persist_config_migration(
     pending: frozenset[str],
     *,
     default_kiro_agent: str,
+    adopt_keys: frozenset[str] = frozenset(),
 ) -> bool:
     """Write the pending migrations to *path* as a read-modify-write.
 
@@ -791,6 +847,14 @@ def _persist_config_migration(
     # taken from the load's snapshot so the seed reflects the file as it is now.
     overlay_kiro_agent = _overlay_kiro_agent()
 
+    # Ledger entries the migration wrote, so they can be rolled back when the config
+    # write does not land. The adoption records BEFORE it removes (a lost record
+    # would repeat the removal), which leaves this mirror hazard: an entry whose
+    # rewrite then failed marks a key adopted while its stale value is still stored,
+    # and the one-shot filter would never revisit it. Undoing the entry restores the
+    # pre-load state exactly, so the next load retries.
+    recorded_adoptions: list[str] = []
+
     def _mutate(current: dict) -> dict | None:
         nonlocal wrote
         if not _apply_document_migrations(
@@ -798,6 +862,8 @@ def _persist_config_migration(
             pending,
             overlay_kiro_agent=overlay_kiro_agent,
             default_kiro_agent=default_kiro_agent,
+            adopt_keys=adopt_keys,
+            recorded_adoptions=recorded_adoptions,
         ):
             # Nothing left to migrate -- another writer got here first. Returning
             # None skips the write, so we do not rewrite a file we agree with.
@@ -806,31 +872,79 @@ def _persist_config_migration(
         wrote = True
         return current
 
-    if _inside_data_home(_lock_target(path)):
-        try:
-            update_config_locked(path, mutate=_mutate, wait_for_lock=False)
-        except BlockingIOError:
-            # POSIX reports a contended single-shot acquire this way. Not a
-            # failure worth a warning: info, because the migration simply moves
-            # to the next load and nothing was written or lost.
-            logger.info(
-                "config: migration deferred -- another writer holds %s.lock; "
-                "the next load will migrate",
-                path.name,
-            )
-            return False
-    else:
-        # read_config_for_update fails CLOSED on an unreadable or non-object
-        # file, and that exception reaches load()'s except: the file is left
-        # alone and the migration retries. Same contract as the locked path.
-        result = _mutate(read_config_for_update(path))
-        if result is not None:
-            write_config_atomically(path, stamp_config_meta(result))
+    try:
+        if _inside_data_home(_lock_target(path)):
+            try:
+                update_config_locked(path, mutate=_mutate, wait_for_lock=False)
+            except BlockingIOError:
+                # POSIX reports a contended single-shot acquire this way. Not a
+                # failure worth a warning: info, because the migration simply moves
+                # to the next load and nothing was written or lost.
+                logger.info(
+                    "config: migration deferred -- another writer holds %s.lock; "
+                    "the next load will migrate",
+                    path.name,
+                )
+                return False
+        else:
+            # read_config_for_update fails CLOSED on an unreadable or non-object
+            # file, and that exception reaches load()'s except: the file is left
+            # alone and the migration retries. Same contract as the locked path.
+            result = _mutate(read_config_for_update(path))
+            if result is not None:
+                write_config_atomically(path, stamp_config_meta(result))
+    finally:
+        # ``finally`` rather than an except branch: the write can also be skipped
+        # WITHOUT an exception (the deferral return above, a concurrent writer that
+        # already migrated), and an orphaned ledger entry is the same hazard either
+        # way. ``wrote`` is the single fact that decides it.
+        if recorded_adoptions and not wrote:
+            drop_adoptions(recorded_adoptions)
     if wrote:
         # Same reason save() did: drop the validated-data cache so the next load
         # re-reads this write even where the filesystem mtime resolution is coarse.
         _invalidate_config_cache()
     return wrote
+
+
+def _overlay_supplies(local_data: dict, dotted_key: str) -> bool:
+    """True when ``config.local.json`` itself carries *dotted_key*.
+
+    The overlay wins the deep-merge, so where it names a field the base cannot be
+    the effective value. Adopting such a key in memory would replace the operator's
+    live overlay choice with a default -- the one thing an automatic adoption must
+    never do.
+    """
+    section, _, field = dotted_key.partition(".")
+    section_data = local_data.get(section)
+    return isinstance(section_data, dict) and field in section_data
+
+
+def _adopt_in_memory(cfg: KiroCrewConfig, dotted_key: str, old_default: object) -> None:
+    """Move one parsed field from *old_default* to the LIVE dataclass default.
+
+    The dataclass default is read rather than the registry's ``new_default`` on
+    purpose. Both sides of a registry row are history, so on a key whose default
+    moved twice the matching row's ``new_default`` is an intermediate value, while
+    the field's own default is what the removal on disk will resolve to. Reading it
+    here keeps memory and disk agreeing on one number.
+
+    The guard is exact-value, not just key presence: a field whose parsed value
+    differs from *old_default* was clamped or coerced on the way in, and replacing
+    that would discard the loader's own correction rather than a stale default.
+    """
+    section, _, field = dotted_key.partition(".")
+    target = getattr(cfg, section, None)
+    if target is None:
+        return
+    fields_map = getattr(type(target), "__dataclass_fields__", {})
+    spec = fields_map.get(field)
+    if spec is None or getattr(target, field, None) != old_default:
+        return
+    live_default = spec.default
+    if live_default is MISSING:
+        return
+    setattr(target, field, live_default)
 
 
 def denied_commands_path() -> Path:
@@ -1386,7 +1500,7 @@ def update_config_locked(
 _REPORTED_SUPERSEDED_KEYS: set[str] = set()
 
 
-def _report_superseded_defaults(base_data: dict) -> None:
+def _report_superseded_defaults(base_data: dict, *, skip: set[str] | None = None) -> None:
     """Warn once when stored base values still hold a superseded default.
 
     *base_data* is the ``config.json`` document as read, BEFORE the
@@ -1412,11 +1526,17 @@ def _report_superseded_defaults(base_data: dict) -> None:
     config many times says it once. An acknowledged key is not reported at all --
     ``superseded_default_drift`` filters it -- which is what makes this line
     answerable instead of permanent.
+
+    *skip* names the keys this load is ADOPTING. They are excluded because the line
+    tells the operator to run a command, and pointing them at a command for a key
+    that is being fixed in the same load is worse than saying nothing: by the time
+    they read it the key is already gone from the file.
     """
+    skipped = skip or set()
     drifted = [
         e
         for e in superseded_default_drift(base_data)
-        if e.dotted_key not in _REPORTED_SUPERSEDED_KEYS
+        if e.dotted_key not in _REPORTED_SUPERSEDED_KEYS and e.dotted_key not in skipped
     ]
     if not drifted:
         return
@@ -2491,6 +2611,12 @@ class KiroCrewConfig:
         # disk path below; read from the sidecar on a cache hit. Empty when there
         # is no overlay, in which case the merged document IS the base.
         base_shadow: dict = {}
+        # Bound BEFORE the cache branch, because only the reading branch can decide
+        # an adoption: a cache HIT means no base document was read this load, and a
+        # load that did not look at the file must not adopt from it. Empty is
+        # therefore the correct answer on the hot path, not a missing one -- the load
+        # that populated the cache already adopted.
+        adoptable: list[SupersededDefault] = []
         if cached is not None:
             data, sidecar = cached
             base_shadow = sidecar.get(_SIDECAR_BASE_SHADOW, {})
@@ -2519,15 +2645,25 @@ class KiroCrewConfig:
                     logger.warning("Failed to load config from %s: %s", path, e)
                     _mark_file_degraded(path)
 
-            # Report -- never correct -- a stored BASE value that still holds a
-            # superseded default (issue #5244), before the overlay merge below:
-            # the overlay is the operator's live choice and says nothing about
-            # what the base materialized. Read-only by design; a key with a
-            # documented escape hatch cannot be corrected automatically, because
-            # a stale default and a deliberate opt-out are the same bytes.
-            # Skipped when no base file loaded -- nothing is stored to report on.
+            # Report -- and, for the entries that opt in, ADOPT -- a stored BASE
+            # value that still holds a superseded default. Decided
+            # before the overlay merge below: the overlay is the operator's live
+            # choice and says nothing about what the base materialized.
+            #
+            # The two halves differ in what they may touch. Reporting is read-only
+            # and covers every drifted key, because a key with a documented escape
+            # hatch cannot be corrected automatically -- a stale default and a
+            # deliberate opt-out are the same bytes. Adoption covers only the
+            # entries whose ``auto_adopt`` says the value has no second meaning, and
+            # happens at most once per key per install; ``auto_adoptable`` owns both
+            # filters plus the acknowledgment one.
+            #
+            # Skipped when no base file loaded -- nothing is stored to adopt or
+            # report on.
+            adoptable = []
             if loaded_base:
-                _report_superseded_defaults(data)
+                adoptable = auto_adoptable(data)
+                _report_superseded_defaults(data, skip={e.dotted_key for e in adoptable})
 
             # Deep-merge config.local.json overlay (user-owned, never touched by setup)
             local_data: dict = {}
@@ -3928,6 +4064,22 @@ class KiroCrewConfig:
                     pending.add(MIGRATE_CONNECTIONS_UI)
                 connections_migrating = True
 
+            # Adopt the auto-adopting superseded defaults, in memory as well as on
+            # disk. In memory matters as much as the file: the gateway reads several
+            # of these budgets once at startup, so a disk-only fix would leave the
+            # very run that performed it still holding the old value -- the operator
+            # upgrades, restarts, and sees no change, which is the complaint.
+            #
+            # The two sets differ for a key the OVERLAY supplies: the stale base
+            # bytes are cleared like any other, but the effective value belongs to
+            # ``config.local.json`` and must not be overwritten in memory.
+            adopt_keys = {e.dotted_key for e in adoptable}
+            if adopt_keys:
+                for entry in adoptable:
+                    if not _overlay_supplies(local_data, entry.dotted_key):
+                        _adopt_in_memory(cfg, entry.dotted_key, entry.old_default)
+                pending.add(MIGRATE_SUPERSEDED_DEFAULTS)
+
             needs_migration = bool(pending)
 
             persisted = True
@@ -3936,7 +4088,18 @@ class KiroCrewConfig:
                     path,
                     frozenset(pending),
                     default_kiro_agent=cfg.agent.default_agent or "kirocrew",
+                    adopt_keys=frozenset(adopt_keys),
                 )
+                if adopt_keys and not persisted:
+                    # A DEFERRED adoption must not be frozen behind the cache. Only
+                    # a load that READS the base document can decide an adoption
+                    # (``adoptable`` is empty on a cache hit, deliberately), so if
+                    # this read-and-defer left its document cached, every later load
+                    # would serve the stale value from that cache and never retry --
+                    # the ceiling the operator upgraded to fix would come back and
+                    # stay. Dropping the cache makes the next load re-read and retry;
+                    # the cost is one extra read while the contention lasts.
+                    _invalidate_config_cache()
             elif needs_migration:
                 # This load DISCARDED something (a malformed section, an
                 # unreadable file). The write-back serializes only the parsed

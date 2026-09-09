@@ -180,7 +180,9 @@ alongside your own, and then pass the same name to every command including the
 `attach` or `open` that created it.
 
 `playwright-cli list` shows every browser on the machine, including other
-sessions'. Only close one you opened.
+sessions'. Only close one you opened. A session named `panel-<owner6>-<slot8>` is the
+user's own — the dashboard's Browser panel opened it from its address bar — so
+never `close`, `goto` or reuse it: the human is looking at that page.
 
 Never `close` an attached session: it closes the windows the user is working in.
 Leave the connection open instead, which costs them nothing.

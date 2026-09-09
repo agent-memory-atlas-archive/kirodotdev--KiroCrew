@@ -44,6 +44,7 @@ from typing import Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.browser_cli.install import cli_env, cli_path
+from kiro_crew.browser_cli.launch import ui_socket_env
 
 logger = logging.getLogger(__name__)
 
@@ -440,7 +441,14 @@ def _spawn(cli: str, port: int) -> subprocess.Popen[bytes] | None:
     ``start_new_session`` puts the child in its own process group on POSIX so
     the whole tree can be signalled at stop time without touching the gateway's
     own group.
+
+    The child's socket root is the gateway-owned one (:func:`ui_socket_env`):
+    the dashboard claims its singleton socket under it, and the Browser panel's
+    launcher (:mod:`kiro_crew.browser_cli.launcher`) sends its reveal request
+    there, so both must agree on a root the gateway knows.
     """
+    env = cli_env()
+    env.update(ui_socket_env(env))
     try:
         return subprocess.Popen(
             _show_argv(cli, port),
@@ -448,7 +456,7 @@ def _spawn(cli: str, port: int) -> subprocess.Popen[bytes] | None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=platform_compat.IS_POSIX,
-            env=cli_env(),
+            env=env,
         )
     except OSError as exc:
         logger.warning("could not start playwright-cli show: %s", exc)

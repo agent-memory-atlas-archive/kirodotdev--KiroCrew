@@ -741,6 +741,10 @@ def test_every_browser_route_has_a_deliberate_app_token_stance():
         "api_browser_engine_install": "owner",  # mutates the machine (browser download)
         "api_browser_view_get": "owner",  # returns the unauthenticated dashboard URL
         "api_browser_view_start": "owner",  # launches the browser AND returns that URL
+        # Opens an owner-typed URL in the gateway's browser: a spawn driven by
+        # request input, owner-only, and it refuses internal-secret callers too
+        # (agent browsing must stay behind the shell approval ladder).
+        "api_browser_open": "owner",
         # Presence/version reporting only. No credential, no URL, no mutation --
         # and an app that cannot read it cannot tell "absent" from "broken".
         "api_browser_install_get": "open",

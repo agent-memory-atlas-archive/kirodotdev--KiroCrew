@@ -11,11 +11,13 @@ vi.mock('../hooks/useScreenSnip', async (importOriginal) => {
   return { ...actual, isScreenSnipSupported: () => true }
 })
 
-// Browser-view status/start, stubbed at the api seam. Only these two methods are
-// replaced — the rest of the client (and ApiError, which the hook branches on)
-// stays real, so no other call site in this panel changes behaviour.
+// Browser-view status/start and the address bar's launcher, stubbed at the api
+// seam. Only these methods are replaced — the rest of the client (and ApiError,
+// which the hook branches on) stays real, so no other call site in this panel
+// changes behaviour.
 const getBrowserView = vi.fn()
 const startBrowserView = vi.fn()
+const openInBrowser = vi.fn()
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return {
@@ -24,6 +26,7 @@ vi.mock('../api/client', async (importOriginal) => {
       ...actual.api,
       getBrowserView: () => getBrowserView(),
       startBrowserView: () => startBrowserView(),
+      openInBrowser: (url: string, sessionKey: string) => openInBrowser(url, sessionKey),
     },
   }
 })
@@ -32,6 +35,8 @@ vi.mock('../api/client', async (importOriginal) => {
 const RUNNING = { status: 'running', url: 'http://127.0.0.1:45613/', port: 45613, reason: null }
 /** Installed, nothing serving yet — the state a start action is offered for. */
 const STOPPED = { status: 'stopped', url: null, port: null, reason: null }
+/** The launcher's answer for a page that opened in the gateway host's browser. */
+const OPENED = (_url: string) => ({ ok: true, session: 'panel-1234abcd', error: null, view: RUNNING })
 
 // Every test in this file renders the panel, which reads the view status. Default
 // it to `stopped` so the tests that are about the dev-server preview neither hit
@@ -39,6 +44,7 @@ const STOPPED = { status: 'stopped', url: null, port: null, reason: null }
 beforeEach(() => {
   getBrowserView.mockReset().mockResolvedValue(STOPPED)
   startBrowserView.mockReset().mockResolvedValue(RUNNING)
+  openInBrowser.mockReset().mockImplementation(async (url: string) => OPENED(url))
 })
 
 // The panel isolates a loopback preview host equal to the dashboard host onto
@@ -61,8 +67,20 @@ describe('normalizeUrl', () => {
     expect(normalizeUrl('localhost:5173')).toBe('http://localhost:5173/')
     expect(normalizeUrl('127.0.0.1:8080')).toBe('http://127.0.0.1:8080/')
   })
+  it('upgrades a bare public host to https (what a real site answers on)', () => {
+    expect(normalizeUrl('google.com')).toBe('https://google.com/')
+    expect(normalizeUrl('www.example.com/path?q=1')).toBe('https://www.example.com/path?q=1')
+  })
+  it('keeps http for the dev-server shapes: loopback, an IP literal, an explicit port', () => {
+    expect(normalizeUrl('localhost')).toBe('http://localhost/')
+    expect(normalizeUrl('myapp.localhost:5173')).toBe('http://myapp.localhost:5173/')
+    expect(normalizeUrl('192.168.1.4')).toBe('http://192.168.1.4/')
+    expect(normalizeUrl('192.168.1.4:3000')).toBe('http://192.168.1.4:3000/')
+    expect(normalizeUrl('example.com:8443')).toBe('http://example.com:8443/')
+  })
   it('keeps explicit http/https', () => {
     expect(normalizeUrl('https://example.com')).toBe('https://example.com/')
+    expect(normalizeUrl('http://example.com')).toBe('http://example.com/')
   })
   it('rejects empty and non-http(s) schemes', () => {
     expect(normalizeUrl('   ')).toBeNull()
@@ -753,5 +771,227 @@ describe('WebPreviewPanel — native browser transport', () => {
     // Unmount → close() DESTROYS.
     unmount()
     await waitFor(() => expect(api.close).toHaveBeenCalledWith('sess-1'))
+  })
+})
+
+describe('WebPreviewPanel — address bar launcher (non-native transport)', () => {
+  // No `window.browserAPI` bridge in these tests, so `useNativeBrowser` reports
+  // available:false — the plain-browser / remote-gateway transport, where the
+  // gateway host's Playwright CLI browser is the only thing that can render an
+  // external site.
+  beforeEach(() => {
+    localStorage.clear()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  const submit = (raw: string) => {
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: raw } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+  }
+
+  it('drops a launch answer for a slot the user has left, on success and on failure', async () => {
+    // Slot A's launch is still in flight when the user switches to slot B; the
+    // late answer must not paint B's header, view or failure card.
+    let resolveA: (v: unknown) => void = () => {}
+    let rejectC: (e: unknown) => void = () => {}
+    openInBrowser.mockImplementation((_url: string, sessionKey: string) => new Promise((resolve, reject) => {
+      if (sessionKey === 'sess-a') resolveA = resolve
+      if (sessionKey === 'sess-c') rejectC = reject
+    }))
+    const { rerender } = renderWithProviders(<WebPreviewPanel sessionKey="sess-a" />)
+    submit('google.com')
+    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://google.com/', 'sess-a'))
+    rerender(<WebPreviewPanel sessionKey="sess-b" />)
+    await act(async () => { resolveA(OPENED('https://google.com/')) })
+    expect(screen.queryByTestId('web-preview-session-name')).toBeNull()
+    expect(screen.queryByTitle('Live browser session')).toBeNull()
+    expect(screen.queryByText('Opening in the browser…')).toBeNull()
+    // Same guard on the error path: a late failure does not paint the new slot's card.
+    rerender(<WebPreviewPanel sessionKey="sess-c" />)
+    submit('example.com')
+    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://example.com/', 'sess-c'))
+    rerender(<WebPreviewPanel sessionKey="sess-d" />)
+    await act(async () => { rejectC(new Error('boom')) })
+    expect(screen.queryByTestId('web-preview-launch-error')).toBeNull()
+  })
+
+  it('sends an external host to the gateway browser and shows the CLI view, never the iframe', async () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    submit('google.com')
+    // Upgraded to https, keyed to THIS chat slot.
+    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://google.com/', 'sess-1'))
+    // The preview iframe was never pointed at the external site: no frame, no
+    // liveness probe against it (which is what produced "not reachable"). Every
+    // probe the panel made went to a loopback host, none to the public site.
+    expect(screen.queryByTitle('Web preview')).toBeNull()
+    const probed = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map(c => String(c[0]))
+      .filter(u => /^https?:\/\//.test(u))  // the api client's own relative /api/… calls are not probes
+    for (const u of probed) expect(['127.0.0.1', 'localhost']).toContain(new URL(u).hostname)
+    // The answer carried the view status, so the CLI dashboard frames at once.
+    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
+    expect(frame.src).toBe('http://127.0.0.1:45613/')
+    expect(screen.queryByText('Preview server not reachable')).toBeNull()
+    // The header names THIS chat's session the way the framed sidebar lists it
+    // (visible label, not a tooltip), and one line says how the next page is opened.
+    expect(screen.getByText("This chat's browser session")).toBeInTheDocument()
+    expect(screen.getByTestId('web-preview-session-name').textContent).toBe('panel-1234abcd')
+    // Narrow widths (320px): the label group is the row's only flexible item and
+    // truncates, so the header's controls — the way back to the preview bar —
+    // never overflow. jsdom does no layout, so pin the contract on the classes.
+    const group = screen.getByTestId('web-preview-session-label')
+    expect(group.className).toMatch(/\bmin-w-0\b/)
+    expect(group.className).toMatch(/\bflex-1\b/)
+    expect(group.className).not.toMatch(/\bshrink-0\b/)
+    expect(screen.getByText("This chat's browser session").className).toMatch(/\btruncate\b/)
+    expect(screen.getByText(/Open the next site in the view's own address bar/)).toBeInTheDocument()
+  })
+
+  it('shows an opening state while the gateway launches the browser', async () => {
+    let resolve!: (v: unknown) => void
+    openInBrowser.mockImplementation(() => new Promise(r => { resolve = r }))
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    submit('https://example.com/')
+    expect(await screen.findByText('Opening in the browser…')).toBeInTheDocument()
+    expect(screen.getByText('https://example.com/')).toBeInTheDocument()
+    await act(async () => { resolve(OPENED('https://example.com/')) })
+    await screen.findByTitle('Live browser session')
+    expect(screen.queryByText('Opening in the browser…')).toBeNull()
+  })
+
+  it('keeps a loopback dev server on the iframe path and never calls the launcher', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    submit('localhost:8080')
+    const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
+    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:8080/`)
+    expect(openInBrowser).not.toHaveBeenCalled()
+    expect(screen.queryByTitle('Live browser session')).toBeNull()
+  })
+
+  it('renders the gateway’s own error text verbatim when the CLI fails, never a blank frame', async () => {
+    const text = 'Error: Daemon pid=1467353: Daemon process exited with code 1\n'
+      + 'Chromium sandboxing failed!\n'
+      + 'No usable sandbox! If you want to live dangerously and need an immediate workaround, you can try using --no-sandbox.\n\n'
+      + 'Chromium could not start because this host cannot run its sandbox. Kiro Crew never disables the sandbox by default. '
+      + 'To accept that trade-off on this host, point PLAYWRIGHT_MCP_CONFIG in the gateway\'s environment at your own playwright-cli config.'
+    openInBrowser.mockResolvedValue({ ok: false, session: 'panel-1234abcd', error: text, view: RUNNING })
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    submit('google.com')
+    expect(await screen.findByText("Couldn't open this page in the browser")).toBeInTheDocument()
+    // The CLI's words, exactly — a catalog key could only drop the cause or
+    // assert one the gateway did not give.
+    const notice = screen.getByTestId('web-preview-launch-error')
+    expect(notice.textContent).toContain('No usable sandbox!')
+    expect(notice.textContent).toContain('PLAYWRIGHT_MCP_CONFIG')
+    // Not the dev-server copy, and nothing framed.
+    expect(screen.queryByText('Preview server not reachable')).toBeNull()
+    expect(screen.queryByTitle('Web preview')).toBeNull()
+    expect(screen.queryByTitle('Live browser session')).toBeNull()
+    // Retry re-submits the same URL; the notice's own dismiss clears the card.
+    // One action in the row -- the third and later would need an overflow.
+    const actions = screen.getByText('Try again').closest('button') as HTMLButtonElement
+    expect(actions).not.toBeNull()
+    fireEvent.click(actions)
+    await waitFor(() => expect(openInBrowser).toHaveBeenCalledTimes(2))
+    expect(openInBrowser).toHaveBeenLastCalledWith('https://google.com/', 'sess-1')
+    fireEvent.click(await screen.findByLabelText('Dismiss'))
+    expect(screen.queryByText("Couldn't open this page in the browser")).toBeNull()
+  })
+
+  it('reports a transport failure of the launcher request', async () => {
+    openInBrowser.mockRejectedValue(new Error('url must be http(s) with a host and no credentials'))
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    submit('https://example.com/')
+    expect(await screen.findByText("Couldn't open this page in the browser")).toBeInTheDocument()
+    expect(screen.getByTestId('web-preview-launch-error').textContent)
+      .toContain('url must be http(s) with a host and no credentials')
+  })
+
+  it('adds no second address bar over the CLI view (its own chrome carries navigation)', async () => {
+    getBrowserView.mockResolvedValue(RUNNING)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const frame = await screen.findByTitle('Live browser session')
+    // The framed dashboard has its own URL bar, tab bar and remote input; a
+    // panel-level bar beside it would be a second, disagreeing address bar.
+    // Only the (hidden) preview subtree's URL field exists.
+    expect(screen.getAllByRole('textbox', { hidden: true })).toHaveLength(1)
+    expect(frame.parentElement?.lastElementChild).toBe(frame)
+  })
+
+  it('explains an unreachable view (gateway loopback, no forward) instead of framing a dead page', async () => {
+    vi.useFakeTimers()
+    // The gateway says running — it is, from where IT stands — but from this
+    // browser the loopback URL refuses to connect: a laptop on a tunnel without
+    // a forward for the view's port.
+    const fetchMock = vi.fn(async (input: unknown) => {
+      if (String(input).startsWith('http://127.0.0.1:45613')) throw new Error('refused')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    getBrowserView.mockResolvedValue(RUNNING)
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
+      // Two failed probes (immediate + one interval) ⇒ the frame yields to the
+      // explanation, which names the URL and the setting that fixes it.
+      await act(async () => { await vi.advanceTimersByTimeAsync(11000) })
+      // Rendered through the shared error surface, naming the URL and the
+      // setting that fixes it.
+      const notice = screen.getByTestId('web-preview-view-unreachable')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.textContent).toContain("Browser view can't be reached from this browser")
+      expect(notice.textContent).toMatch(/pin the view's port/)
+      expect(screen.getByText('http://127.0.0.1:45613/')).toBeInTheDocument()
+      expect(screen.getByText('dashboard.browser_view_port')).toBeInTheDocument()
+      expect(screen.queryByTitle('Live browser session')).toBeNull()
+      // The header dot says what THIS browser sees: not green beside this card.
+      expect(screen.getByTestId('web-preview-view-dot').style.backgroundColor).toBe('var(--danger)')
+      // The view comes within reach (the forward is up) → a retry restores the frame.
+      fetchMock.mockImplementation(async () => undefined)
+      fireEvent.click(screen.getByText('Try again'))
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('WebPreviewPanel — native transport keeps its own path for external hosts', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
+    class RO { observe() {} unobserve() {} disconnect() {} }
+    ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = RO
+  })
+  afterEach(() => {
+    delete (window as unknown as { browserAPI?: unknown }).browserAPI
+    vi.unstubAllGlobals()
+  })
+
+  it('sends an external host to the native view, not to the gateway launcher', async () => {
+    const open = vi.fn(async (_p: string, u: string) => ({ open: true, visible: true, url: u, bounds: null }))
+    ;(window as unknown as { browserAPI?: unknown }).browserAPI = {
+      open,
+      navigate: vi.fn(async (_p: string, u: string) => ({ open: true, visible: true, url: u, bounds: null })),
+      setBounds: vi.fn(async () => ({ open: false, visible: true, url: '', bounds: null })),
+      setOverlayActive: vi.fn(async () => ({ open: false, visible: true, url: '', bounds: null })),
+      close: vi.fn(async () => ({ open: false, visible: false, url: '', bounds: null })),
+      setInactive: vi.fn(async () => ({ open: false, visible: true, url: '', bounds: null })),
+      getState: vi.fn(async () => ({ open: false, visible: true, url: '', bounds: null })),
+      setAgentAct: vi.fn(async () => ({ ok: true })),
+      setControlOwner: vi.fn(async (_p: string, owner: string) => ({ owner, changed: true })),
+      onDidNavigate: vi.fn(() => () => {}),
+      onTitleUpdated: vi.fn(() => () => {}),
+    }
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'google.com' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(open).toHaveBeenCalledWith('sess-1', 'https://google.com/'))
+    expect(openInBrowser).not.toHaveBeenCalled()
   })
 })

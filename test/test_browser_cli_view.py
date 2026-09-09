@@ -875,3 +875,36 @@ def test_stop_clears_the_recorded_child_port(monkeypatch: pytest.MonkeyPatch) ->
     mod.stop()
 
     assert mod._child_port is None
+
+
+def test_show_child_registers_in_the_gateway_owned_session_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FP item 6: the ``show`` grid still lists the panel sessions.
+
+    The grid (the documented CAPTCHA/2FA takeover surface) lists whatever is in
+    the CLI session registry the ``show`` child runs against. The launcher
+    registers each ``panel-`` session under the gateway-owned registry that
+    :func:`ui_socket_env` pins (``<root>/ui/d``); this test proves ``_spawn``
+    hands the ``show`` child that SAME env, so the grid and the launched
+    sessions share one registry and the grid lists what a launch created.
+    """
+    captured: dict[str, dict[str, str]] = {}
+
+    def fake_popen(argv, **kwargs):  # noqa: ANN001, ANN003
+        captured["env"] = dict(kwargs["env"])
+        return FakeProc()
+
+    monkeypatch.setattr(mod, "cli_env", lambda: {"PATH": "/n"})
+    monkeypatch.setattr(
+        mod,
+        "ui_socket_env",
+        lambda env: {"PWTEST_SOCKETS_DIR": "/root/ui/s", "PWTEST_DAEMON_SESSION_DIR": "/root/ui/d"},
+    )
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+    proc = mod._spawn("/n/pw", 7777)
+
+    assert proc is not None
+    assert captured["env"]["PWTEST_SOCKETS_DIR"] == "/root/ui/s"
+    assert captured["env"]["PWTEST_DAEMON_SESSION_DIR"] == "/root/ui/d"

@@ -31,6 +31,7 @@ from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_ap
 from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.browser_cli import launch as browser_cli_launch
+from kiro_crew.browser_cli import launcher as browser_cli_launcher
 from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.browser_cli import view as browser_cli_view
@@ -1532,6 +1533,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/browser/engine", handlers.api_browser_engine_install)
     app.router.add_get("/api/browser/view", handlers.api_browser_view_get)
     app.router.add_post("/api/browser/view/start", handlers.api_browser_view_start)
+    # The Browser panel's address bar on the non-native transport: opens an
+    # owner-typed URL in the gateway host's Playwright CLI browser and shows it
+    # through the view above. Owner-only (cookie/token) and deliberately NOT on
+    # any internal-path list -- the handler refuses internal-secret callers too,
+    # because agent browsing must keep going through the shell approval ladder.
+    app.router.add_post("/api/browser/open", handlers.api_browser_open)
     # Native browser command channel (agent->Electron). Loopback + internal-secret
     # only; see the _STRICT_INTERNAL_API_PATHS entries and each handler's re-assert.
     app.router.add_post("/api/browser/command", handlers.api_browser_command)
@@ -2675,15 +2682,52 @@ def _register_browser_view_cleanup(app: web.Application) -> None:
     exactly what a first attempt at this hook did.
 
     Best-effort: a failure to reap a supervised child must never block shutdown.
+
+    The browser sessions the panel's address bar opened (``browser_cli.launcher``)
+    are closed here too, and first: their daemons are detached processes the
+    orphan sweep deliberately never touches (a ``panel-`` name is operator-class
+    to it), so this hook is the one place their lifetime ends. Only the sessions
+    THIS gateway opened are closed -- never a global ``close-all`` -- so an
+    operator's own independently opened browser survives a restart.
+
+    The mirror image runs at startup: a previous life of this gateway that died
+    without reaching this hook left its ``panel-`` daemons running, and
+    :func:`browser_cli_launcher.reclaim_stranded` closes exactly those -- the
+    owner tag in the name keeps a sibling gateway's browsers out of reach. It
+    spawns the CLI, so it runs as a background task rather than gating the port
+    bind (the same reasoning as the instances revive below).
     """
 
+    async def _browser_sessions_startup(app_: web.Application) -> None:
+        async def _reclaim() -> None:
+            try:
+                await asyncio.to_thread(browser_cli_launcher.reclaim_stranded)
+            except Exception:  # noqa: BLE001 - startup must not raise
+                logger.debug(
+                    "browser launcher session reclaim failed during startup", exc_info=True
+                )
+
+        task = asyncio.create_task(_reclaim())
+        _startup_tasks.add(task)
+        task.add_done_callback(_startup_tasks.discard)
+
     async def _browser_view_shutdown(app_: web.Application) -> None:
+        try:
+            await asyncio.to_thread(browser_cli_launcher.close_all)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("browser launcher session close failed during shutdown", exc_info=True)
         try:
             await asyncio.to_thread(browser_cli_view.stop)
         except Exception:  # noqa: BLE001 - shutdown must not raise
             logger.debug("browser view stop failed during shutdown", exc_info=True)
 
+    app.on_startup.append(_browser_sessions_startup)
     app.on_cleanup.append(_browser_view_shutdown)
+
+
+#: Background tasks started by the browser-session startup hook, held so the
+#: event loop cannot garbage-collect them mid-flight.
+_startup_tasks: set[asyncio.Task[None]] = set()
 
 
 def _register_instances_hooks(app: web.Application, state: DashboardState, port: int) -> None:

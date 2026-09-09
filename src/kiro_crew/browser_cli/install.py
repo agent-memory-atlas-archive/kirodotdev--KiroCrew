@@ -357,6 +357,42 @@ def cli_lifecycle_env_supported() -> bool:
     return registry_ok and sockets_ok
 
 
+def cli_dashboard_socket_supported() -> bool:
+    """Whether the installed CLI's ``show`` dashboard listens where the panel expects.
+
+    The dashboard app claims one singleton socket at
+    ``makeSocketPath("dashboard", "app")`` under ``PWTEST_SOCKETS_DIR``, and the
+    Browser panel's launcher sends its reveal request there. Both halves are
+    upstream layout rather than a declared API, so they are pinned the same way
+    :func:`cli_lifecycle_env_supported` pins the socket-root hook: by reading the
+    serving ``playwright-core`` bundle. A rename upstream turns the reveal into a
+    logged skip instead of a connect to a path nothing listens on. Answers false
+    when the CLI is absent or its serving tree cannot be attributed.
+    """
+    packages = _cli_package_dirs()
+    if not packages:
+        return False
+    manifest = _manifest_for_cli_package(packages[0])
+    if manifest is None:
+        return False
+    bundle = manifest.parent / "lib" / "coreBundle.js"
+    try:
+        bundle_stat = bundle.stat()
+    except OSError:
+        return False
+    return _source_contains(
+        str(bundle),
+        bundle_stat.st_mtime_ns,
+        bundle_stat.st_size,
+        b'makeSocketPath("dashboard", "app")',
+    ) and _source_contains(
+        str(bundle),
+        bundle_stat.st_mtime_ns,
+        bundle_stat.st_size,
+        b"process.env.PWTEST_SOCKETS_DIR ||",
+    )
+
+
 def _manifest_for_cli_package(package: Path) -> Path | None:
     """The ``browsers.json`` of the ``playwright-core`` serving *package*.
 

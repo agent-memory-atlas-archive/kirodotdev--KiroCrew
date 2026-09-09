@@ -22,6 +22,13 @@ agent turn ──shell──▶ playwright-cli <verb> …
 agent reads the YAML with its own file tools ONLY when it needs the tree
 ```
 
+The gateway itself runs exactly two kinds of CLI command, neither of them on an
+agent's behalf: the `show` dashboard it supervises ([Dashboard
+integration](#dashboard-integration)), and the browsing verb behind the Browser
+panel's address bar ([Address bar launcher](#address-bar-launcher)), which a
+HUMAN triggers by pressing Enter in an authenticated dashboard. Everything an
+agent does with a browser still goes through its shell.
+
 **The stdout line is the contract.** Every command prints the resulting page URL,
 the page title, and a filesystem path to a snapshot YAML. Roughly 250 characters
 of stdout carry a complete action result, and the accessibility tree stays on
@@ -164,10 +171,12 @@ preserve their complete existing Playwright environment and are not redirected.
 Keeping both locations outside scratch means a daemon remains reachable after
 its agent process or scratch directory is gone. Operator cleanup supplies the
 generated session's `/s` and `/d` paths with the corresponding PWTEST variables
-and then uses the ordinary `playwright-cli -s=<name> close` protocol. Kiro Crew
-never executes the CLI or connects to the socket on its own: a stray has no
-registry entry to resolve and its socket is unlinked by the first refused
-connect, so a registry-driven `close` reclaims nothing.
+and then uses the ordinary `playwright-cli -s=<name> close` protocol.
+Reclamation never executes the CLI or connects to a daemon's socket: a stray has
+no registry entry to resolve and its socket is unlinked by the first refused
+connect, so a registry-driven `close` reclaims nothing. (The gateway does run the
+CLI for its own two purposes — the `show` dashboard and the address bar launcher
+— but never against a generated `kc-` session, and never to reclaim one.)
 
 ### Stranded daemon reclamation
 
@@ -192,7 +201,29 @@ agent could write, which is what made earlier reaper attempts unsafe. The probe
 scans the whole process table rather than a manager-local set, so a peer gateway
 sharing this data home sees and protects its own live sessions. An
 operator-named session is structurally excluded and never signalled; the `kc-`
-prefix is reserved so the two populations cannot be confused. Every stage fails
+prefix is reserved so the two populations cannot be confused. The Browser
+panel's own sessions (`panel-<owner6>-<slot8>`, see [Address bar
+launcher](#address-bar-launcher)) are deliberately in the operator-class
+population: a generated name would have the sweep kill the human's browser the
+moment its short-lived CLI invocation exited, so their lifetime is owned by the
+gateway instead — and **the owner is legible from the name**. Several gateways
+on one host can share the CLI's session registry (it is keyed by working
+directory; a pod started from the live checkout, or a second install, sees the
+same entries), so the first six hex digits are a digest of the owning gateway's
+data home: a sibling never produces this gateway's tag, a `goto` against a
+session already open under our name can only be reaching this gateway's own
+previous life, and only sessions under our prefix are ever closed. Two hooks
+enforce that: shutdown closes every session this life opened (`close_all`), and
+startup closes every session under this gateway's prefix that the CLI still
+lists as up and this life has not recorded (`reclaim_stranded`, a background
+task so a CLI spawn never gates the port bind) — the previous life that died
+without reaching its shutdown hook. A panel session therefore never outlives the
+gateway that owns it; an unclean death only defers the close to the next start.
+What startup reclamation reads is the registry, same-user-writable filesystem
+state the sweep above refuses to act on — acceptable here because the only
+action it can be tricked into is a `close` of a session under our own prefix, a
+capability a same-user process already has directly (see the Security table).
+Every stage fails
 closed: non-Linux, an unreadable `/proc`, and an inconclusive per-process read
 all read as "owner alive". The kill signals the process GROUP so the Chromium
 tree goes with the supervisor, TERM first for a clean profile flush, only for a
@@ -365,12 +396,142 @@ presents as a broken panel rather than as a misconfiguration:
 a browser that may hold the operator's sessions, so binding it off loopback
 exposes an interactive takeover surface to the network.
 
+#### Address bar launcher
+
+The Browser panel has two transports. In the desktop app a native Chromium view
+owns the panel and an external site typed into the address bar lands there.
+Everywhere else — a plain browser tab, including a laptop reaching a remote
+gateway over an SSH tunnel — the dashboard CSP admits only loopback into the
+preview iframe (`frame-src`/`connect-src` in `server.py`), so `google.com` could
+neither be framed nor probed and the panel reported a healthy public site as a
+dev server that "stopped responding". Nothing had ever started a browser for a
+human: the CLI's own dashboard cannot open a session (its bundle renders "No open
+sessions." and offers navigation only inside one that exists), and every other
+`playwright-cli` invocation was an agent's shell turn.
+
+`browser_cli/launcher.py` plus `POST /api/browser/open` (`{url, session_key}`)
+is that launcher, and the panel calls it on the non-native transport when the
+normalized host is not loopback. The handler ensures the `show` view is serving
+(the same start path as `/api/browser/view/start`, honouring
+`dashboard.browser_view_port`), then runs the CLI as a supervised child through
+`install.cli_path`/`cli_env` — so `PLAYWRIGHT_MCP_CONFIG`, the snapshot directory
+and the attach token reach it exactly as they reach an agent's invocation:
+
+| Browser state (from `playwright-cli --json list`) | Command |
+|---|---|
+| the session is listed `open` | `playwright-cli -s=<session> goto <url>` |
+| listed `closed`, or not listed | `playwright-cli -s=<session> open <url>` |
+| the list cannot be read | `goto`, whose failure is reported in the CLI's own words |
+
+`open` runs only on a positive "not open" from the CLI's structured output: a
+bare `open` on a live session tears that browser down and starts another,
+losing its tabs, so neither an unreadable list nor a failed `goto` may escalate
+to one. The `--json` flag is part of the CLI's command surface; an error
+sentence is not, which is why the decision reads the former. The answer is
+`{ok, session, error, view}` (the URL is the caller's own input and is not echoed); `error` is the CLI's
+own text — ANSI stripped, the update banner, the 2 KB Chromium argv dump and
+Node's stack preamble removed, credentials redacted, capped — so the panel
+shows `No usable sandbox!` or `Chromium distribution 'chrome' is not found …`
+verbatim instead of a blank frame. For the sandbox case the remedy from
+[Launch config](#launch-config) is appended (the marker is Chromium's own
+`No usable sandbox` line, and a miss costs only the appended advice): the
+operator names their own `PLAYWRIGHT_MCP_CONFIG`; the launcher never drops the
+sandbox and never writes a config of its own. `view` is the post-attempt
+`show` status, so the panel frames the view without a second read.
+
+**Consent.** A human pressing Enter in an authenticated dashboard is the
+approval. The route is owner-only like the view routes, is on no internal-path
+list, and the handler additionally refuses a caller that authenticated with the
+internal secret — an agent reaching it would bypass the shell approval ladder the
+[capability model](#capability-model) routes browsing through. The URL is
+re-validated server-side (`http`/`https`, a host, and no secret-bearing
+component — userinfo, query, or fragment: argv is world-readable through
+`/proc/<pid>/cmdline` for the life of the CLI process, so a `?token=` or
+`#access_token=` URL would leak; this is an argv limitation, to be lifted only
+if the URL can travel to the CLI outside argv) before it
+becomes the ONE free element of a fixed argv, which is what keeps the spawn
+benign for `test_spawn_audit`.
+
+**One session per chat slot, named `panel-<owner6>-<slot8>`** (sha256 digests of
+the owning gateway's data home and of the slot key — identifiers rather than
+secrets; the owner tag is the ownership contract described under [Stranded
+daemon reclamation](#stranded-daemon-reclamation)). The
+name deliberately does not match the generated `kc-<8hex>` shape: the orphan
+sweep reclaims a `kc-` daemon as soon as no live process carries its
+`PLAYWRIGHT_CLI_SESSION`, and the only process that ever carries the panel's is
+the CLI invocation that exits milliseconds later — full participation would kill
+the human's browser ten minutes in. So the session is operator-class to the sweep
+(structurally excluded, never signalled) and its lifetime is owned here: the
+launcher records every session it opened — including an `open` that outlived
+its budget, whose detached daemon may be up regardless — and `_register_browser_view_cleanup`
+closes exactly those (`-s=<name> close`, never `close-all`/`kill-all`) before it
+stops the view, so a gateway restart is idempotent and an operator's own browser
+survives it. A gateway that dies without shutting down strands the daemon exactly
+as an operator's own `open` would, and the deterministic name lets the next
+gateway re-adopt it with `goto` instead of leaking a second one. `-s=` selects
+the session and the child's `PLAYWRIGHT_CLI_SESSION` is set to the same name, so
+the daemon's exec-time environ and argv agree.
+
+**One socket root — and one daemon registry — for the gateway's own CLI
+children.** The `show` child and every launcher invocation run with
+`PWTEST_SOCKETS_DIR` set to `<data-home>/pw/ui/s` and `PWTEST_DAEMON_SESSION_DIR`
+to `<data-home>/pw/ui/d` (`launch.ui_socket_env`; an operator-configured root is
+honoured as a base and namespaced under it, one of our own arriving by
+inheritance is regenerated — the doctrine of the generated sessions' roots, with
+the `ui` leaf deliberately not 8-hex so nothing can read it as a session's
+namespace). The registry is pinned for the same reason as the root: a gateway
+started from inside an agent's shell would otherwise inherit that agent's
+registry, the panel's sessions would register there, and after a crash and an
+ordinary restart the sweep would list the default registry and never find the
+logged-in browser; deterministic and gateway-owned, the `list` that
+`reclaim_stranded` and `close_all` run reads the same registry across every
+gateway life. This is the same hook the generated sessions use, gated on the same
+installed-source probe, and it exists so the gateway KNOWS where its two children
+meet rather than re-deriving the CLI's default path (temp directory plus a hash
+of the user name). It is left unset — the children fall back to the CLI's
+default and the reveal below is skipped — when the installed CLI does not expose
+the hook, when the path would overflow the AF_UNIX budget (a pod's long home),
+or when the directory cannot be prepared owner-only.
+
+**Reveal.** The `show` dashboard lists a new session in its sidebar but does not
+attach its viewport to it, so after a successful launch the gateway asks it to:
+one JSON line (`{"sessionName": …}`) on the dashboard app's singleton socket,
+`<socket root>/dashboard/app.sock`. That layout is upstream's, so it is pinned
+the way the socket-root hook is — `install.cli_dashboard_socket_supported` reads
+the serving `playwright-core` bundle for `makeSocketPath("dashboard", "app")`
+and a rename turns the reveal into a skip reported once at WARNING in the
+gateway log (not a debug line), so the loss of the auto-attach is visible. The CLI's own way to reveal,
+`show -s=<name>` with no `--port`, is deliberately not used: when the singleton
+socket is stale it becomes the winner and launches a Chromium app window on the
+gateway host. Connecting ourselves fails closed — no listener, no reveal, nothing
+else — and Windows (a named pipe) skips it.
+
+**Panel behaviour.** `normalizeUrl` upgrades a bare public host to `https://`
+(`google.com`) and keeps `http://` for the dev-server shapes — a loopback host,
+an IP literal, or any explicit port; this default is shared by both transports,
+so the native view opens a bare public host on `https://` too. For a loopback
+host the preview iframe path is unchanged; on the native transport an external
+host still goes to the native view. While the gateway is launching, the panel
+shows an opening state; on success the CLI view takes the panel, and the framed
+dashboard's own URL bar, tab bar and remote input carry navigation from there —
+the panel adds no second address bar beside a surface that already has one; on
+failure the panel hands back to the preview body and renders the gateway's text
+through `ErrorNotice` (dismiss on the notice, one retry action). The view URL is
+loopback on the GATEWAY host, so from a browser on another machine it is dead
+unless `dashboard.browser_view_port` is pinned and forwarded: the panel probes it
+with the same no-cors liveness check it uses for a dev server and, on two
+strikes, replaces the frame with an `ErrorNotice` naming the URL and the setting
+rather than showing the browser's own connection-refused page.
+
 ### Security
 
 | Control | Implementation |
 |---------|----------------|
 | Capability availability | Presence of `playwright-cli` on PATH; see [Capability model](#capability-model) for why this is not approval |
 | Dashboard exposure | `show` is bound to `127.0.0.1`; `0.0.0.0` is never passed, because the served view carries remote input |
+| Address bar launcher (`POST /api/browser/open`) | Owner-only (cookie/token), on no internal-path list, and the handler refuses an internal-secret caller outright, so an agent cannot use it to skip the shell approval ladder. The URL is re-validated (`http`/`https`, host, and no secret-bearing userinfo, query, or fragment — argv is world-readable) before it is the one free argv element; the session name is derived hex; no sandbox flag is ever added and no config written — the operator's `PLAYWRIGHT_MCP_CONFIG` is inherited as-is. Only sessions this gateway opened are closed at shutdown, never `close-all`/`kill-all` |
+| Agent reach into a `panel-` session | **Accepted residual.** A `panel-` browser can hold logins the human typed into it, and an agent drives the same CLI through its shell. What separates the populations is structural but not an enforcement boundary: an agent process runs under its own generated `PWTEST_DAEMON_SESSION_DIR`/`PWTEST_SOCKETS_DIR` namespace (see [Generated session reachability](#generated-session-reachability)), so a bare `playwright-cli -s=panel-… goto` from an agent shell resolves no session and its `list` does not show one; reaching the human's browser takes a command that also names the CLI's default registry and the gateway's socket root, both readable by a same-user process. The control on that command is the ordinary shell approval ladder, exactly as for every other `playwright-cli` invocation; the reserved prefix and the `web-browse` skill's rule are the conventions on top. An enforced isolation would be a per-population credential on the daemon socket, which the CLI does not offer |
+| Reveal | One JSON line to the `show` dashboard's own singleton socket under the gateway-owned socket root both children run with, only when the installed bundle carries that layout, after a successful launch; fails closed when there is no listener. `show -s=<name>` (no port) is never run, since with a stale socket it launches a Chromium app window on the host |
 | Saved state files | Owner-only permissions; they hold live session credentials |
 | Launch config | Write-protected from the agent on both the file-edit and shell gates, and readable. Deliberately anchored rather than bare-token: the filename is not itself the grant, since the agent can name its own `PLAYWRIGHT_MCP_CONFIG` — so what the entry removes is the durable form (rewriting the config the product installed), and a `cd`-relative write is the accepted residual, exactly as for `.data-home-ready` |
 | Page content | Treated as untrusted input. A URL, instruction, or form target read off a page never decides the next navigation |
